@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-The Requests sidebar opens a catalog of real engineers and the signed-in customer's private demands. Customers describe work in a conversation, attach images or videos, continue previous requests and accept an engineer's delivery. The backend owns publication, assignments, permissions and processing status.
+The Requests sidebar opens the platform's service catalog and the signed-in customer's private demands. Customers describe work, attach images or videos, and submit it for assignment to a real engineer. They can continue previous requests and accept delivery. The backend owns the catalog, assignments, permissions and processing status.
 
 ## Table of Contents
 
@@ -27,11 +27,15 @@ Compose this browser plugin with slots, locale, layout and the existing Credits 
 
 ## Understand the implementation
 
-The account-owned controller publishes a stable JSON view to framework-bound injection hooks. Components own search, tabs and narrow-screen navigation only. Changing the account or login epoch immediately clears the prior view and cancels its requests and uploads. Responses must match the captured account. Disposal cancels and joins all owned asynchronous operations.
+The account-owned controller publishes a stable JSON view to framework-bound injection hooks. Components own viewing controls and narrow-screen navigation. Changing the account or login epoch immediately clears the prior view and cancels its requests and uploads. Responses must match the captured account. Disposal cancels and joins all owned asynchronous operations.
+
+When the backend declares service-profile support, the directory uses bounded server pages, search and category filters. Changing filters cancels the previous directory read; a late page cannot replace the newer result. Service profiles describe request types, not individual online staff. New requests first enter the platform's unassigned queue; the original service name remains visible after assignment. An older backend retains the direct engineer directory and submission path. Customer profiles remain in backend administration and are never part of this public directory.
 
 Requests use the authenticated local `/credits/api/demands` proxy, whose credential and renewal ownership remains in [credits-index](../../host/credits-index/README.md). Tokens stay in the Host. Media elements use local attachment identifiers and owner guards; the Host authorizes fresh content access and forwards Range responses for video seeking.
 
 Each new demand, message, upload and acceptance has a durable, account-scoped operation identifier and frozen request body before dispatch. A lost response retains that operation for exact retry instead of creating a replacement identifier. Separate drafts remain independent. Confirmed messages and read status come from server receipts. Images and videos upload as bounded `File.slice` chunks, with offset reads after an uncertain chunk. Reselecting a file verifies its metadata and recorded slice digests before continuing. Files themselves are not copied into the JSON view or local operation journal.
+
+Direct-engineer operations retain their existing journal namespace and serialized bodies. Service-profile operations use a separate namespace that the new reader combines with the legacy journal. Returning to an older client therefore does not expose service-only records to its legacy parser.
 
 ## Further Exploration
 

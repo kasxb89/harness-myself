@@ -8,7 +8,7 @@ import type {} from '../src/client/index.ts'
 import { DemandPage } from '../src/client/DemandPage.tsx'
 import { zh } from '../src/client/locales.ts'
 import type { DemandPageProps, DemandPageState } from '../src/client/types.ts'
-import { attachment, conversation, demandState, draft, draftSummary, exampleEngineers, message, request } from './fixtures.client.ts'
+import { attachment, conversation, demandState, draft, draftSummary, exampleEngineers, message, request, serviceProfile } from './fixtures.client.ts'
 
 afterEach(cleanup)
 const translations: ReadonlyMap<string, string> = new Map(Object.entries(zh))
@@ -19,6 +19,8 @@ function page(partial: Partial<DemandPageState> = {}) {
   const store = createSnapshotStore(demandState(partial))
   const actions = {
     refresh: vi.fn<() => void>(), openLogin: vi.fn<() => void>(), startRequest: vi.fn<(id: string) => void>(),
+    startServiceRequest: vi.fn<DemandPageProps['startServiceRequest']>(),
+    setServiceFilter: vi.fn<DemandPageProps['setServiceFilter']>(), loadMoreServices: vi.fn<() => void>(),
     openRequest: vi.fn<(id: string) => void>(), updateDraft: vi.fn<DemandPageProps['updateDraft']>(),
     openDraft: vi.fn<DemandPageProps['openDraft']>(),
     send: vi.fn<() => void>(), addAttachments: vi.fn<DemandPageProps['addAttachments']>(),
@@ -46,6 +48,85 @@ function openRequests() {
 }
 
 describe('human-engineer demand page', () => {
+  it('shows actual service profiles and server totals without presenting them as live engineers', () => {
+    const actions = page({ directoryMode: 'services', serviceProfiles: [serviceProfile({ avatarUrl: 'https://example.invalid/service.png' })],
+      servicesTotal: 100 })
+    expect(screen.getByRole('tab', { name: zh.findServices })).toBeTruthy()
+    expect(screen.getByText('100 项服务')).toBeTruthy()
+    expect(screen.getByText(zh.platformRoutingHint)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '示例订单管理服务' })).toBeTruthy()
+    expect(screen.getByText('订单查询与操作流程')).toBeTruthy()
+    expect(screen.queryByText(zh.presenceAvailable)).toBeNull()
+    expect(screen.queryByText(zh.presenceOffline)).toBeNull()
+    expect(screen.queryByText('示例工程师林')).toBeNull()
+    expect(screen.getByAltText('').getAttribute('loading')).toBe('lazy')
+    fireEvent.click(screen.getByRole('button', { name: '为示例订单管理服务发布需求' }))
+    expect(actions.startServiceRequest).toHaveBeenCalledExactlyOnceWith('example-service-orders')
+    expect(actions.startRequest).not.toHaveBeenCalled()
+  })
+
+  it('delegates service search and pagination to the server-owned commands', () => {
+    const actions = page({ directoryMode: 'services', serviceProfiles: [serviceProfile()], servicesTotal: 47, servicesHaveMore: true })
+    const search = screen.getByRole('searchbox', { name: zh.searchServices })
+    fireEvent.change(search, { target: { value: '排版' } })
+    expect(actions.setServiceFilter).toHaveBeenCalledExactlyOnceWith('排版', '')
+    actions.set({ serviceQuery: '排版', servicesTotal: 12 })
+    fireEvent.click(screen.getByRole('button', { name: '示例前端开发' }))
+    expect(actions.setServiceFilter).toHaveBeenLastCalledWith('排版', 'example-frontend')
+    actions.set({ serviceCategoryId: 'example-frontend' })
+    fireEvent.click(screen.getByRole('button', { name: zh.clearSearch }))
+    expect(actions.setServiceFilter).toHaveBeenLastCalledWith('', 'example-frontend')
+    expect(screen.getByText('12 项服务')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.loadMoreServices }))
+    expect(actions.loadMoreServices).toHaveBeenCalledOnce()
+    actions.set({ loadingMoreServices: true })
+    const more = screen.getByRole('button', { name: zh.loadingMoreServices })
+    expect(more).toHaveProperty('disabled', true)
+    fireEvent.click(more)
+    expect(actions.loadMoreServices).toHaveBeenCalledOnce()
+    actions.set({ servicesHaveMore: false, loadingMoreServices: false })
+    expect(screen.queryByRole('button', { name: zh.loadMoreServices })).toBeNull()
+    expect(screen.getByRole('heading', { name: '示例订单管理服务' })).toBeTruthy()
+  })
+
+  it('keeps service read failures actionable and distinguishes an empty catalog from no search matches', () => {
+    const actions = page({ directoryMode: 'services', serviceProfiles: [], servicesTotal: 0 })
+    expect(screen.getByRole('heading', { name: zh.noServices })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /为.+发布需求/u })).toBeNull()
+    actions.set({ serviceQuery: '未发布方向' })
+    expect(screen.getByRole('heading', { name: zh.noMatchingServices })).toBeTruthy()
+    actions.set({ servicesStatus: 'error' })
+    expect(screen.getByText(zh.serviceLoadFailed)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.retry }))
+    expect(actions.refresh).toHaveBeenCalledOnce()
+  })
+
+  it('shows platform reception before assignment and preserves the original service name afterward', () => {
+    const pending = conversation({ status: 'pending', intakeMode: 'platform', assigned: false,
+      serviceProfileId: 'example-service-orders', serviceProfileName: '示例订单管理服务',
+      engineer: { id: 'platform-intake', displayName: '接待投影', avatarUrl: null, introduction: '', categoryIds: [], skills: [],
+        presence: 'offline', canStart: false, unavailableReason: null },
+    })
+    const actions = page({ directoryMode: 'services', conversation: pending, draft: draft(), requests: [request({
+      status: 'pending', assigned: false, intakeMode: 'platform', serviceProfileName: '示例订单管理服务',
+    })] })
+    openRequests()
+    expect(screen.getByRole('heading', { name: zh.platformReception })).toBeTruthy()
+    expect(screen.queryByText('接待投影')).toBeNull()
+    expect(screen.queryByText(zh.presenceOffline)).toBeNull()
+    expect(screen.queryByText(zh.offlineHint)).toBeNull()
+    expect(screen.getAllByText(zh.waitingAssignment)).toHaveLength(2)
+    expect(screen.getAllByText('服务：示例订单管理服务')).toHaveLength(2)
+    actions.set({ conversation: { ...pending, assigned: true, engineer: exampleEngineers[0] ?? null, status: 'communicating' } })
+    expect(screen.getByRole('heading', { name: '示例工程师林' })).toBeTruthy()
+    expect(screen.getByText(zh.presenceAvailable)).toBeTruthy()
+    expect(screen.getAllByText('服务：示例订单管理服务')).toHaveLength(2)
+    actions.set({ requests: [request({ status: 'pending' })] })
+    const legacy = screen.getByRole('button', { name: /示例订单页面改版/u })
+    expect(within(legacy).getByText(zh.statusPending)).toBeTruthy()
+    expect(within(legacy).queryByText(zh.waitingAssignment)).toBeNull()
+  })
+
   it('shows an unconfigured service without invented engineers or an ineffective retry', () => {
     const actions = page({ availability: 'unconfigured', categories: [], engineers: [] })
     expect(screen.getByRole('heading', { name: zh.unconfiguredTitle })).toBeTruthy()

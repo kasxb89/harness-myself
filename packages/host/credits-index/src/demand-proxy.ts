@@ -79,6 +79,7 @@ type Route = {
 function selectRoute(path: string, method: string): Route | undefined {
   const exact: Record<string, Readonly<Record<string, string>>> = {
     '': { GET: 'list', POST: 'create' }, '/config': { GET: 'config' }, '/engineers': { GET: 'engineers' },
+    '/service-profiles': { GET: 'service-profiles' },
     '/unread': { GET: 'unread' }, '/uploads': { POST: 'upload-init' },
   }
   const direct = exact[path]?.[method]
@@ -97,7 +98,8 @@ function selectRoute(path: string, method: string): Route | undefined {
   if (item === null) return undefined
   const kind = item[2] === 'messages' ? method === 'GET' ? 'messages' : method === 'POST' ? 'message' : undefined
     : item[2] === 'read' && method === 'POST' ? 'read' : item[2] === 'actions' && method === 'POST' ? 'action'
-      : item[2] === undefined && method === 'GET' && !['/config', '/engineers', '/unread', '/uploads'].includes(path) ? 'detail' : undefined
+      : item[2] === undefined && method === 'GET'
+        && !['/config', '/engineers', '/service-profiles', '/customer-profiles', '/profile-import', '/unread', '/uploads'].includes(path) ? 'detail' : undefined
   return kind === undefined ? undefined : { kind, suffix: path, method }
 }
 class DemandInputError extends Error {
@@ -168,7 +170,7 @@ const remoteCodes = new Set(['DEMAND_INVALID_INPUT', 'DEMAND_EMPTY_MESSAGE', 'DE
   'DEMAND_AUTH_REQUIRED', 'DEMAND_ENGINEER_REQUIRED', 'DEMAND_PERMISSION_DENIED', 'DEMAND_NOT_FOUND', 'DEMAND_ATTACHMENT_NOT_FOUND',
   'DEMAND_IDEMPOTENCY_CONFLICT', 'DEMAND_REVISION_CONFLICT', 'DEMAND_STATUS_CONFLICT', 'DEMAND_ENGINEER_UNAVAILABLE',
   'DEMAND_UPLOAD_OFFSET_CONFLICT', 'DEMAND_ATTACHMENT_IN_USE', 'DEMAND_UPLOAD_TOO_LARGE', 'DEMAND_UPLOAD_UNSUPPORTED',
-  'DEMAND_RATE_LIMITED', 'DEMAND_DISABLED', 'DEMAND_STORAGE_UNAVAILABLE'])
+  'DEMAND_RATE_LIMITED', 'DEMAND_DISABLED', 'DEMAND_STORAGE_UNAVAILABLE', 'DEMAND_PROFILE_UNAVAILABLE'])
 
 function uploadStream(request: IncomingMessage, length: number, maximum: number,
   signal: AbortSignal, current: () => Promise<boolean>): ReadableStream<Uint8Array> {

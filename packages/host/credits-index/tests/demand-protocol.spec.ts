@@ -55,3 +55,82 @@ describe('frozen customer demand protocol', () => {
   })
 
 })
+
+describe('additive platform service directory', () => {
+  const profile = { id: 'service-1', code: 'SERVICE_001', display_name: '应用交付服务', service_direction: '表单与数据处理',
+    introduction: '', category_ids: ['software'], avatar_attachment_id: '', published: true, enabled: true,
+    sort: -1, revision: 1, intake_mode: 'platform', can_start: true }
+  const engineer = { id: 'platform-intake', display_name: '平台统一接待', category_ids: [], introduction: '等待后台分派',
+    presence: 'offline', accepting: false, can_start: false, capacity: 0, service_hours: '' }
+  const queued = { id: 'demand-1', number: 'REQ-1', engineer_id: engineer.id, engineer,
+    user_id: 7, status: 'pending', priority: 'normal', revision: 1, last_seq: 1, last_read_seq: 0,
+    unread_count: 0, preview: 'A request', created_at: 100, updated_at: 100,
+    service_profile_id: profile.id, service_profile_name: profile.display_name, intake_mode: 'platform', assigned: false }
+  const page = (items: unknown[], extra: Record<string, unknown> = {}) => ({ success: true,
+    data: { items, has_more: false, next_after_id: '', total: items.length, server_time: 100, ...extra } })
+
+  it('keeps legacy submit bodies unchanged and requires exactly one target without granting assignment fields', () => {
+    const legacy = { client_request_id: key, text: 'Original pending body', attachment_ids: [], engineer_id: 'real-engineer' }
+    expect(JSON.stringify(demandRequest('create', legacy))).toBe(JSON.stringify(legacy))
+    expect(demandRequest('create', { ...legacy, service_profile_id: '' })).toEqual(legacy)
+    expect(demandRequest('create', { ...legacy, engineer_id: '', service_profile_id: profile.id, assigned: true, user_id: 999 }))
+      .toEqual({ client_request_id: key, text: legacy.text, attachment_ids: [], service_profile_id: profile.id })
+    for (const target of [{}, { engineer_id: '', service_profile_id: '' }, { engineer_id: 'eng', service_profile_id: profile.id },
+      { engineer_id: '', service_profile_id: null }, { service_profile_id: 'x'.repeat(41) }]) {
+      expect(() => demandRequest('create', { client_request_id: key, text: 'One request', ...target })).toThrow()
+    }
+  })
+
+  it('accepts bounded opaque page cursors and literal Unicode search without forwarding administrative filters', () => {
+    const selected = new URLSearchParams({ limit: '30', after_id: 'opaque+/=cursor', q: '应用_100% 😀', category_id: 'software' })
+    expect(demandQuery('service-profiles', selected).toString()).toBe(selected.toString())
+    expect(demandQuery('engineers', selected).toString()).toBe(selected.toString())
+    expect(demandQuery('service-profiles', new URLSearchParams({ after_id: '', q: '😀'.repeat(100) })).get('q')).toBe('😀'.repeat(100))
+    expect(demandQuery('service-profiles', new URLSearchParams({ after_id: 'é'.repeat(512) })).get('after_id')).toBe('é'.repeat(512))
+    const invalidQueries: Record<string, string>[] = [{ q: '😀'.repeat(101) }, { after_id: 'é'.repeat(513) }, { category_id: 'x'.repeat(41) },
+      { limit: '101' }, { limit: '0' }, { user_id: '7' }, { assignment: 'unassigned' }]
+    for (const query of invalidQueries) {
+      expect(() => demandQuery('service-profiles', new URLSearchParams(query))).toThrow()
+    }
+    expect(() => demandQuery('service-profiles', new URLSearchParams('limit=30&limit=30'))).toThrow()
+  })
+
+  it('projects paged service profiles without turning them into live people or leaking customer and private fields', () => {
+    expect(demandResponse('service-profiles', page([{ ...profile, presence: 'online', user_id: 7,
+      notes: 'internal only', avatar_url: 'https://private.invalid', phone: 'private' }])))
+      .toEqual({ items: [profile], has_more: false, next_after_id: '', total: 1, server_time: 100 })
+    expect(demandResponse('service-profiles', page([profile], { has_more: true, next_after_id: 'opaque+/=cursor', total: 201 })))
+      .toMatchObject({ has_more: true, next_after_id: 'opaque+/=cursor', total: 201 })
+    expect(() => demandResponse('service-profiles', page([{ ...profile, intake_mode: 'direct' }]))).toThrow()
+    expect(() => demandResponse('service-profiles', page([{ ...profile, revision: 0 }]))).toThrow()
+    expect(() => demandResponse('service-profiles', page(Array.from({ length: 101 }, () => profile)))).toThrow()
+    for (const extra of [{ has_more: true }, { next_after_id: 'nonempty-at-end' }, { total: 0 }]) {
+      expect(() => demandResponse('service-profiles', page([profile], extra))).toThrow()
+    }
+  })
+
+  it('retains optional capabilities while preserving legacy absent flags and legacy engineer lists', () => {
+    const data = { config: { enabled: true, categories: [], upload_rules: { max_image_bytes: 100, max_video_bytes: 1000,
+      max_attachments: 2, chunk_bytes: 100, allowed_mime_types: ['image/png'], upload_ttl_seconds: 300 } },
+    server_time: 100, capabilities: { resumable_upload: true, polling: true } }
+    expect(demandResponse('config', { success: true, data })).toEqual(data)
+    expect(demandResponse('config', { success: true, data: { ...data, capabilities: { ...data.capabilities,
+      service_profiles: true, engineer_pagination: false, customer_profiles: true } } }))
+      .toMatchObject({ capabilities: { ...data.capabilities, service_profiles: true, engineer_pagination: false } })
+    expect(() => demandResponse('config', { success: true, data: { ...data,
+      capabilities: { ...data.capabilities, service_profiles: 'true' } } })).toThrow()
+    expect(demandResponse('engineers', { success: true, data: { items: [engineer], server_time: 100 } }))
+      .toEqual({ items: [engineer], server_time: 100 })
+    expect(demandResponse('engineers', page([engineer]))).toMatchObject({ total: 1, has_more: false, next_after_id: '' })
+    expect(() => demandResponse('engineers', { success: true, data: { items: [engineer], server_time: 100, total: 1 } })).toThrow()
+  })
+
+  it('retains the selected service and an explicit unassigned projection without passing owner contact records', () => {
+    const decoded = demandResponse('detail', { success: true, data: { demand: { ...queued, owner: { phone: 'private' }, notes: 'private' } } })
+    expect(decoded).toEqual({ demand: queued })
+    expect(() => demandResponse('detail', { success: true, data: { demand: { ...queued, assigned: 'false' } } })).toThrow()
+    expect(() => demandResponse('detail', { success: true, data: { demand: { ...queued, engineer_id: '' } } })).toThrow()
+    expect(() => demandResponse('detail', { success: true, data: { demand: { ...queued, engineer_id: 'someone-else' } } })).toThrow()
+    expect(() => demandResponse('detail', { success: true, data: { demand: { ...queued, intake_mode: 'direct' } } })).toThrow()
+  })
+})

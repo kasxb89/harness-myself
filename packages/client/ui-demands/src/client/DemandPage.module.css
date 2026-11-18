@@ -24,6 +24,9 @@
 .pageNotice { margin: 0 0 12px; }
 .inlineNotice { margin: 8px 0; }
 .directory { min-width: 0; min-height: 0; overflow: auto; padding: 0 2px 24px; overscroll-behavior: contain; }
+.routingNote { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 16px; max-width: 70ch; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
+.routingNote > svg { flex: none; margin-top: 2px; }
+.serviceDirection { margin: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
 .directoryToolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
 .searchField { display: flex; flex: 1; align-items: center; gap: 6px; min-width: min(100%, 240px); max-width: 560px; }
 .searchField > span { flex: 1; min-width: 0; }

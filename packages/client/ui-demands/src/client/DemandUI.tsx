@@ -1,9 +1,9 @@
 /** Shared presentation inside the demand page; no transport or business state. */
 import type { ReactNode } from 'react'
 import {
-  Button, IconNewChatOutlineRegular, IconUserOutlineRegular, IconUsersOutlineRegular,
+  Button, IconNewChatOutlineRegular, IconUserOutlineRegular, IconUsersOutlineRegular, IconChecklistOutlineRegular,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { DemandEngineer, DemandPageProps, DemandStatus } from './types.ts'
+import type { DemandEngineer, DemandPageProps, DemandServiceProfile, DemandStatus } from './types.ts'
 import type { DemandLocaleKey } from './locales.ts'
 import css from './DemandPage.module.css'
 
@@ -20,9 +20,9 @@ const statusKeys: Record<DemandStatus, DemandLocaleKey> = {
  * @param props - Current stage and localized labels.
  * @returns A read-only stage label.
  */
-export function DemandStatusTag(props: { status: DemandStatus; t: DemandTranslate }): ReactNode {
-  const { status, t } = props
-  return <span className={css.status} data-status={status}>{t(statusKeys[status])}</span>
+export function DemandStatusTag(props: { status: DemandStatus; unassigned?: boolean; t: DemandTranslate }): ReactNode {
+  const { status, unassigned = false, t } = props
+  return <span className={css.status} data-status={status}>{t(status === 'pending' && unassigned ? 'waitingAssignment' : statusKeys[status])}</span>
 }
 
 /**
@@ -44,8 +44,22 @@ export function EngineerAvatar(props: { engineer: DemandEngineer | null; small?:
   const { engineer, small = false } = props
   return <span className={css.avatar} data-small={small} aria-hidden="true">
     <IconUserOutlineRegular size={small ? 18 : 24} />
-    {!engineer?.avatarUrl ? null : <img key={engineer.avatarUrl} src={engineer.avatarUrl} alt="" draggable={false}
+    {!engineer?.avatarUrl ? null : <img key={engineer.avatarUrl} src={engineer.avatarUrl} alt="" draggable={false} loading="lazy" decoding="async"
       onError={(event) => { event.currentTarget.hidden = true }} />}
+  </span>
+}
+
+/**
+ * Present supplied service artwork with a neutral request-list fallback.
+ * @param props - Optional authorized artwork URL and compact size.
+ * @returns A service mark that does not imply a person's portrait.
+ */
+export function ServiceProfileAvatar(props: { profile?: DemandServiceProfile; small?: boolean }): ReactNode {
+  const { profile, small = false } = props
+  return <span className={css.avatar} data-small={small} aria-hidden="true">
+    <IconChecklistOutlineRegular size={small ? 18 : 24} />
+    {!profile?.avatarUrl ? null : <img key={profile.avatarUrl} src={profile.avatarUrl} alt="" draggable={false}
+      loading="lazy" decoding="async" onError={(event) => { event.currentTarget.hidden = true }} />}
   </span>
 }
 

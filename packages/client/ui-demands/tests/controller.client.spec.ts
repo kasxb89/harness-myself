@@ -441,3 +441,161 @@ describe('demand controller', () => {
     expect(closing.request).toHaveBeenCalledTimes(count)
   })
 })
+
+const platformConfig = { ...configuration,
+  capabilities: { ...configuration.capabilities, service_profiles: true, engineer_pagination: true } }
+const service = { id: 'service-web', code: 'YS-SVC-001', display_name: 'Original website service',
+  service_direction: 'Website requests', introduction: 'Platform evaluates and assigns', category_ids: ['software'],
+  avatar_attachment_id: 'service-avatar', intake_mode: 'platform', enabled: true, published: true, can_start: true }
+function servicePage(items = [service], more = false, cursor = '', total = items.length) {
+  return { items, next_after_id: cursor, has_more: more, total, server_time: 100 }
+}
+
+describe('platform intake and paged service state', () => {
+  it('preserves an unknown service create and its display snapshot across reload without contaminating legacy direct storage', async () => {
+    const journal = createDemandJournal(memory()), bodies: string[] = []
+    const intercept = (_owner: DemandOwner, input: DemandRequest): DemandResult | undefined => {
+      if (input.path === '/config') return ok(platformConfig)
+      if (input.path.startsWith('/service-profiles?')) return ok(servicePage())
+      if (input.path === '' && input.method === 'POST') { bodies.push(input.body ?? ''); return unknown() }
+      return undefined
+    }
+    const h = harness({ journal, intercept }); await h.ready()
+    expect(h.snapshot().directoryMode).toBe('services')
+    expect(h.request.mock.calls.some(([, input]) => input.path === '/engineers')).toBe(false)
+    h.control.startServiceRequest(service.id); h.control.updateDraft({ text: 'Original platform request' }); h.control.send()
+    await vi.waitFor(() => { expect(h.snapshot().conversation?.messages[0]?.state).toBe('failed') })
+    expect(JSON.parse(bodies[0] ?? '{}')).toHaveProperty('service_profile_id', service.id)
+    expect(JSON.parse(bodies[0] ?? '{}')).not.toHaveProperty('engineer_id')
+    expect(journal.read({ id: '1', owner: ownerHash })[0]).toMatchObject({ version: 2, serviceProfileId: service.id,
+      serviceProfileName: service.display_name })
+    await h.control.dispose()
+    const restored = harness({ journal, intercept: (owner, input) => input.path.startsWith('/service-profiles?')
+      ? ok(servicePage([{ ...service, display_name: 'Changed current catalog name' }])) : intercept(owner, input) })
+    await restored.ready()
+    expect(restored.snapshot().conversation).toMatchObject({ engineer: null, intakeMode: 'platform', assigned: false,
+      serviceProfileId: service.id, serviceProfileName: service.display_name })
+    expect(restored.snapshot().draft?.text).toBe('Original platform request')
+    expect(bodies).toHaveLength(1)
+    restored.control.send()
+    await vi.waitFor(() => { expect(bodies).toHaveLength(2) })
+    expect(bodies[1]).toBe(bodies[0])
+  })
+
+  it('retains the server source snapshot while an unassigned request later receives a real engineer', async () => {
+    const projection = { ...engineer, id: 'platform-intake', accepting: false, can_start: false, capacity: 0 }
+    const h = harness({ rows: [rawDemand({ engineer_id: 'platform-intake', engineer: projection, intake_mode: 'platform',
+      assigned: false, service_profile_id: service.id, service_profile_name: 'Initial service source', status: 'pending' })],
+    intercept: (_owner, input) => input.path === '/config' ? ok(platformConfig)
+      : input.path.startsWith('/service-profiles?') ? ok(servicePage()) : undefined })
+    await h.ready(); h.control.openRequest('example-demand')
+    await vi.waitFor(() => { expect(h.snapshot().conversation?.messagesStatus).toBe('ready') })
+    expect(h.snapshot().conversation).toMatchObject({ engineer: null, assigned: false, serviceProfileName: 'Initial service source' })
+    h.rows[0] = rawDemand({ intake_mode: 'platform', assigned: true, service_profile_id: service.id,
+      service_profile_name: 'Initial service source', revision: 2 })
+    h.control.refresh()
+    await vi.waitFor(() => { expect(h.snapshot().conversation?.assigned).toBe(true) })
+    expect(h.snapshot().conversation?.engineer?.id).toBe(engineer.id)
+    expect(h.snapshot().conversation?.serviceProfileName).toBe('Initial service source')
+  })
+
+  it('encodes opaque cursors, deduplicates page boundaries and discards late pages after a filter change without clearing drafts', async () => {
+    const second = { ...service, id: 'service-second', code: 'YS-SVC-002', display_name: 'Second service' }
+    let release: ((answer: DemandResult) => void) | undefined, oldSignal: AbortSignal | undefined
+    const h = harness({ intercept: (_owner, input) => {
+      if (input.path === '/config') return ok(platformConfig)
+      if (!input.path.startsWith('/service-profiles?')) return undefined
+      const query = new URLSearchParams(input.path.split('?')[1])
+      if (query.get('q') === 'React + .NET*') return ok(servicePage([{ ...second, display_name: 'Filtered service' }]))
+      if (query.has('after_id')) {
+        expect(query.get('after_id')).toBe('opaque/cursor+==')
+        oldSignal = input.signal
+        return new Promise<DemandResult>((resolve) => { release = resolve })
+      }
+      return ok(servicePage([service], true, 'opaque/cursor+==', 3))
+    } })
+    await h.ready(); h.control.startServiceRequest(service.id); h.control.updateDraft({ text: 'Keep this independent draft' })
+    const scope = h.snapshot().conversation?.scopeKey
+    h.control.loadMoreServices()
+    await vi.waitFor(() => { expect(release).toBeTypeOf('function') })
+    h.control.setServiceFilter('React + .NET*', 'software')
+    expect(oldSignal?.aborted).toBe(true)
+    await vi.waitFor(() => { expect(h.snapshot().serviceProfiles[0]?.displayName).toBe('Filtered service') })
+    release?.(ok(servicePage([service, second])))
+    await vi.waitFor(() => { expect(h.snapshot().loadingMoreServices).toBe(false) })
+    expect(h.snapshot().serviceProfiles.map(item => item.id)).toEqual([second.id])
+    expect(h.snapshot().servicesTotal).toBe(1)
+    expect(h.snapshot().conversation?.scopeKey).toBe(scope)
+    expect(h.snapshot().draft?.text).toBe('Keep this independent draft')
+    expect(h.snapshot().conversation?.serviceProfileName).toBe(service.display_name)
+  })
+
+  it('does not duplicate overlapping profiles when the next page arrives', async () => {
+    const second = { ...service, id: 'service-second', code: 'YS-SVC-002', display_name: 'Second service' }
+    const h = harness({ intercept: (_owner, input) => input.path === '/config' ? ok(platformConfig)
+      : input.path.startsWith('/service-profiles?') ? ok(input.path.includes('after_id=')
+        ? servicePage([service, second], false, '', 2) : servicePage([service], true, 'cursor', 2)) : undefined })
+    await h.ready(); h.control.loadMoreServices()
+    await vi.waitFor(() => { expect(h.snapshot().serviceProfiles).toHaveLength(2) })
+    expect(h.snapshot().serviceProfiles.map(item => item.id)).toEqual([service.id, second.id])
+    expect(h.snapshot().servicesHaveMore).toBe(false)
+  })
+
+  it('recovers a service upload target after reload and reselects its original file without creating a new upload key', async () => {
+    const journal = createDemandJournal(memory()), bodies: string[] = []
+    const intercept = (_owner: DemandOwner, input: DemandRequest): DemandResult | undefined => {
+      if (input.path === '/config') return ok(platformConfig)
+      if (input.path.startsWith('/service-profiles?')) return ok(servicePage())
+      if (input.path === '/uploads' && input.method === 'POST') { bodies.push(input.body ?? ''); return unknown() }
+      return undefined
+    }
+    const file = new File(['abcd'], 'service.png', { type: 'image/png', lastModified: 100 })
+    const first = harness({ journal, intercept }); await first.ready(); first.control.startServiceRequest(service.id)
+    first.control.addAttachments([file])
+    await vi.waitFor(() => { expect(first.snapshot().draft?.attachments[0]?.status).toBe('failed') })
+    expect(journal.read({ id: '1', owner: ownerHash })[0]).toMatchObject({ version: 2, serviceProfileId: service.id,
+      upload: { engineerId: '', serviceProfileId: service.id } })
+    await first.control.dispose()
+    const restored = harness({ journal, intercept }); await restored.ready()
+    expect(restored.snapshot().conversation).toMatchObject({ intakeMode: 'platform', assigned: false, serviceProfileId: service.id })
+    restored.control.addAttachments([file])
+    await vi.waitFor(() => { expect(bodies).toHaveLength(2) })
+    expect(bodies[1]).toBe(bodies[0])
+  })
+})
+
+it('immediately replaces an in-flight service read when refresh is requested, without waiting for the aborted reply', async () => {
+  let release: ((answer: DemandResult) => void) | undefined, firstSignal: AbortSignal | undefined, reads = 0
+  const h = harness({ intercept: (_owner, input) => {
+    if (input.path === '/config') return ok(platformConfig)
+    if (!input.path.startsWith('/service-profiles?')) return undefined
+    reads += 1
+    if (reads === 1) { firstSignal = input.signal; return new Promise<DemandResult>((resolve) => { release = resolve }) }
+    return ok(servicePage())
+  } })
+  await vi.waitFor(() => { expect(release).toBeTypeOf('function') })
+  h.control.refresh()
+  try {
+    await vi.waitFor(() => { expect(reads).toBe(2); expect(h.snapshot().serviceProfiles).toHaveLength(1) })
+    expect(firstSignal?.aborted).toBe(true)
+  } finally { release?.(unknown()) }
+  await h.ready()
+})
+
+it('does not acknowledge a create receipt for a different platform source, retaining the original operation for reconciliation', async () => {
+  const h = harness({ intercept: (_owner, input) => {
+    if (input.path === '/config') return ok(platformConfig)
+    if (input.path.startsWith('/service-profiles?')) return ok(servicePage())
+    if (input.path !== '' || input.method !== 'POST') return undefined
+    const body = JSON.parse(input.body ?? '{}') as { client_request_id: string; text: string }
+    const row = rawDemand({ intake_mode: 'platform', assigned: false, service_profile_id: 'other-service',
+      service_profile_name: 'Unrelated service', engineer_id: 'platform-intake', status: 'pending',
+      engineer: { ...engineer, id: 'platform-intake', accepting: false, can_start: false, capacity: 0 } })
+    return ok({ demand: row, message: rawMessage({ client_message_id: body.client_request_id, text: body.text }), replayed: false })
+  } })
+  await h.ready(); h.control.startServiceRequest(service.id); h.control.updateDraft({ text: 'Keep selected source' }); h.control.send()
+  await vi.waitFor(() => { expect(h.snapshot().draft?.sending).toBe(false); expect(h.snapshot().conversation?.error).toBe('resultUnknown') })
+  expect(h.snapshot().conversation?.requestId).toBeNull()
+  expect(h.journal.read({ id: '1', owner: ownerHash })).toHaveLength(1)
+  expect(h.snapshot().conversation?.serviceProfileId).toBe(service.id)
+})

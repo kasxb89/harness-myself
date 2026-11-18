@@ -62,3 +62,47 @@ describe('demand wire and Host adapter', () => {
     expect(url).not.toContain('Bearer')
   })
 })
+
+const service = { id: 'service-web', code: 'YS-SVC-001', display_name: 'Website service', service_direction: 'Website requests',
+  introduction: 'Platform reception', category_ids: ['software'], avatar_attachment_id: 'service-avatar',
+  enabled: true, published: true, intake_mode: 'platform', can_start: true }
+
+describe('additive platform directory contract', () => {
+  it('reads the fixed unassigned projection separately from its immutable service source and accepts legacy direct rows', () => {
+    const platform = { ...demand, engineer_id: 'platform-intake', engineer: { ...engineer, id: 'platform-intake', accepting: false,
+      can_start: false, capacity: 0 }, intake_mode: 'platform', assigned: false, service_profile_id: service.id,
+    service_profile_name: 'Original service name' }
+    expect(wire.demand(platform)).toMatchObject({ assigned: false, intake_mode: 'platform', service_profile_id: service.id,
+      service_profile_name: 'Original service name', engineer_id: 'platform-intake' })
+    expect(wire.demand(demand)).toMatchObject({ assigned: true, intake_mode: 'direct', service_profile_id: '' })
+    expect(() => wire.demand({ ...platform, assigned: true })).toThrow()
+    expect(() => wire.demand({ ...platform, intake_mode: 'direct' })).toThrow()
+    expect(() => wire.demand({ ...platform, service_profile_id: '' })).toThrow()
+  })
+
+  it('keeps platform capability and filter-bound cursors explicit without leaking private or live-person fields', () => {
+    const config = { config: { enabled: true, categories: [], upload_rules: { max_image_bytes: 10, max_video_bytes: 20,
+      max_attachments: 1, chunk_bytes: 4, allowed_mime_types: ['image/png'], upload_ttl_seconds: 100 } },
+    capabilities: { polling: true, resumable_upload: true }, server_time: 100 }
+    expect(wire.configuration(config).service_profiles).toBe(false)
+    expect(wire.configuration({ ...config, capabilities: { ...config.capabilities, service_profiles: true } }).service_profiles).toBe(true)
+    const parsed = wire.serviceDirectory({ items: [{ ...service, presence: 'online', user_id: 98, notes: 'Internal only' }],
+      next_after_id: 'opaque/cursor+==', has_more: true, total: 2, server_time: 100 })
+    expect(parsed.next_after_id).toBe('opaque/cursor+==')
+    expect(parsed.items[0]).not.toHaveProperty('presence')
+    expect(parsed.items[0]).not.toHaveProperty('user_id')
+    expect(parsed.items[0]).not.toHaveProperty('notes')
+    expect(() => wire.serviceDirectory({ items: [service], next_after_id: '', has_more: true, total: 2, server_time: 100 })).toThrow()
+    expect(() => wire.serviceDirectory({ items: [service, service], next_after_id: '', has_more: false, total: 2, server_time: 100 })).toThrow()
+  })
+
+  it('transports a URLSearchParams query containing spaces and punctuation exactly once through the guarded Host', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(JSON.stringify({ ok: true,
+      payload: { items: [] }, account: { id: owner.id }, accountOwner: owner.owner })))
+    vi.stubGlobal('fetch', fetch)
+    const path = `/service-profiles?${new URLSearchParams({ q: 'React + .NET*', after_id: 'opaque/cursor+==', limit: '30' })}`
+    expect(await requestDemand(owner, { method: 'GET', path, signal: new AbortController().signal })).toMatchObject({ ok: true })
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch.mock.calls[0]?.[0]).toEqual(expect.stringContaining(path))
+  })
+})

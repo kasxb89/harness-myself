@@ -10,9 +10,13 @@ Customers need to publish work and exchange images and videos with real engineer
 
 ## Decision
 
-The demand service owns separate requests, messages, assignments, read cursors and private attachments. The browser's [demand plugin](../../../../packages/client/ui-demands/README.md) presents real backend profiles and server-confirmed statuses. It contributes no model inputs or generation operations. The existing [Credits Host](../../../../packages/host/credits-index/README.md) keeps account credentials and serialized renewal ownership; a narrow route family captures the observed login and validates it before dispatch and before returning data. A replacement account never inherits an old draft, response or transfer.
+The demand service owns separate requests, messages, assignments, read cursors and private attachments. The browser's [demand plugin](../../../../packages/client/ui-demands/README.md) presents backend-managed service profiles, actual assigned engineers and server-confirmed statuses. It contributes no model inputs or generation operations. The existing [Credits Host](../../../../packages/host/credits-index/README.md) keeps account credentials and serialized renewal ownership; a narrow route family captures the observed login and validates it before dispatch and before returning data. A replacement account never inherits an old draft, response or transfer.
+
+Service catalog entries describe the platform's intake directions and do not create staff accounts or online presence. A selected entry sends a demand to the unassigned queue before an administrator chooses a real engineer. The initial service name stays with that demand. Customer profiles remain administrative records until linked to an existing user; they do not grant login, credit or message access. Direct-engineer submissions remain available to older clients and backends.
 
 Each mutation records a stable operation identifier and immutable request body before submission. A lost receipt retains that exact operation for recovery, while independent drafts remain available. Uploads use bounded file slices, explicit server offsets and persisted slice digests; media access obtains a fresh authorization for the exact attachment and supports Range without exposing an upstream capability to the renderer. The backend controls whether new requests are accepted and retains authorization over existing history when publication changes.
+
+Service-target operations occupy a separate journal namespace so an older client does not reject their unsupported fields together with its original direct-engineer operations. The new reader combines both namespaces without rewriting legacy bodies or keys.
 
 ## Verification
 

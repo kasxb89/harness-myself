@@ -1,8 +1,8 @@
 /** Assembled human-demand UI and an opt-in, exclusively synthetic Go→Host→browser workflow. */
 import { randomBytes, randomUUID } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium, type Locator, type Page } from 'playwright'
 import { expect, it, onTestFinished } from 'vitest'
@@ -46,12 +46,12 @@ async function overlayDirectory(real?: { readonly base: string; readonly session
   ]))
   return overlay
 }
-async function navigateService(page: Page, url: string): Promise<Locator> {
+async function navigateService(page: Page, url: string, directory: 'engineers' | 'services' = 'engineers'): Promise<Locator> {
   await page.goto(url, { waitUntil: 'load' })
   await page.bringToFront()
   await page.getByRole('button', { name: '需求发布', exact: true }).click({ timeout: 30_000 })
   const service = page.getByRole('region', { name: '工程师服务', exact: true })
-  await service.getByRole('searchbox', { name: '搜索工程师或技能', exact: true }).waitFor()
+  await service.getByRole('searchbox', { name: directory === 'services' ? '搜索服务或能力' : '搜索工程师或技能', exact: true }).waitFor()
   return service
 }
 async function layouts(page: Page, service: Locator, evidence: string, prefix: string): Promise<void> {
@@ -210,6 +210,87 @@ it('keeps independent drafts, original unknown-submit keys, uploads and responsi
   } catch (error) { await saveFailureShot(page, 'demands-keyless'); throw error }
 }, 120_000)
 
+it('pages 100 platform services, filters on the server and keeps the original intake target through unknown submission and assignment', async () => {
+  const evidence = await artifactDirectory('service-directory'), overlay = await overlayDirectory()
+  const scaffold = await launchWebScaffold({ extraOverlayPath: overlay }); onTestFinished(() => scaffold.close())
+  const browser = await chromium.launch(); onTestFinished(() => browser.close())
+  const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1440, height: 1000 } })
+  const diagnostics = watchConsole(page), fixture = await installDemandFixture(page, { serviceProfiles: true })
+  try {
+    const service = await navigateService(page, scaffold.authenticatedUrl, 'services')
+    const search = service.getByRole('searchbox', { name: '搜索服务或能力', exact: true })
+    const cards = service.getByRole('heading', { level: 2 })
+    await service.getByText('100 项服务', { exact: true }).waitFor()
+    await expect.poll(() => cards.count()).toBe(30)
+    for (const count of [60, 90, 100]) {
+      await service.getByRole('button', { name: '加载更多服务', exact: true }).click()
+      await expect.poll(() => cards.count()).toBe(count)
+    }
+    expect(await service.getByRole('button', { name: '加载更多服务', exact: true }).count()).toBe(0)
+    for (const label of ['在线', '忙碌中', '离线']) expect(await service.getByText(label, { exact: true }).count()).toBe(0)
+    await search.scrollIntoViewIfNeeded()
+    await layouts(page, service, evidence, 'directory')
+    await page.setViewportSize({ width: 1440, height: 1000 })
+    await search.fill('057')
+    await service.getByText('1 项服务', { exact: true }).waitFor()
+    await expect.poll(() => cards.count()).toBe(1)
+    expect(await cards.first().textContent()).toBe('测试服务 057')
+    expect(fixture.directoryRequests.some(query => new URLSearchParams(query).get('q') === '057')).toBe(true)
+    await service.getByRole('button', { name: '清空搜索', exact: true }).click()
+    await service.getByText('100 项服务', { exact: true }).waitFor()
+    await service.getByRole('button', { name: '文档处理', exact: true }).click()
+    await service.getByText('50 项服务', { exact: true }).waitFor()
+    await expect.poll(() => cards.count()).toBe(30)
+    await service.getByRole('button', { name: '加载更多服务', exact: true }).click()
+    await expect.poll(() => cards.count()).toBe(50)
+    expect(fixture.directoryRequests.some(query => new URLSearchParams(query).get('category_id') === 'documents')).toBe(true)
+    await service.getByRole('button', { name: '全部分类', exact: true }).click()
+    await search.fill('001')
+    await service.getByText('1 项服务', { exact: true }).waitFor()
+    const target = fixture.services[0]
+    if (target === undefined) throw new Error('Synthetic service target is missing')
+    await service.getByRole('button', { name: `为${target.display_name}发布需求`, exact: true }).click()
+    let chat = service.getByRole('region', { name: '与平台统一接待沟通', exact: true })
+    await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).fill('测试平台服务需求，附画面与演示视频')
+    await chat.locator('input[type="file"]').setInputFiles([imageFile, videoFile])
+    await expect.poll(() => chat.getByText('待发送', { exact: true }).count()).toBe(2)
+    await chat.getByRole('button', { name: '发送并提交需求', exact: true }).click()
+    await chat.getByRole('button', { name: '核对发布结果', exact: true }).waitFor()
+    expect(fixture.createBodies).toHaveLength(1)
+    expect(object(JSON.parse(fixture.createBodies[0] ?? '{}') as unknown)).toMatchObject({ service_profile_id: target.id })
+    expect(object(JSON.parse(fixture.createBodies[0] ?? '{}') as unknown)).not.toHaveProperty('engineer_id')
+    await chat.getByRole('button', { name: '核对发布结果', exact: true }).click()
+    await chat.getByRole('textbox', { name: '输入消息', exact: true }).waitFor()
+    expect(fixture.createBodies).toHaveLength(2)
+    expect(fixture.createBodies[1]).toBe(fixture.createBodies[0])
+    expect(fixture.records.size).toBe(1)
+    const queued = [...fixture.records.values()][0]
+    if (queued === undefined) throw new Error('Platform request did not persist')
+    expect(queued.assigned).toBe(false)
+    await chat.getByText('待分配工程师', { exact: true }).waitFor()
+    await chat.getByText(`服务：${target.display_name}`, { exact: true }).waitFor()
+    for (const label of ['在线', '忙碌中', '离线']) expect(await chat.getByText(label, { exact: true }).count()).toBe(0)
+    await page.screenshot({ path: join(evidence, 'unassigned-platform-intake.png'), animations: 'disabled' })
+    fixture.assign(queued.id)
+    chat = service.getByRole('region', { name: '与测试工程师林沟通', exact: true })
+    await chat.waitFor()
+    await chat.getByText(`服务：${target.display_name}`, { exact: true }).waitFor()
+    expect(queued.service_profile_id).toBe(target.id)
+    fixture.deliver(queued.id)
+    await chat.getByRole('button', { name: '确认完成', exact: true }).waitFor()
+    await layouts(page, service, evidence, 'assigned-chat')
+    await assertMedia(page, chat, 'red.png', 'preview.mp4')
+    await chat.getByRole('button', { name: '确认完成', exact: true }).click()
+    await chat.getByRole('button', { name: '确认验收', exact: true }).click()
+    await chat.getByText('已验收', { exact: true }).waitFor()
+    expect(queued.status).toBe('completed')
+    expect(diagnostics.pageErrors).toEqual([]); expect(diagnostics.warnings).toEqual([])
+    await writeFile(join(evidence, 'result.json'), JSON.stringify({ syntheticOnly: true, catalogTotal: 100,
+      sameUnknownServiceBody: fixture.createBodies[0] === fixture.createBodies[1], serviceTarget: target.id,
+      sourceSnapshot: queued.service_profile_name, directoryReads: fixture.directoryRequests.length, paidRequests: 0 }))
+  } catch (error) { await saveFailureShot(page, 'demands-service-directory'); throw error }
+}, 120_000)
+
 type Actor = 'customerA' | 'customerB' | 'engineerA' | 'engineerB' | 'admin'
 interface SyntheticFixture {
   readonly base: string
@@ -232,22 +313,77 @@ async function readSyntheticFixture(path: string): Promise<SyntheticFixture> {
       engineerA: text(tokens.engineerA), engineerB: text(tokens.engineerB), admin: text(tokens.admin) } }
 }
 
+interface DirectoryFixture extends SyntheticFixture {
+  readonly storedSession: Json
+}
+async function readDirectoryFixture(path: string, readyPath: string): Promise<DirectoryFixture> {
+  if (path === '' || readyPath === '') throw new Error('Directory interop requires both a private manifest and its final READY receipt')
+  const ready = object(JSON.parse(await readFile(readyPath, 'utf8')) as unknown)
+  if (ready.schema !== 1 || ready.ready !== true || ready.synthetic_only !== true || ready.active === false) {
+    throw new Error('The directory fixture has not passed final qualification')
+  }
+  const manifestPath = await realpath(path)
+  if (manifestPath !== await realpath(resolve(dirname(readyPath), text(ready.private_manifest)))) {
+    throw new Error('Directory manifest does not match its READY receipt')
+  }
+  const data = object(JSON.parse(await readFile(manifestPath, 'utf8')) as unknown), base = new URL(text(data.base_url))
+  if (data.schema_version !== 1 || data.synthetic_only !== true || data.mode !== 'directory-interop'
+    || text(data.fixture_id) !== text(ready.fixture_id) || text(data.source_commit) !== text(ready.source_commit)
+    || data.base_url !== ready.base_url || base.protocol !== 'http:' || base.username !== '' || base.password !== ''
+    || !['127.0.0.1', 'localhost', '[::1]'].includes(base.hostname) || base.pathname !== '/' || base.search !== '' || base.hash !== '') {
+    throw new Error('Directory fixture identity, source, mode or loopback authority is inconsistent')
+  }
+  if (['43321', '43322', '43323'].includes(base.port)) throw new Error('The protected manual fixture cannot be used for directory interop')
+  const actors = object(data.actors), tokens = {} as Record<Actor, string>
+  let expiry = number(data.expires_at)
+  for (const name of ['customerA', 'customerB', 'engineerA', 'engineerB', 'admin'] as const) {
+    const actor = object(actors[name])
+    if (number(actor.id) < 1) throw new Error('Synthetic actor has an invalid account identity')
+    tokens[name] = text(actor.access_token)
+    expiry = Math.min(expiry, number(actor.access_expires_at))
+  }
+  const supplied = object(data.customerStoredSession), upstream = object(supplied.upstream), account = object(supplied.account)
+  const ownerId = String(number(object(actors.customerA).id)), expiresAt = text(supplied.expiresAt)
+  const upstreamExpiresAt = text(upstream.expiresAt), localExpiry = Date.parse(expiresAt), accessExpiry = Date.parse(upstreamExpiresAt)
+  if (account.id !== ownerId || supplied.backendBaseUrl !== base.origin || upstream.token !== tokens.customerA
+    || !Number.isFinite(localExpiry) || !Number.isFinite(accessExpiry)) throw new Error('Directory StoredSession is not bound to its customer actor')
+  expiry = Math.min(expiry, Math.floor(localExpiry / 1000), Math.floor(accessExpiry / 1000))
+  if (expiry * 1000 < Date.now() + 120_000) throw new Error('Qualified synthetic credentials are expiring; the fixture owner must renew them')
+  const storedSession: Json = { token: text(supplied.token), backendBaseUrl: base.origin, expiresAt,
+    account: { id: ownerId, phone: text(account.phone) }, upstream: { token: tokens.customerA, expiresAt: upstreamExpiresAt,
+      ...upstream.refresh === undefined ? {} : { refresh: text(upstream.refresh) } } }
+  const engineers = object(data.engineers)
+  return { base: base.origin, tokens, expiresAt: expiry, ownerId, storedSession,
+    engineerId: text(engineers.engineer), replacementId: text(engineers.replacement) }
+}
+
+
+function syntheticRequests(fixture: SyntheticFixture): {
+  api: (actor: Actor, path: string, body?: Json) => Promise<{ status: number; data: Json }>
+  success: (actor: Actor, path: string, body?: Json) => Promise<Json>
+} {
+  const api = async (actor: Actor, path: string, body?: Json): Promise<{ status: number; data: Json }> => {
+    const response = await fetch(fixture.base + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error',
+      headers: { authorization: `Bearer ${fixture.tokens[actor]}`, accept: 'application/json',
+        ...body === undefined ? {} : { 'content-type': 'application/json' } },
+      ...body === undefined ? {} : { body: JSON.stringify(body) } })
+    return { status: response.status, data: object(await response.json() as unknown) }
+  }
+  const success = async (actor: Actor, path: string, body?: Json): Promise<Json> => {
+    const result = await api(actor, path, body)
+    if (result.status < 200 || result.status >= 300 || result.data.success !== true) {
+      throw new Error(`Synthetic demand API rejected ${actor} operation: ${result.status}`)
+    }
+    return object(result.data.data)
+  }
+  return { api, success }
+}
+
 it.skipIf(process.env.DSH_DEMAND_FIXTURE === undefined)(
   'round-trips a synthetic Go request through the actual Host, assignment security, original media and user acceptance', async () => {
     const fixture = await readSyntheticFixture(process.env.DSH_DEMAND_FIXTURE ?? '')
     const evidence = await artifactDirectory('real-go'), stamp = `synthetic-${randomUUID()}`
-    const api = async (actor: Actor, path: string, body?: Json): Promise<{ status: number; data: Json }> => {
-      const response = await fetch(fixture.base + path, { method: body === undefined ? 'GET' : 'POST', redirect: 'error',
-        headers: { authorization: `Bearer ${fixture.tokens[actor]}`, accept: 'application/json',
-          ...body === undefined ? {} : { 'content-type': 'application/json' } },
-        ...body === undefined ? {} : { body: JSON.stringify(body) } })
-      return { status: response.status, data: object(await response.json() as unknown) }
-    }
-    const success = async (actor: Actor, path: string, body?: Json): Promise<Json> => {
-      const result = await api(actor, path, body)
-      if (result.status < 200 || result.status >= 300 || result.data.success !== true) throw new Error(`Synthetic demand API rejected ${actor} operation: ${result.status}`)
-      return object(result.data.data)
-    }
+    const { api, success } = syntheticRequests(fixture)
     const expires = new Date(fixture.expiresAt * 1000).toISOString()
     const overlay = await overlayDirectory({ base: fixture.base, session: { token: `synthetic-local-${randomBytes(24).toString('hex')}`,
       backendBaseUrl: fixture.base, expiresAt: expires, account: { id: fixture.ownerId, phone: '+8613800000000' },
@@ -345,5 +481,105 @@ it.skipIf(process.env.DSH_DEMAND_FIXTURE === undefined)(
         verified: ['Go-Host-browser', 'image-preview', 'native-video-play-seek-range', 'original-media-download', 'foreign-owner-rejected',
           'internal-note-hidden', 'reassigned-old-engineer-and-capability-rejected', 'historical-and-current-author-names', 'engineer-delivery-user-acceptance'], paidRequests: 0 }))
     } catch (error) { await saveFailureShot(page, 'demands-real-go'); throw error }
+  }, 180_000,
+)
+
+it.skipIf(process.env.DSH_DEMAND_DIRECTORY_FIXTURE === undefined)(
+  'round-trips a seeded platform service through central assignment and real engineer delivery without modifying profiles', async () => {
+    const fixture = await readDirectoryFixture(process.env.DSH_DEMAND_DIRECTORY_FIXTURE ?? '', process.env.DSH_DEMAND_DIRECTORY_READY ?? '')
+    const evidence = await artifactDirectory('service-real-go'), stamp = `synthetic-service-${randomUUID()}`
+    const { api, success } = syntheticRequests(fixture)
+    const overlay = await overlayDirectory({ base: fixture.base, session: fixture.storedSession })
+    const scaffold = await launchWebScaffold({ extraOverlayPath: overlay }); onTestFinished(() => scaffold.close())
+    const account = object(await (await scaffold.hostFetch('/credits/api/session')).json() as unknown)
+    expect(account, 'The new directory fixture must pass the existing product login checks').toMatchObject({ ok: true, signedIn: true, liveness: 'verified' })
+    const browser = await chromium.launch(); onTestFinished(() => browser.close())
+    const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1440, height: 1000 } })
+    const diagnostics = watchConsole(page), privateReads: string[] = []
+    page.on('request', (request) => {
+      const path = new URL(request.url()).pathname
+      if (/\/(?:customer-profiles|profile-import)(?:\/|$)/u.test(path)) privateReads.push(path)
+    })
+    try {
+      const catalog = await success('customerA', '/api/product/demands/service-profiles?limit=30')
+      expect(catalog.total).toBe(100)
+      if (!Array.isArray(catalog.items) || catalog.items.length !== 30) throw new Error('The seeded service directory is not paginated')
+      const target = object(catalog.items[0]), profileId = text(target.id), profileName = text(target.display_name)
+      const directory = await success('customerA', '/api/product/demands/engineers?limit=30')
+      if (!Array.isArray(directory.items)) throw new Error('Real engineer assignment targets are missing')
+      const engineer = directory.items.map(object).find(item => item.id === fixture.engineerId)
+      if (engineer === undefined) throw new Error('The synthetic assignee is missing')
+      const engineerName = text(engineer.display_name)
+      const service = await navigateService(page, scaffold.authenticatedUrl, 'services')
+      await service.getByText('100 项服务', { exact: true }).waitFor()
+      await expect.poll(() => service.getByRole('heading', { level: 2 }).count()).toBe(30)
+      const card = service.getByRole('listitem').filter({ has: page.getByRole('heading', { name: profileName, exact: true }) })
+      const avatar = card.locator('img').first()
+      await expect.poll(() => avatar.evaluate(node => node instanceof HTMLImageElement
+        && node.complete && node.naturalWidth > 0)).toBe(true)
+      const avatarUrl = new URL(await avatar.getAttribute('src') ?? '', scaffold.baseUrl)
+      expect(avatarUrl.origin).toBe(new URL(scaffold.baseUrl).origin)
+      expect(avatarUrl.pathname.startsWith('/credits/api/demands/attachments/')).toBe(true)
+      expect(avatarUrl.searchParams.has('token')).toBe(false)
+      for (const label of ['在线', '忙碌中', '离线']) expect(await service.getByText(label, { exact: true }).count()).toBe(0)
+      await page.screenshot({ path: join(evidence, 'seeded-service-directory.png'), animations: 'disabled' })
+      await card.getByRole('button', { name: `为${profileName}发布需求`, exact: true }).click()
+      let chat = service.getByRole('region', { name: '与平台统一接待沟通', exact: true })
+      await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).fill(stamp)
+      await chat.locator('input[type="file"]').setInputFiles([imageFile, videoFile])
+      await expect.poll(() => chat.getByText('待发送', { exact: true }).count()).toBe(2)
+      const receiptReady = page.waitForResponse(response => response.request().method() === 'POST'
+        && new URL(response.url()).pathname.endsWith('/credits/api/demands'))
+      await chat.getByRole('button', { name: '发送并提交需求', exact: true }).click()
+      const submitted = await receiptReady, requestBody = object(submitted.request().postDataJSON() as unknown)
+      expect(requestBody.service_profile_id).toBe(profileId); expect(requestBody).not.toHaveProperty('engineer_id')
+      const receipt = object(await submitted.json() as unknown), payload = object(receipt.payload), created = object(payload.demand)
+      expect(created).toMatchObject({ assigned: false, intake_mode: 'platform', engineer_id: 'platform-intake',
+        service_profile_id: profileId, service_profile_name: profileName, status: 'pending' })
+      const demandId = text(created.id), initial = object(payload.message)
+      if (!Array.isArray(initial.attachments) || initial.attachments.length !== 2) throw new Error('Platform media receipts are missing')
+      const attachmentId = text(object(initial.attachments[0]).id)
+      await chat.getByRole('textbox', { name: '输入消息', exact: true }).waitFor()
+      await chat.getByText('待分配工程师', { exact: true }).waitFor()
+      await chat.getByText(`服务：${profileName}`, { exact: true }).waitFor()
+      for (const label of ['在线', '忙碌中', '离线']) expect(await chat.getByText(label, { exact: true }).count()).toBe(0)
+      expect([403, 404]).toContain((await api('engineerA', `/api/engineer/demands/${demandId}`)).status)
+      expect([403, 404]).toContain((await api('engineerA', `/api/product/demands/attachments/${attachmentId}/link`, { disposition: 'inline' })).status)
+      const queue = await success('admin', `/api/demand-management?assignment=unassigned&user_id=${fixture.ownerId}&limit=30`)
+      if (!Array.isArray(queue.items)) throw new Error('Central assignment queue is missing')
+      expect(queue.items.map(object).some(item => item.id === demandId && item.service_profile_id === profileId)).toBe(true)
+      await page.screenshot({ path: join(evidence, 'unassigned-go-platform-intake.png'), animations: 'disabled' })
+      const beforeAssign = object((await success('admin', `/api/demand-management/${demandId}`)).demand)
+      await success('admin', `/api/demand-management/${demandId}/actions`, { client_action_id: randomUUID(),
+        revision: number(beforeAssign.revision), action: 'assign', engineer_id: fixture.engineerId })
+      chat = service.getByRole('region', { name: `与${engineerName}沟通`, exact: true })
+      await chat.waitFor()
+      await chat.getByText(`服务：${profileName}`, { exact: true }).waitFor()
+      const engineerAction = async (action: string, extra: Json = {}): Promise<void> => {
+        const current = object((await success('engineerA', `/api/engineer/demands/${demandId}`)).demand)
+        await success('engineerA', `/api/engineer/demands/${demandId}/actions`, { client_action_id: randomUUID(),
+          revision: number(current.revision), action, ...extra })
+      }
+      await engineerAction('accept'); await engineerAction('start')
+      await success('engineerA', `/api/engineer/demands/${demandId}/messages`, { client_message_id: randomUUID(),
+        text: `已接手平台服务 ${stamp}`, attachment_ids: [] })
+      await assertMessageAuthor(chat, `已接手平台服务 ${stamp}`, engineerName)
+      await assertMedia(page, chat, 'red.png', 'preview.mp4')
+      await engineerAction('deliver', { text: `平台服务交付 ${stamp}`, attachment_ids: [] })
+      await assertMessageAuthor(chat, `平台服务交付 ${stamp}`, engineerName)
+      await chat.getByRole('button', { name: '确认完成', exact: true }).click()
+      await chat.getByRole('button', { name: '确认验收', exact: true }).click()
+      await chat.getByText('已验收', { exact: true }).waitFor()
+      expect(object((await success('customerA', `/api/product/demands/${demandId}`)).demand)).toMatchObject({
+        status: 'completed', assigned: true, service_profile_id: profileId, service_profile_name: profileName, engineer_id: fixture.engineerId,
+      })
+      await chat.getByText(`服务：${profileName}`, { exact: true }).waitFor()
+      await page.screenshot({ path: join(evidence, 'accepted-go-service-source.png'), animations: 'disabled' })
+      expect(privateReads).toEqual([])
+      expect(diagnostics.pageErrors).toEqual([]); expect(diagnostics.warnings).toEqual([])
+      await writeFile(join(evidence, 'result.json'), JSON.stringify({ syntheticOnly: true, demandId, profileId, profileName,
+        catalogTotal: 100, profileMutations: 0, verified: ['central-unassigned-queue', 'unassigned-engineer-rejected',
+          'admin-assignment', 'real-engineer-author', 'image-video-play-seek-range', 'delivery-acceptance-service-source'], paidRequests: 0 }))
+    } catch (error) { await saveFailureShot(page, 'demands-service-real-go'); throw error }
   }, 180_000,
 )

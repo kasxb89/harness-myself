@@ -1,6 +1,7 @@
 /** Example-only records supplied through the same presentation types as server data. */
 import type {
-  DemandAttachment, DemandConversation, DemandDraft, DemandDraftSummary, DemandEngineer, DemandMessage, DemandPageState, DemandSummary,
+  DemandAttachment, DemandConversation, DemandDraft, DemandDraftSummary, DemandEngineer, DemandMessage,
+  DemandPageState, DemandServiceProfile, DemandSummary,
 } from '../src/client/types.ts'
 
 /** Distinct server presence and admission flags keep offline messaging testable. */
@@ -21,6 +22,15 @@ export const exampleEngineers: readonly DemandEngineer[] = [
     presence: 'busy', canStart: false, unavailableReason: '当前不接受新需求',
   },
 ]
+
+/** A service capability fixture, not an engineer or login account. */
+export function serviceProfile(patch: Partial<DemandServiceProfile> = {}): DemandServiceProfile {
+  return {
+    id: 'example-service-orders', code: 'example-orders', displayName: '示例订单管理服务',
+    serviceDirection: '订单查询与操作流程', introduction: '梳理订单字段、实现筛选并改进操作体验',
+    categoryIds: ['example-frontend'], avatarUrl: null, canStart: true, ...patch,
+  }
+}
 
 /** One authorized attachment or pending upload, with no real remote resource. */
 export function attachment(patch: Partial<DemandAttachment> = {}): DemandAttachment {
@@ -76,6 +86,8 @@ export function demandState(patch: Partial<DemandPageState> = {}): DemandPageSta
     availability: 'ready', error: null,
     categories: [{ id: 'example-frontend', label: '示例前端开发' }, { id: 'example-automation', label: '示例业务自动化' }],
     engineers: exampleEngineers, requests: [], drafts: [], requestsStatus: 'ready', requestsHaveMore: false, loadingMoreRequests: false,
+    directoryMode: 'engineers', serviceProfiles: [], servicesStatus: 'ready', servicesHaveMore: false,
+    loadingMoreServices: false, servicesTotal: 0, serviceQuery: '', serviceCategoryId: '',
     conversation: null, draft: null,
     uploadRules: { maxFiles: 4, maxFileBytes: 5 * 1024 * 1024, accept: 'image/*,video/*,.pdf,.txt' },
     ...patch,

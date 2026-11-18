@@ -7,7 +7,7 @@ import {
 import type { DemandConversation, DemandDraft, DemandPageFace, DemandUploadRules } from './types.ts'
 import {
   DemandSkeleton, DemandStatusTag, EngineerAvatar, EngineerPresence, demandBytes, demandTime,
-  engineerName, type DemandTranslate,
+  engineerName, ServiceProfileAvatar, type DemandTranslate,
 } from './DemandUI.tsx'
 import { DemandAttachments, DemandUploads } from './DemandAttachments.tsx'
 import css from './DemandPage.module.css'
@@ -65,7 +65,8 @@ export function DemandChat(props: {
   const lastScope = useRef(conversation.scopeKey)
   const [confirmDelivery, setConfirmDelivery] = useState<string | null>(null)
   const currentDraft = draft?.scopeKey === conversation.scopeKey ? draft : null
-  const name = engineerName(conversation.engineer, t)
+  const unassigned = conversation.assigned === false
+  const name = unassigned ? t('platformReception') : engineerName(conversation.engineer, t)
   const lastMessage = conversation.messages.at(-1)
   useEffect(() => {
     const pane = scroller.current
@@ -92,16 +93,17 @@ export function DemandChat(props: {
     <header className={css.chatHeader}>
       <Button className={css.backButton} size="sm" aria-label={t('backToRequests')} onClick={back}
         icon={<IconChevronLeftOutlineRegular size={18} />} />
-      <EngineerAvatar engineer={conversation.engineer} small />
+      {unassigned ? <ServiceProfileAvatar small /> : <EngineerAvatar engineer={conversation.engineer} small />}
       <div className={css.chatHeading}>
         <h2>{name}</h2>
         <div className={css.chatHeadingMeta}>
           {conversation.number ? <span>{t('requestNumber', { number: conversation.number })}</span>
             : <span>{t(pendingPublish ? 'pendingPublish' : 'notPublished')}</span>}
-          {conversation.engineer === null ? null : <EngineerPresence engineer={conversation.engineer} t={t} />}
+          {unassigned || conversation.engineer === null ? null : <EngineerPresence engineer={conversation.engineer} t={t} />}
+          {!conversation.serviceProfileName?.trim() ? null : <span>{t('serviceSource', { name: conversation.serviceProfileName })}</span>}
         </div>
       </div>
-      {conversation.status === null ? null : <DemandStatusTag status={conversation.status} t={t} />}
+      {conversation.status === null ? null : <DemandStatusTag status={conversation.status} unassigned={unassigned} t={t} />}
       <Button className={css.chatNew} size="sm" onClick={create} icon={<IconNewChatOutlineRegular size={15} />}>{t('newRequest')}</Button>
     </header>
     <div ref={scroller} className={css.messages} role="log" aria-label={t('chatWith', { name })}
@@ -165,7 +167,7 @@ export function DemandChat(props: {
     </div>}
     {!conversation.canSend && !pendingPublish ? <div className={css.readOnly}>{conversation.readOnlyReason ?? t('requestReadOnly')}</div>
       : <form className={css.composer} onSubmit={(event) => { event.preventDefault(); if (canSend) actions.send() }}>
-        {conversation.engineer?.presence !== 'offline' ? null : <p className={css.offlineHint}>{t('offlineHint')}</p>}
+        {unassigned || conversation.engineer?.presence !== 'offline' ? null : <p className={css.offlineHint}>{t('offlineHint')}</p>}
         <div className={css.composerFields}>
           <DemandUploads attachments={currentDraft?.attachments ?? []} remove={actions.removeAttachment}
             retry={actions.retryAttachment} disabled={editingLocked} t={t} />

@@ -70,6 +70,35 @@ describe('Host-only demand route ownership', () => {
     expect(JSON.parse(init.body)).toEqual({ client_request_id: key, engineer_id: 'engineer', text: 'A request', attachment_ids: [] })
     expect(JSON.stringify(value)).not.toContain('private transport')
   })
+  it('proxies only the customer service directory and keeps paging owner-bound without opening management routes', async () => {
+    const host = await fixture()
+    host.send.mockResolvedValueOnce(Response.json({ success: true, data: {
+      items: [], next_after_id: '', has_more: false, total: 0, server_time: 1,
+    } }))
+    const query = new URLSearchParams({ limit: '30', after_id: 'opaque+/=', q: '软件_100%', category_id: 'software' })
+    expect(await (await host.get(`/credits/api/demands/service-profiles?${query}`)).json()).toMatchObject({
+      ok: true, payload: { total: 0, next_after_id: '', has_more: false }, account: { id }, accountOwner: owner,
+    })
+    expect(host.send).toHaveBeenCalledExactlyOnceWith(`/api/product/demands/service-profiles?${query}`, expect.objectContaining({ method: 'GET' }))
+    for (const route of ['/customer-profiles', '/profile-import']) {
+      expect((await host.get(`/credits/api/demands${route}`)).status).toBe(404)
+    }
+    expect((await host.get('/credits/api/demands/service-profiles', { method: 'POST' })).status).toBe(404)
+    expect(host.send).toHaveBeenCalledTimes(1)
+  })
+  it('does not retry platform intake or replace its durable service target and keeps profile failures readable', async () => {
+    const host = await fixture()
+    host.send.mockRejectedValueOnce(new Error('lost answer'))
+    const body = { client_request_id: key, service_profile_id: 'service-1', engineer_id: '', text: 'One request', assigned: true }
+    expect(await (await host.get('/credits/api/demands', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body) })).json()).toEqual({ ok: false, code: 'DEMAND_NETWORK', outcome: 'unknown', operationKey: key })
+    expect(host.send).toHaveBeenCalledTimes(1)
+    expect(host.send.mock.calls[0]?.[1].body).toBe(JSON.stringify({ client_request_id: key, text: 'One request', attachment_ids: [], service_profile_id: 'service-1' }))
+    host.send.mockResolvedValueOnce(Response.json({ success: false, code: 'DEMAND_PROFILE_UNAVAILABLE', message: 'private note' }, { status: 409 }))
+    const rejected: unknown = await (await host.get('/credits/api/demands', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json()
+    expect(rejected).toMatchObject({ ok: false, code: 'DEMAND_PROFILE_UNAVAILABLE', httpStatus: 409, accountOwner: owner })
+    expect(JSON.stringify(rejected)).not.toContain('private note')
+  })
   it('streams one bounded chunk preserving the exact offset without buffering a complete video', async () => {
     const host = await fixture()
     const bytes = new Uint8Array([1, 2, 3, 4])

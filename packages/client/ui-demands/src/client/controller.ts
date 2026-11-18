@@ -6,6 +6,7 @@ import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 import { en } from './locales.ts'
 import type {
   DemandAttachment, DemandConversation, DemandDraft, DemandEngineer, DemandMessage, DemandPageFace, DemandPageProps, DemandPageState,
+  DemandRouting, DemandServiceProfile,
 } from './types.ts'
 import { demandContentUrl, requestDemand, type DemandOwner, type DemandRequest, type DemandResult } from './api.ts'
 import { createDemandJournal, matchesUpload, sliceDigest, type DemandJournal, type PendingOperation } from './pending.ts'
@@ -48,6 +49,8 @@ interface Scope {
   readonly key: string
   readonly createdAt: number
   engineerId: string
+  serviceProfileId?: string
+  serviceProfileName?: string
   requestId: string | null
   draft: DemandDraft
   error: string | null
@@ -56,7 +59,8 @@ interface Scope {
   earliest: number
 }
 const emptyState = (availability: DemandPageState['availability']): DemandPageState => ({
-  availability, error: null, categories: [], engineers: [], requests: [], drafts: [], requestsStatus: 'ready', requestsHaveMore: false,
+  availability, error: null, categories: [], engineers: [], directoryMode: 'engineers', serviceProfiles: [], servicesStatus: 'ready',
+  servicesHaveMore: false, loadingMoreServices: false, servicesTotal: 0, serviceQuery: '', serviceCategoryId: '', requests: [], drafts: [], requestsStatus: 'ready', requestsHaveMore: false,
   loadingMoreRequests: false, conversation: null, draft: null,
   uploadRules: { maxFiles: 0, maxFileBytes: 0, maxImageBytes: 0, maxVideoBytes: 0, accept: '' },
 })
@@ -93,6 +97,9 @@ export function createDemandController(accountSource: Context['creditsSession'],
   let serverConfig: wire.WireConfig | null = null, directory: readonly wire.WireEngineer[] = [], unsupported = false, storageFailed = false
   let selected: string | null = null, listCursor: string | null = null, haveMore = false, loadingMore = false, listLoaded = false
   let requestsStatus: DemandPageState['requestsStatus'] = 'ready', lastListRead = 0, backoff = 0
+  let services: readonly wire.WireServiceProfile[] = [], serviceCursor: string | null = null, serviceTotal = 0
+  let servicesHaveMore = false, loadingMoreServices = false, servicesLoaded = false, serviceQuery = '', serviceCategoryId = ''
+  let servicesStatus: DemandPageState['servicesStatus'] = 'ready', serviceEpoch = 0, serviceFlight: AbortController | undefined
   let refreshTask: Promise<void> | undefined, closeTask: Promise<void> | undefined
   const tasks = new Set<Promise<void>>(), flights = new Set<AbortController>(), inflight = new Set<string>()
   const scopes = new Map<string, Scope>(), records = new Map<string, wire.WireDemand>(), order: string[] = []
@@ -113,6 +120,26 @@ export function createDemandController(accountSource: Context['creditsSession'],
     introduction: row.introduction, categoryIds: row.category_ids, skills: [],
     presence: row.presence === 'online' ? 'available' : row.presence, canStart: row.can_start && serverConfig?.enabled === true,
     unavailableReason: row.can_start ? null : t('notAccepting') })
+  const serviceProfile = (row: wire.WireServiceProfile): DemandServiceProfile => ({ id: row.id, code: row.code,
+    displayName: row.display_name, serviceDirection: row.service_direction, introduction: row.introduction,
+    categoryIds: row.category_ids, canStart: row.can_start && serverConfig?.enabled === true,
+    avatarUrl: owner === null || row.avatar_attachment_id === '' ? null : demandContentUrl(owner, row.avatar_attachment_id) })
+  const routing = (row?: wire.WireDemand, scope?: Scope): DemandRouting => ({
+    intakeMode: row?.intake_mode ?? (scope?.serviceProfileId === undefined ? 'direct' : 'platform'),
+    assigned: row?.assigned ?? scope?.serviceProfileId === undefined,
+    serviceProfileId: row?.service_profile_id || scope?.serviceProfileId || null,
+    serviceProfileName: row?.service_profile_name || scope?.serviceProfileName || null,
+  })
+  const retainTarget = (scope: Scope, row: wire.WireDemand): void => {
+    scope.engineerId = row.intake_mode === 'platform' ? '' : row.engineer_id
+    if (row.service_profile_id === '') delete scope.serviceProfileId
+    else scope.serviceProfileId = row.service_profile_id
+    if (row.service_profile_name === '') delete scope.serviceProfileName
+    else scope.serviceProfileName = row.service_profile_name
+  }
+  const operationRouting = (scope: Scope): Pick<PendingOperation, 'version' | 'serviceProfileId' | 'serviceProfileName'> =>
+    scope.serviceProfileId === undefined ? { version: 1 } : { version: 2, serviceProfileId: scope.serviceProfileId,
+      ...scope.serviceProfileName === undefined ? {} : { serviceProfileName: scope.serviceProfileName } }
   const media = (item: wire.WireAttachment): DemandAttachment => ({ id: item.id, name: item.name, kind: item.kind,
     sizeBytes: item.size_bytes, status: item.status,
     ...owner === null || item.status !== 'ready' ? {} : { previewUrl: demandContentUrl(owner, item.id) } })
@@ -150,9 +177,10 @@ export function createDemandController(accountSource: Context['creditsSession'],
       .filter(item => !wireMessages.some(message => message.client_message_id === item.operationId))
     const deliveryMessage = row === undefined ? undefined : wireMessages.find(item => item.id === row.delivery_id && item.kind === 'delivery')
     const firstUnknown = scopePending.some(item => item.kind === 'create' && !inflight.has(item.operationId))
-    const engineer = row?.engineer ?? directory.find(item => item.id === scope?.engineerId)
+    const route = routing(row, scope)
+    const engineer = route.assigned === false ? undefined : row?.engineer ?? directory.find(item => item.id === scope?.engineerId)
     const conversation: DemandConversation | null = scope === undefined ? null : {
-      scopeKey: scope.key, requestId: scope.requestId, number: row?.number ?? null, title: row?.title ?? scope.draft.title,
+      ...route, scopeKey: scope.key, requestId: scope.requestId, number: row?.number ?? null, title: row?.title ?? scope.draft.title,
       engineer: engineer === undefined ? null : profile(engineer), status: row?.status ?? null,
       messages: [...persisted, ...scopePending.sort((a, b) => a.createdAt - b.createdAt).map(localMessage)],
       messagesStatus: scope.messagesStatus, error: scope.error, hasEarlier: scope.earliest > 1, loadingEarlier: scope.loadingEarlier,
@@ -170,18 +198,21 @@ export function createDemandController(accountSource: Context['creditsSession'],
       drafts: [...scopes.values()].filter(item => item.requestId === null).map((item) => {
         const operations = pendingFor(item.key), firstSend = operations.find(operation => operation.kind === 'create')
         const updatedAt = Math.max(item.createdAt, ...operations.map(operation => operation.createdAt))
-        const engineer = directory.find(engineer => engineer.id === item.engineerId)
+        const engineer = item.serviceProfileId === undefined ? directory.find(engineer => engineer.id === item.engineerId) : undefined
         const preview = Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(item.draft.text.trim()),
           part => part.segment).slice(0, 80).join('')
-        return { scopeKey: item.key, title: item.draft.title.trim() || preview || t('newRequest'),
+        return { ...routing(undefined, item), scopeKey: item.key, title: item.draft.title.trim() || preview || t('newRequest'),
           engineer: engineer === undefined ? null : profile(engineer),
           updatedAt: new Date(updatedAt).toISOString(), pending: firstSend !== undefined,
           error: item.error ?? item.draft.error ?? (firstSend !== undefined && !inflight.has(firstSend.operationId) ? t('resultUnknown') : null) }
       }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
+      directoryMode: serverConfig?.service_profiles === true ? 'services' : 'engineers',
+      serviceProfiles: services.map(serviceProfile), servicesStatus, servicesHaveMore, loadingMoreServices,
+      servicesTotal: serviceTotal, serviceQuery, serviceCategoryId,
       engineers: directory.map(profile), requests: order.flatMap((key) => {
         const item = records.get(key)
-        return item === undefined ? [] : [{ id: item.id, number: item.number, title: item.title,
-          engineer: profile(item.engineer), status: item.status,
+        return item === undefined ? [] : [{ ...routing(item), id: item.id, number: item.number, title: item.title,
+          engineer: item.assigned ? profile(item.engineer) : null, status: item.status,
           updatedAt: iso(item.updated_at), preview: item.preview, unreadCount: item.unread_count }]
       }), requestsStatus, requestsHaveMore: haveMore, loadingMoreRequests: loadingMore, conversation, draft,
       uploadRules: rules === undefined ? emptyState(availability).uploadRules : { maxFiles: rules.max_attachments,
@@ -207,6 +238,38 @@ export function createDemandController(accountSource: Context['creditsSession'],
       return sameOwner(captured) && !signal.aborted ? answer : { ok: false, code: 'DEMAND_CANCELLED', httpStatus: 0, unknown: true }
     } catch (_error: unknown) { return { ok: false, code: 'DEMAND_NETWORK', httpStatus: 0, unknown: true } }
     finally { flights.delete(abort) }
+  }
+  const loadServices = async (captured: DemandOwner, more = false, periodic = false): Promise<void> => {
+    if (serverConfig?.service_profiles !== true || more && (!servicesHaveMore || loadingMoreServices || serviceCursor === null)
+      || periodic && serviceFlight !== undefined) return
+    serviceFlight?.abort()
+    const abort = new AbortController(), epoch = ++serviceEpoch, cursor = more ? serviceCursor : null
+    const query = serviceQuery, category = serviceCategoryId
+    serviceFlight = abort
+    if (more) loadingMoreServices = true
+    else if (!servicesLoaded) servicesStatus = 'loading'
+    publish()
+    try {
+      const params = new URLSearchParams({ limit: '30' })
+      if (cursor !== null) params.set('after_id', cursor)
+      if (query !== '') params.set('q', query)
+      if (category !== '') params.set('category_id', category)
+      const answer = await perform(captured, { method: 'GET', path: `/service-profiles?${params}` }, abort.signal)
+      if (!sameOwner(captured) || epoch !== serviceEpoch || abort.signal.aborted) return
+      if (!answer.ok) throw new Error(answer.code)
+      const page = wire.serviceDirectory(answer.payload)
+      if (more && page.has_more && page.next_after_id === cursor) throw new wire.DemandWireError()
+      const preserve = periodic && servicesLoaded && (servicesHaveMore || page.total <= services.length)
+      const rows = more ? [...services, ...page.items] : preserve ? [...page.items,
+        ...services.filter(item => !page.items.some(fresh => fresh.id === item.id))] : [...page.items]
+      services = [...new Map(rows.map(item => [item.id, item])).values()].slice(0, page.total)
+      if (more || !preserve) { serviceCursor = page.next_after_id; servicesHaveMore = page.has_more }
+      serviceTotal = page.total; servicesStatus = 'ready'; servicesLoaded = true
+    } catch (_directory: unknown) {
+      if (sameOwner(captured) && epoch === serviceEpoch && !abort.signal.aborted) servicesStatus = 'error'
+    } finally {
+      if (sameOwner(captured) && epoch === serviceEpoch) { serviceFlight = undefined; loadingMoreServices = false; publish() }
+    }
   }
   const save = (captured: DemandOwner, operation: PendingOperation): boolean => {
     if (!sameOwner(captured) || storageFailed) return false
@@ -343,7 +406,10 @@ export function createDemandController(accountSource: Context['creditsSession'],
         const body = wire.object(JSON.parse(operation.body) as unknown)
         const requestId = operation.kind === 'message' || operation.kind === 'action' ? operation.path.split('/')[1] ?? null : operation.upload?.requestId ?? null
         scopes.set(operation.scopeKey, { key: operation.scopeKey, createdAt: operation.createdAt, requestId,
-          engineerId: operation.kind === 'create' ? wire.id(body.engineer_id) : operation.upload?.engineerId ?? '', draft: emptyDraft(operation.scopeKey),
+          engineerId: operation.version === 2 ? '' : operation.kind === 'create' ? wire.id(body.engineer_id) : operation.upload?.engineerId ?? '',
+          ...operation.serviceProfileId === undefined ? {} : { serviceProfileId: operation.serviceProfileId,
+            ...operation.serviceProfileName === undefined ? {} : { serviceProfileName: operation.serviceProfileName } },
+          draft: emptyDraft(operation.scopeKey),
           error: null, messagesStatus: 'ready', loadingEarlier: false, earliest: 1 })
       }
       const scope = scopes.get(operation.scopeKey)
@@ -367,13 +433,26 @@ export function createDemandController(accountSource: Context['creditsSession'],
           if (answer.code === 'DEMAND_AUTH_REQUIRED' || answer.code === 'ACCOUNT_CHANGED') { availability = 'login-required'; pageError = null; publish(); return }
           throw new Error(answer.code)
         }
+        const previousMode = serverConfig?.service_profiles
         serverConfig = wire.configuration(answer.payload); unsupported = false
         availability = storageFailed ? 'error' : serverConfig.enabled ? 'ready' : 'disabled'
         pageError = storageFailed ? t('pendingStorageFailed') : null
-        const directoryAnswer = await perform(captured, { method: 'GET', path: '/engineers' })
+        if (serverConfig.service_profiles) {
+          if (previousMode !== true) { serviceEpoch += 1; serviceFlight?.abort(); serviceFlight = undefined; servicesLoaded = false }
+          if (serviceCategoryId !== '' && !serverConfig.categories.some(item => item.id === serviceCategoryId && item.enabled)) {
+            serviceCategoryId = ''; servicesLoaded = false; services = []; serviceCursor = null; servicesHaveMore = false
+          }
+          await loadServices(captured, false, servicesLoaded)
+        } else {
+          if (previousMode === true) { serviceEpoch += 1; serviceFlight?.abort(); serviceFlight = undefined
+            services = []; serviceCursor = null; serviceTotal = 0; servicesHaveMore = false
+            servicesLoaded = false; loadingMoreServices = false }
+          const directoryAnswer = await perform(captured, { method: 'GET', path: '/engineers' })
+          if (!sameOwner(captured)) return
+          if (directoryAnswer.ok) directory = wire.directory(directoryAnswer.payload)
+          else if (serverConfig.enabled) throw new Error(directoryAnswer.code)
+        }
         if (!sameOwner(captured)) return
-        if (directoryAnswer.ok) directory = wire.directory(directoryAnswer.payload)
-        else if (serverConfig.enabled) throw new Error(directoryAnswer.code)
         restoreScopes(); publish()
         await loadList(captured)
         const scope = currentScope()
@@ -418,11 +497,12 @@ export function createDemandController(accountSource: Context['creditsSession'],
         const receipt = wire.sendReceipt(answer.payload), body = wire.object(JSON.parse(operation.body) as unknown)
         const attachmentIds = wire.array(body.attachment_ids, 64, wire.id).slice().sort()
         if (receipt.message.client_message_id !== operation.operationId || receipt.message.text !== body.text
+          || operation.kind === 'create' && operation.version === 2 && receipt.demand.service_profile_id !== operation.serviceProfileId
           || operation.kind === 'message' && receipt.demand.id !== operation.path.split('/')[1]
           || receipt.message.attachments.map(item => item.id).sort().join(',') !== attachmentIds.join(',')) throw new wire.DemandWireError()
         mergeRecord(receipt.demand, true); mergeMessages(receipt.demand.id, [receipt.message])
         if (scope !== undefined) {
-          scope.requestId = receipt.demand.id; scope.engineerId = receipt.demand.engineer_id
+          scope.requestId = receipt.demand.id; retainTarget(scope, receipt.demand)
           scope.draft = emptyDraft(scope.key); scope.messagesStatus = 'ready'
         }
         for (const upload of pendingFor(operation.scopeKey, 'upload')) {
@@ -513,7 +593,8 @@ export function createDemandController(accountSource: Context['creditsSession'],
     finally { if (sameOwner(captured)) { uploadsRunning.delete(operationId); publish() } }
   }
   const clear = (): void => {
-    accountAbort.abort(); for (const flight of flights) flight.abort()
+    accountAbort.abort(); serviceEpoch += 1; serviceFlight?.abort(); serviceFlight = undefined
+    for (const flight of flights) flight.abort()
     for (const upload of uploadsRunning.values()) upload.abort()
     accountAbort = new AbortController()
     if (timer !== undefined) clearTimeout(timer); timer = undefined
@@ -521,6 +602,8 @@ export function createDemandController(accountSource: Context['creditsSession'],
     uploadProgress.clear(); uploadErrors.clear()
     uploadsRunning.clear(); inflight.clear(); lastRead.clear(); readsRunning.clear(); messageReads.clear(); confirmed.clear()
     selected = null; serverConfig = null; directory = []; listCursor = null; haveMore = false; loadingMore = false; listLoaded = false
+    services = []; serviceCursor = null; serviceTotal = 0; servicesHaveMore = false; loadingMoreServices = false
+    servicesLoaded = false; servicesStatus = 'ready'; serviceQuery = ''; serviceCategoryId = ''
     requestsStatus = 'ready'; lastListRead = 0; backoff = 0; storageFailed = false; unsupported = false; refreshTask = undefined; pageError = null
   }
   const observe = (): void => {
@@ -548,7 +631,19 @@ export function createDemandController(accountSource: Context['creditsSession'],
     closeTask = Promise.allSettled([...tasks]).then(() => undefined)
     return closeTask
   }
-  const refresh = (): void => { unsupported = false; void track(async () => { await refreshAll(); schedule() }) }
+  const refresh = (): void => {
+    unsupported = false
+    serviceEpoch += 1; serviceFlight?.abort(); serviceFlight = undefined; servicesLoaded = false
+    serviceCursor = null; servicesHaveMore = false; loadingMoreServices = false
+    const running = refreshTask, captured = owner
+    void track(async () => {
+      if (running !== undefined) {
+        if (captured !== null && serverConfig?.service_profiles === true) await loadServices(captured)
+        await running
+      } else await refreshAll()
+      schedule()
+    })
+  }
   const startRequest = (engineerId: string): void => {
     const engineer = directory.find(item => item.id === engineerId)
     if (!active || owner === null || serverConfig?.enabled !== true || engineer?.can_start !== true) return
@@ -557,6 +652,24 @@ export function createDemandController(accountSource: Context['creditsSession'],
       error: null, messagesStatus: 'ready', loadingEarlier: false, earliest: 1 })
     selected = key; publish()
   }
+  const startServiceRequest = (serviceProfileId: string): void => {
+    const item = services.find(row => row.id === serviceProfileId)
+    if (!active || owner === null || serverConfig?.enabled !== true
+      || !serverConfig.service_profiles || item?.can_start !== true) return
+    const key = `draft:${newId()}`
+    scopes.set(key, { key, createdAt: createdAt(), requestId: null, engineerId: '', serviceProfileId,
+      serviceProfileName: item.display_name, draft: emptyDraft(key), error: null, messagesStatus: 'ready', loadingEarlier: false, earliest: 1 })
+    selected = key; publish()
+  }
+  const setServiceFilter = (query: string, categoryId: string): void => {
+    if (!active || owner === null || serverConfig?.service_profiles !== true || Array.from(query).length > 100
+      || categoryId !== '' && !serverConfig.categories.some(item => item.id === categoryId && item.enabled)) return
+    if (query === serviceQuery && categoryId === serviceCategoryId) return
+    serviceQuery = query; serviceCategoryId = categoryId; services = []; serviceCursor = null; serviceTotal = 0
+    servicesHaveMore = false; loadingMoreServices = false; servicesLoaded = false
+    const captured = owner
+    void track(() => loadServices(captured))
+  }
   const openRequest = (requestId: string): void => {
     if (!active || owner === null) return
     try { wire.id(requestId) } catch (_id: unknown) { return }
@@ -564,12 +677,15 @@ export function createDemandController(accountSource: Context['creditsSession'],
     if (!scopes.has(key)) scopes.set(key, { key, createdAt: createdAt(), requestId,
       engineerId: records.get(requestId)?.engineer_id ?? '', draft: emptyDraft(key),
       error: null, messagesStatus: 'loading', loadingEarlier: false, earliest: 1 })
+    const loaded = records.get(requestId), scope = scopes.get(key)
+    if (scope !== undefined && loaded !== undefined) retainTarget(scope, loaded)
     selected = key; publish()
-    const scope = scopes.get(key)
     if (scope !== undefined) void track(() => readMessages(scope))
   }
   return {
-    hooks: { demands: source }, refresh, openLogin: deps.openLogin ?? (() => {}), startRequest, openRequest,
+    hooks: { demands: source }, refresh, openLogin: deps.openLogin ?? (() => {}),
+    startRequest, startServiceRequest, setServiceFilter, openRequest,
+    loadMoreServices: () => { const captured = owner; if (captured !== null) void track(() => loadServices(captured, true)) },
     openDraft: (scopeKey: string) => {
       const scope = scopes.get(scopeKey)
       if (!active || owner === null || scope === undefined || scope.requestId !== null) return
@@ -601,10 +717,11 @@ export function createDemandController(accountSource: Context['creditsSession'],
         scope.draft = { ...fields, error: t('invalidRequestFields') }; publish(); return
       }
       const operationId = newId(), kind = scope.requestId === null ? 'create' : 'message'
-      const body = JSON.stringify(kind === 'create' ? { client_request_id: operationId, engineer_id: scope.engineerId,
+      const body = JSON.stringify(kind === 'create' ? { client_request_id: operationId,
+        ...scope.serviceProfileId === undefined ? { engineer_id: scope.engineerId } : { service_profile_id: scope.serviceProfileId },
         text: fields.text, attachment_ids: ids, title: fields.title, budget: fields.budget, expected_date: fields.expectedDate }
         : { client_message_id: operationId, text: fields.text, attachment_ids: ids })
-      const operation: PendingOperation = { version: 1, operationId, scopeKey: scope.key, kind,
+      const operation: PendingOperation = { ...operationRouting(scope), operationId, scopeKey: scope.key, kind,
         path: scope.requestId === null ? '' : `/${scope.requestId}/messages`, body, createdAt: createdAt() }
       if (!save(captured, operation)) return
       if (kind === 'message') scope.draft = emptyDraft(scope.key)
@@ -626,9 +743,10 @@ export function createDemandController(accountSource: Context['creditsSession'],
           scope.draft = { ...scope.draft, error: t(file.size > maximum ? 'uploadTooLarge' : 'uploadUnsupported') }; publish(); continue
         }
         const operationId = newId()
-        const operation: PendingOperation = { version: 1, operationId, scopeKey: scope.key, kind: 'upload', path: '/uploads', createdAt: createdAt(),
+        const operation: PendingOperation = { ...operationRouting(scope), operationId, scopeKey: scope.key, kind: 'upload', path: '/uploads', createdAt: createdAt(),
           body: JSON.stringify({ client_upload_id: operationId, name: file.name, mime_type: file.type, size_bytes: file.size }),
-          upload: { engineerId: scope.engineerId, requestId: scope.requestId,
+          upload: { engineerId: scope.engineerId,
+            ...scope.serviceProfileId === undefined ? {} : { serviceProfileId: scope.serviceProfileId }, requestId: scope.requestId,
             file: { name: file.name, size: file.size, type: file.type, lastModified: file.lastModified },
             parts: [], uploadId: null, ready: false } }
         if (!save(captured, operation)) return
@@ -663,7 +781,7 @@ export function createDemandController(accountSource: Context['creditsSession'],
       if (scope === undefined || captured === null || record === undefined || record.status !== 'awaiting_acceptance' || record.delivery_id !== deliveryId || storageFailed) return
       const previous = pendingFor(scope.key, 'action').find(item => wire.object(JSON.parse(item.body) as unknown).delivery_id === deliveryId)
       if (previous !== undefined) { void track(() => execute(previous)); return }
-      const operationId = newId(), operation: PendingOperation = { version: 1, operationId, scopeKey: scope.key, kind: 'action',
+      const operationId = newId(), operation: PendingOperation = { ...operationRouting(scope), operationId, scopeKey: scope.key, kind: 'action',
         path: `/${record.id}/actions`, createdAt: createdAt(), body: JSON.stringify({ client_action_id: operationId, action: 'accept_delivery', revision: record.revision, delivery_id: deliveryId }) }
       if (save(captured, operation)) void track(() => execute(operation))
     },

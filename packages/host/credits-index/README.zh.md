@@ -53,6 +53,8 @@ kind: "package-reference"
 
 `/credits/api/demands` 只开放产品需求 API 的用户路由。现有账号拥有者在 Host 内提供 Bearer 凭证；浏览器请求携带用户看到的账号 ID 和不含凭证的登录守卫。代理在发送前和返回结果前核对两者，拒绝未知路由与 JSON 字段，保留后台部署前缀，并禁止跟随重定向。消息、建单和验收使用后台持久操作标识；代理不调用 AI 工具，也不自动重试写操作。访问令牌短暂被拒绝时，由既有账号续期机制在后续操作中恢复，不清除登录。
 
+服务档案能力和有界目录分页经过同一账号校验。新需求只能指定服务档案或实际工程师之一；核对失答回执时，代理保留原序列化正文。平台待分配需求带有明确分派状态和安全展示投影，不创建虚构工程师账号。客户档案、预设导入和管理路由不通过产品代理开放。
+
 上传按有界原始分片发送一次，保留 `Upload-Offset`；响应未知时保留操作标识，以便查询偏移恢复。附件内容按发起账号重新授权，只允许同一后台的精确对象地址，以流式方式透传 Range。令牌和上游签名 URL 不进入浏览器。`demandRequestTimeoutMs`、`demandUploadTimeoutMs`、`demandDownloadTimeoutMs`、`demandMaxJsonRequestBytes`、`demandMaxJsonResponseBytes` 和 `demandMaxChunkBytes` 配置本机传输保护，后台仍决定更小的媒体限制。卸载会取消并等待尚未结束的传输。
 
 ### 聊天模型刷新

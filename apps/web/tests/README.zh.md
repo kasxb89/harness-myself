@@ -20,7 +20,7 @@ pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps 
 
 [手机号登录恢复](phone-login-fixture.e2e.ts)仅在 `DSH_PHONE_FIXTURE_RECEIPT` 指向全新隔离 controller fixture 回执时运行。测试要求本机 `/harness` 入口、出站 HTTP 阻断、合成大陆号码场景以及无生产访问。各用例使用临时 harness home 和真实 Host 转发；浏览器覆盖短信明确未发送、发送结果未知、成功响应丢失后跨 Host 重启恢复，以及声明支持的 MFA 备用码表单。fixture 提供虚拟发送次数和会话数量，不发送真实短信或付费请求。生产 HTTPS Cookie 策略需单独验证。
 
-[真人工程师需求](demands.e2e.ts)始终使用无密钥的 Host 回执 fixture 验证已构建的界面和控制器，覆盖独立草稿恢复、原提交准确重试、图片视频分片续传、媒体控件及交付验收。设置 `DSH_DEMAND_FIXTURE` 后，还会使用明确标记为合成数据的本机服务联测真实 Go → Host → 浏览器。私有清单提供一次性测试账号凭证；用例拒绝非本机入口或过期 fixture，保留原测试服务，并检查用户与工程师权限、转派及内部备注隔离，不使用生产账号或模型生成。
+[真人工程师需求](demands.e2e.ts)始终使用无密钥的 Host 回执 fixture 验证已构建的界面和控制器，覆盖草稿恢复、原提交准确重试、图片视频分片续传、媒体控件、服务目录分页及交付验收。`DSH_DEMAND_FIXTURE` 选择直接工程师的真实 Go → Host → 浏览器流程；平台分配流程同时使用 `DSH_DEMAND_DIRECTORY_FIXTURE` 和相匹配的最终 `DSH_DEMAND_DIRECTORY_READY`，验证预设服务目录、未分配访问、实际指派及媒体交付。两者均要求明确标记的本机合成身份和有效凭证，保留外部测试服务，不使用生产账号或模型生成。服务目录用例仅读取已有档案，不重新导入或编辑。
 
 ## 完成状态观察
 

@@ -11,6 +11,8 @@ export interface UploadPartDigest { readonly offset: number; readonly size: numb
  */
 export interface PendingUpload {
   readonly engineerId: string
+  /** Present only for platform-intake uploads in the v2 namespace. */
+  readonly serviceProfileId?: string
   readonly requestId: string | null
   readonly file: { readonly name: string; readonly size: number; readonly type: string; readonly lastModified: number }
   readonly parts: readonly UploadPartDigest[]
@@ -21,7 +23,11 @@ export interface PendingUpload {
  * A durable operation whose UUID, route and exact serialized body remain immutable across retries.
  */
 export interface PendingOperation {
-  readonly version: 1
+  readonly version: 1 | 2
+  /** Platform routing metadata never enters an old reader's v1 namespace. */
+  readonly serviceProfileId?: string
+  /** Captured display name for an unpublished request recovered after reload. */
+  readonly serviceProfileName?: string
   readonly operationId: string
   readonly scopeKey: string
   readonly kind: 'create' | 'message' | 'action' | 'upload'
@@ -60,7 +66,12 @@ function digest(value: unknown): string {
  */
 export function parsePending(value: unknown): PendingOperation {
   const row = object(value)
-  if (row.version !== 1) throw new Error('DEMAND_PENDING_INVALID')
+  if (row.version !== 1 && row.version !== 2) throw new Error('DEMAND_PENDING_INVALID')
+  const version = row.version
+  const serviceProfileId = version === 2 ? id(row.serviceProfileId) : ''
+  if (serviceProfileId.length > 40) throw new Error('DEMAND_PENDING_INVALID')
+  const serviceProfileName = version === 2 && row.serviceProfileName !== undefined ? text(row.serviceProfileName, 200, true) : undefined
+  if (version === 1 && (row.serviceProfileId !== undefined || row.serviceProfileName !== undefined)) throw new Error('DEMAND_PENDING_INVALID')
   const kind = choice(row.kind, ['create', 'message', 'action', 'upload']), operationId = uuid(row.operationId)
   const path = text(row.path, 256, true), body = text(row.body, 65_536), payload = object(JSON.parse(body) as unknown)
   const key = kind === 'create' ? 'client_request_id' : kind === 'message' ? 'client_message_id' : kind === 'action' ? 'client_action_id' : 'client_upload_id'
@@ -69,7 +80,13 @@ export function parsePending(value: unknown): PendingOperation {
   if (kind === 'create' || kind === 'message') {
     text(payload.text, 10_000, true)
     array(payload.attachment_ids, 64, id)
-    if (kind === 'create') { id(payload.engineer_id); text(payload.title, 200, true); text(payload.budget, 100, true); text(payload.expected_date, 10, true) }
+    if (kind === 'create') {
+      if (version === 1) {
+        id(payload.engineer_id)
+        if (payload.service_profile_id !== undefined && payload.service_profile_id !== '') throw new Error('DEMAND_PENDING_INVALID')
+      } else if (id(payload.service_profile_id) !== serviceProfileId || payload.engineer_id !== undefined && payload.engineer_id !== '') throw new Error('DEMAND_PENDING_INVALID')
+      text(payload.title, 200, true); text(payload.budget, 100, true); text(payload.expected_date, 10, true)
+    }
   } else if (kind === 'action') {
     if (payload.action !== 'accept_delivery') throw new Error('DEMAND_PENDING_INVALID')
     integer(payload.revision); id(payload.delivery_id)
@@ -78,7 +95,9 @@ export function parsePending(value: unknown): PendingOperation {
   if (kind === 'upload') {
     const data = object(row.upload), file = object(data.file), size = integer(file.size, 2 ** 31)
     if (typeof data.ready !== 'boolean') throw new Error('DEMAND_PENDING_INVALID')
-    upload = { engineerId: id(data.engineerId), requestId: data.requestId === null ? null : id(data.requestId),
+    const engineerId = version === 1 ? id(data.engineerId) : text(data.engineerId, 128, true)
+    if (version === 2 && (engineerId !== '' || id(data.serviceProfileId) !== serviceProfileId)) throw new Error('DEMAND_PENDING_INVALID')
+    upload = { engineerId, ...version === 2 ? { serviceProfileId } : {}, requestId: data.requestId === null ? null : id(data.requestId),
       file: { name: text(file.name, 255), size, type: text(file.type, 128), lastModified: integer(file.lastModified) },
       parts: array(data.parts, 32_768, (value) => {
         const part = object(value), offset = integer(part.offset, size), bytes = integer(part.size, size - offset)
@@ -87,9 +106,11 @@ export function parsePending(value: unknown): PendingOperation {
       }), uploadId: data.uploadId === null ? null : id(data.uploadId), ready: data.ready }
     if (payload.name !== upload.file.name || payload.mime_type !== upload.file.type || payload.size_bytes !== size) throw new Error('DEMAND_PENDING_INVALID')
   }
-  return { version: 1, operationId, scopeKey: text(row.scopeKey, 256), kind, path, body,
-    createdAt: integer(row.createdAt, 8_640_000_000_000_000),
-    ...upload === undefined ? {} : { upload } }
+  return { version, ...version === 2 ? { serviceProfileId,
+    ...serviceProfileName === undefined ? {} : { serviceProfileName } } : {},
+  operationId, scopeKey: text(row.scopeKey, 256), kind, path, body,
+  createdAt: integer(row.createdAt, 8_640_000_000_000_000),
+  ...upload === undefined ? {} : { upload } }
 }
 
 /**
@@ -99,21 +120,28 @@ export function parsePending(value: unknown): PendingOperation {
  */
 export function createDemandJournal(storage?: DemandStorage): DemandJournal {
   const backing = (): DemandStorage => storage ?? globalThis.localStorage
-  const key = (owner: Pick<DemandOwner, 'id' | 'owner'>): string => `yunshu.demands.pending.v1:${JSON.stringify([owner.id, owner.owner])}`
-  const read = (owner: Pick<DemandOwner, 'id' | 'owner'>): readonly PendingOperation[] => {
-    const raw = backing().getItem(key(owner))
+  const key = (owner: Pick<DemandOwner, 'id' | 'owner'>, version: 1 | 2): string => `yunshu.demands.pending.v${version}:${JSON.stringify([owner.id, owner.owner])}`
+  const readVersion = (owner: Pick<DemandOwner, 'id' | 'owner'>, version: 1 | 2): readonly PendingOperation[] => {
+    const raw = backing().getItem(key(owner, version))
     if (raw === null) return []
     if (raw.length > 4_194_304) throw new Error('DEMAND_PENDING_INVALID')
     const value = object(JSON.parse(raw) as unknown)
-    if (value.version !== 1 || value.accountId !== owner.id || value.accountOwner !== owner.owner) throw new Error('DEMAND_PENDING_INVALID')
+    if (value.version !== version || value.accountId !== owner.id || value.accountOwner !== owner.owner) throw new Error('DEMAND_PENDING_INVALID')
     const result = array(value.operations, 256, parsePending)
+    if (result.some(item => item.version !== version)) throw new Error('DEMAND_PENDING_INVALID')
+    return result
+  }
+  const read = (owner: Pick<DemandOwner, 'id' | 'owner'>): readonly PendingOperation[] => {
+    const result = [...readVersion(owner, 1), ...readVersion(owner, 2)]
     if (new Set(result.map(item => item.operationId)).size !== result.length) throw new Error('DEMAND_PENDING_INVALID')
     return result
   }
-  const write = (owner: Pick<DemandOwner, 'id' | 'owner'>, operations: readonly PendingOperation[]): void => {
-    const target = backing(), name = key(owner)
+  const write = (owner: Pick<DemandOwner, 'id' | 'owner'>, version: 1 | 2, operations: readonly PendingOperation[]): void => {
+    const target = backing(), name = key(owner, version)
     if (operations.length === 0) { target.removeItem(name); return }
-    target.setItem(name, JSON.stringify({ version: 1, accountId: owner.id, accountOwner: owner.owner, operations }))
+    const raw = JSON.stringify({ version, accountId: owner.id, accountOwner: owner.owner, operations })
+    if (raw.length > 4_194_304) throw new Error('DEMAND_PENDING_FULL')
+    target.setItem(name, raw)
   }
   return {
     read,
@@ -121,11 +149,18 @@ export function createDemandJournal(storage?: DemandStorage): DemandJournal {
       const checked = parsePending(operation), previous = read(owner)
       const existing = previous.find(item => item.operationId === checked.operationId)
       if (existing !== undefined && (existing.body !== checked.body || existing.path !== checked.path || existing.kind !== checked.kind
-        || existing.scopeKey !== checked.scopeKey)) throw new Error('DEMAND_PENDING_BODY_CHANGED')
+        || existing.scopeKey !== checked.scopeKey || existing.version !== checked.version
+        || existing.serviceProfileId !== checked.serviceProfileId
+        || existing.serviceProfileName !== checked.serviceProfileName)) throw new Error('DEMAND_PENDING_BODY_CHANGED')
       if (existing === undefined && previous.length >= 256) throw new Error('DEMAND_PENDING_FULL')
-      write(owner, [...previous.filter(item => item.operationId !== checked.operationId), checked])
+      write(owner, checked.version, [
+        ...previous.filter(item => item.version === checked.version && item.operationId !== checked.operationId), checked])
     },
-    remove(owner, operationId) { write(owner, read(owner).filter(item => item.operationId !== operationId)) },
+    remove(owner, operationId) {
+      const previous = read(owner), existing = previous.find(item => item.operationId === operationId)
+      if (existing !== undefined) write(owner, existing.version,
+        previous.filter(item => item.version === existing.version && item.operationId !== operationId))
+    },
   }
 }
 

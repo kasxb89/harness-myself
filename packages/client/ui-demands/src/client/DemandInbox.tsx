@@ -24,16 +24,18 @@ export function DemandInbox(props: {
   const [status, setStatus] = useState<DemandStatus | ''>('')
   const search = query.trim().toLocaleLowerCase()
   const rows = state.requests.filter(request => (status === '' || request.status === status)
-    && [request.title, request.number, request.preview, request.engineer?.displayName ?? ''].join(' ').toLocaleLowerCase().includes(search))
+    && [request.title, request.number, request.preview, request.engineer?.displayName ?? '', request.serviceProfileName ?? '']
+      .join(' ').toLocaleLowerCase().includes(search))
   const statusFilters: readonly DemandStatus[] = ['pending', 'communicating', 'in_progress', 'awaiting_acceptance', 'completed']
   const current = state.conversation
   const draftScopes: readonly DemandDraftSummary[] = current !== null && current.requestId === null
     && !state.drafts.some(row => row.scopeKey === current.scopeKey) ? [...state.drafts, {
-      scopeKey: current.scopeKey, title: current.title, engineer: current.engineer, updatedAt: '',
+      ...current, updatedAt: '',
       pending: state.draft?.scopeKey === current.scopeKey && state.draft.sending,
       error: state.draft?.scopeKey === current.scopeKey ? state.draft.error : null,
     }] : state.drafts
-  const drafts = draftScopes.filter(row => [row.title, row.engineer?.displayName ?? ''].join(' ').toLocaleLowerCase().includes(search))
+  const drafts = draftScopes.filter(row => [row.title, row.engineer?.displayName ?? '', row.serviceProfileName ?? '']
+    .join(' ').toLocaleLowerCase().includes(search))
   return <aside className={css.inbox} aria-label={t('myRequests')}>
     <div className={css.inboxHeading}><h2>{t('myRequests')}</h2>
       <Button size="sm" variant="outline" onClick={create} icon={<IconPlusOutlineRegular size={14} />}>{t('newRequest')}</Button>
@@ -58,8 +60,9 @@ export function DemandInbox(props: {
             aria-current={selected ? 'true' : undefined} onClick={() => { openDraft(row.scopeKey) }}>
             <span className={css.requestRowTop}><strong>{row.title.trim() || t('newRequest')}</strong>
               <span className={css.draftLabel} data-pending={row.pending}>{t(row.pending ? 'pendingPublish' : 'notPublished')}</span></span>
-            <span className={css.requestRowMeta}><span>{engineerName(row.engineer, t)}</span>
+            <span className={css.requestRowMeta}><span>{row.assigned === false ? t('platformReception') : engineerName(row.engineer, t)}</span>
               {row.updatedAt === '' ? null : <time dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>}</span>
+            {!row.serviceProfileName?.trim() ? null : <span className={css.requestPerson}>{t('serviceSource', { name: row.serviceProfileName })}</span>}
             {row.error === null ? null : <span className={css.draftError}>{row.error}</span>}
           </button>
         })}
@@ -73,10 +76,11 @@ export function DemandInbox(props: {
           <span className={css.requestRowTop}><strong>{title}</strong>
             {request.unreadCount <= 0 ? null : <span className={css.unread}
               aria-label={t('unreadNamed', { name: title, count: request.unreadCount })}>{request.unreadCount}</span>}</span>
-          <span className={css.requestRowMeta}><span>{engineerName(request.engineer, t)}</span>
+          <span className={css.requestRowMeta}><span>{request.assigned === false ? t('platformReception') : engineerName(request.engineer, t)}</span>
             <time dateTime={request.updatedAt}>{demandTime(request.updatedAt, t)}</time></span>
+          {!request.serviceProfileName?.trim() ? null : <span className={css.requestPerson}>{t('serviceSource', { name: request.serviceProfileName })}</span>}
           {request.preview.trim() === '' ? null : <span className={css.requestPreview}>{request.preview}</span>}
-          <span className={css.requestRowBottom}><DemandStatusTag status={request.status} t={t} />
+          <span className={css.requestRowBottom}><DemandStatusTag status={request.status} unassigned={request.assigned === false} t={t} />
             <span>{t('requestNumber', { number: request.number })}</span></span>
         </button>
       })}
@@ -87,8 +91,9 @@ export function DemandInbox(props: {
       </div>}
       {rows.length > 0 || drafts.length > 0 || state.requestsStatus !== 'ready' ? null
         : <DemandEmpty title={t(state.requests.length === 0 ? 'noRequests' : 'noMatchingRequests')}
-          detail={t(state.requests.length === 0 ? 'noRequestsHint' : 'noMatchingRequestsHint')}
-          actionLabel={state.requests.length === 0 ? t('findEngineers') : undefined}
+          detail={t(state.requests.length === 0 ? state.directoryMode === 'services' ? 'noServiceRequestsHint' : 'noRequestsHint'
+            : 'noMatchingRequestsHint')}
+          actionLabel={state.requests.length === 0 ? t(state.directoryMode === 'services' ? 'findServices' : 'findEngineers') : undefined}
           onAction={state.requests.length === 0 ? create : undefined} />}
     </div>
   </aside>

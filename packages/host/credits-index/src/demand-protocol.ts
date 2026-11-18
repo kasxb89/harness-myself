@@ -70,6 +70,21 @@ function uuid(value: unknown): string {
 function optionalText(target: DemandObject, source: DemandObject, key: string, maximum: number): void {
   if (source[key] !== undefined) target[key] = demandText(source[key], maximum, true)
 }
+function unicodeText(value: unknown, maximum: number, empty = false): string {
+  const text = demandText(value, maximum * 2, empty)
+  if (Array.from(text).length > maximum) throw new DemandProtocolError()
+  return text
+}
+function profileId(value: unknown): string {
+  const id = demandId(value)
+  if (id.length > 40) throw new DemandProtocolError()
+  return id
+}
+function directoryCursor(value: unknown): string {
+  const cursor = demandText(value, 1024, true)
+  if (Buffer.byteLength(cursor, 'utf8') > 1024) throw new DemandProtocolError()
+  return cursor
+}
 function attachments(value: unknown): string[] { return array(value ?? [], 64, demandId) }
 
 /**
@@ -86,7 +101,11 @@ export function demandRequest(kind: string, input: unknown): DemandObject {
     text: demandText(value.text ?? '', 10_000, true), attachment_ids: attachments(value.attachment_ids) }
     if ((result.text as string).trim() === '' && (result.attachment_ids as string[]).length === 0) throw new DemandProtocolError()
     if (kind === 'create') {
-      result.engineer_id = demandId(value.engineer_id)
+      const service = value.service_profile_id !== undefined && value.service_profile_id !== ''
+      const direct = value.engineer_id !== undefined && value.engineer_id !== ''
+      if (service === direct) throw new DemandProtocolError()
+      if (service) result.service_profile_id = profileId(value.service_profile_id)
+      else result.engineer_id = demandId(value.engineer_id)
       for (const [key, maximum] of [['title', 200], ['budget', 100], ['client_version', 100], ['client_platform', 100]] as const) optionalText(result, value, key, maximum)
       if (value.expected_date !== undefined && value.expected_date !== '') {
         const date = demandText(value.expected_date, 10)
@@ -124,7 +143,9 @@ export function demandRequest(kind: string, input: unknown): DemandObject {
  * @returns A new validated query containing only fields accepted by that operation.
  */
 export function demandQuery(kind: string, source: URLSearchParams): URLSearchParams {
-  const fields: Record<string, readonly string[]> = { engineers: ['category_id'], list: ['status', 'before_id', 'limit'], messages: ['after_seq', 'limit'] }
+  const directory = kind === 'engineers' || kind === 'service-profiles'
+  const fields: Record<string, readonly string[]> = { engineers: ['category_id', 'limit', 'after_id', 'q'],
+    'service-profiles': ['category_id', 'limit', 'after_id', 'q'], list: ['status', 'before_id', 'limit'], messages: ['after_seq', 'limit'] }
   const allowed = fields[kind] ?? []
   const result = new URLSearchParams()
   for (const [key, value] of source) {
@@ -133,7 +154,10 @@ export function demandQuery(kind: string, source: URLSearchParams): URLSearchPar
       if (!/^\d{1,16}$/u.test(value)) throw new DemandProtocolError()
       const numeric = demandInteger(Number(value), key === 'limit' ? 100 : Number.MAX_SAFE_INTEGER)
       if (key === 'limit' && numeric === 0) throw new DemandProtocolError()
-    } else if (key === 'status') choice(value, DEMAND_STATUSES)
+    } else if (directory && key === 'after_id') directoryCursor(value)
+    else if (directory && key === 'q') unicodeText(value, 100, true)
+    else if (directory && key === 'category_id') profileId(value)
+    else if (key === 'status') choice(value, DEMAND_STATUSES)
     else demandId(value)
     result.set(key, value)
   }
@@ -147,6 +171,23 @@ function engineer(input: unknown): DemandObject {
     presence: choice(value.presence, ['online', 'busy', 'offline']), accepting: bool(value.accepting), can_start: bool(value.can_start),
     capacity: demandInteger(value.capacity), service_hours: demandText(value.service_hours, 1000, true),
     ...value.avatar_attachment_id === undefined || value.avatar_attachment_id === '' ? {} : { avatar_attachment_id: demandId(value.avatar_attachment_id) } }
+}
+function serviceProfile(input: unknown): DemandObject {
+  const value = demandObject(input), code = demandText(value.code, 80), sort = value.sort, revision = demandInteger(value.revision)
+  if (!/^[A-Za-z0-9_-]+$/u.test(code) || typeof sort !== 'number' || !Number.isSafeInteger(sort)
+    || sort < -100_000 || sort > 100_000 || revision === 0) throw new DemandProtocolError()
+  return { id: profileId(value.id), code, display_name: unicodeText(value.display_name, 100),
+    service_direction: unicodeText(value.service_direction, 200), introduction: unicodeText(value.introduction, 2000, true),
+    category_ids: array(value.category_ids, 30, profileId),
+    avatar_attachment_id: value.avatar_attachment_id === '' ? '' : profileId(value.avatar_attachment_id),
+    published: bool(value.published), enabled: bool(value.enabled), sort, revision,
+    intake_mode: choice(value.intake_mode, ['platform']), can_start: bool(value.can_start) }
+}
+function directoryPage(value: DemandObject): DemandObject {
+  const more = bool(value.has_more), cursor = directoryCursor(value.next_after_id), total = demandInteger(value.total)
+  if (more && cursor === '' || !more && cursor !== '' || !Array.isArray(value.items)
+    || total < value.items.length || more && value.items.length === 0) throw new DemandProtocolError()
+  return { next_after_id: cursor, has_more: more, total }
 }
 function attachment(input: unknown): DemandObject {
   const value = demandObject(input)
@@ -165,6 +206,12 @@ function demand(input: unknown): DemandObject {
     unread_count: demandInteger(value.unread_count), preview: demandText(value.preview, 10_000, true),
     created_at: demandInteger(value.created_at), updated_at: demandInteger(value.updated_at), engineer: engineer(value.engineer) }
   for (const key of ['title', 'budget', 'expected_date'] as const) optionalText(result, value, key, key === 'title' ? 200 : 100)
+  if (value.service_profile_id !== undefined) result.service_profile_id = value.service_profile_id === '' ? '' : profileId(value.service_profile_id)
+  if (value.service_profile_name !== undefined) result.service_profile_name = unicodeText(value.service_profile_name, 100, true)
+  if (value.intake_mode !== undefined) result.intake_mode = choice(value.intake_mode, ['platform', 'direct'])
+  if (value.assigned !== undefined) result.assigned = bool(value.assigned)
+  if (result.assigned === false && (result.intake_mode !== 'platform' || !result.service_profile_id
+    || result.engineer_id !== 'platform-intake' || demandObject(result.engineer).id !== 'platform-intake')) throw new DemandProtocolError()
   if (value.delivery_id !== undefined && value.delivery_id !== '') result.delivery_id = demandId(value.delivery_id)
   return result
 }
@@ -197,9 +244,13 @@ export function demandResponse(kind: string, input: unknown): DemandObject {
       max_attachments: demandInteger(rules.max_attachments, 64), chunk_bytes: demandInteger(rules.chunk_bytes, 67_108_864),
       allowed_mime_types: array(rules.allowed_mime_types, 32, value => demandText(value, 128)),
       upload_ttl_seconds: demandInteger(rules.upload_ttl_seconds) } }, server_time: demandInteger(value.server_time),
-    capabilities: { resumable_upload: bool(capabilities.resumable_upload), polling: bool(capabilities.polling) } }
+    capabilities: { resumable_upload: bool(capabilities.resumable_upload), polling: bool(capabilities.polling),
+      ...capabilities.service_profiles === undefined ? {} : { service_profiles: bool(capabilities.service_profiles) },
+      ...capabilities.engineer_pagination === undefined ? {} : { engineer_pagination: bool(capabilities.engineer_pagination) } } }
   }
-  if (kind === 'engineers') return { items: array(value.items, 200, engineer), server_time: demandInteger(value.server_time) }
+  if (kind === 'service-profiles') return { items: array(value.items, 100, serviceProfile), ...directoryPage(value), server_time: demandInteger(value.server_time) }
+  if (kind === 'engineers') return { items: array(value.items, 200, engineer), server_time: demandInteger(value.server_time),
+    ...value.has_more === undefined && value.next_after_id === undefined && value.total === undefined ? {} : directoryPage(value) }
   if (kind === 'list') return { items: array(value.items, 100, demand), has_more: bool(value.has_more), next_before_id: value.next_before_id === '' || value.next_before_id === null ? value.next_before_id : demandId(value.next_before_id) }
   if (kind === 'detail' || kind === 'action') return { demand: demand(value.demand), ...kind === 'action' ? { replayed: bool(value.replayed) } : {} }
   if (kind === 'messages') return { items: array(value.items, 100, message), next_after_seq: demandInteger(value.next_after_seq),

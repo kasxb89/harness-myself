@@ -121,6 +121,49 @@ export function engineer(value: unknown): WireEngineer {
     service_hours: text(row.service_hours, 1000, true), presence: choice(row.presence, ['online', 'busy', 'offline']),
     accepting: boolean(row.accepting), can_start: boolean(row.can_start), capacity: integer(row.capacity, 1000) }
 }
+/** Public capability entry, separate from a staffed engineer account. */
+export interface WireServiceProfile {
+  readonly id: string
+  readonly code: string
+  readonly display_name: string
+  readonly service_direction: string
+  readonly introduction: string
+  readonly category_ids: readonly string[]
+  readonly avatar_attachment_id: string
+  readonly can_start: boolean
+}
+/**
+ * Decode a published platform intake entry without live-person presence or private customer fields.
+ * @param value - Unknown service-profile JSON.
+ * @returns Public service metadata or a protocol error.
+ */
+export function serviceProfile(value: unknown): WireServiceProfile {
+  const row = object(value), profileId = id(row.id), code = id(row.code)
+  if (profileId.length > 40 || code.length > 80 || row.intake_mode !== 'platform') throw new DemandWireError()
+  boolean(row.published); boolean(row.enabled)
+  return { id: profileId, code, display_name: text(row.display_name, 200), service_direction: text(row.service_direction, 400),
+    introduction: text(row.introduction, 4000, true), category_ids: array(row.category_ids, 30, id),
+    avatar_attachment_id: row.avatar_attachment_id === '' ? '' : id(row.avatar_attachment_id), can_start: boolean(row.can_start) }
+}
+/**
+ * Decode a filter-bound service page with opaque continuation state.
+ * @param value - Unknown page payload.
+ * @returns Validated profiles, count and continuation, without guessing cursor contents.
+ */
+export function serviceDirectory(value: unknown): {
+  items: readonly WireServiceProfile[]
+  has_more: boolean
+  next_after_id: string | null
+  total: number
+} {
+  const row = object(value), items = array(row.items, 100, serviceProfile), hasMore = boolean(row.has_more)
+  const cursor = row.next_after_id === '' ? null : text(row.next_after_id, 1024)
+  const total = integer(row.total)
+  integer(row.server_time)
+  if (total < items.length || hasMore && (cursor === null || items.length === 0)
+    || !hasMore && cursor !== null || new Set(items.map(item => item.id)).size !== items.length) throw new DemandWireError()
+  return { items, has_more: hasMore, next_after_id: cursor, total }
+}
 /**
  * Verified attachment metadata; content URLs are supplied by the local Host separately.
  */
@@ -156,6 +199,10 @@ export interface WireDemand {
   readonly number: string
   readonly engineer_id: string
   readonly engineer: WireEngineer
+  readonly service_profile_id: string
+  readonly service_profile_name: string
+  readonly intake_mode: 'platform' | 'direct'
+  readonly assigned: boolean
   readonly status: DemandStatus
   readonly revision: number
   readonly last_seq: number
@@ -178,8 +225,16 @@ export function demand(value: unknown): WireDemand {
   const row = object(value), assigned = engineer(row.engineer), engineerId = id(row.engineer_id)
   const lastSeq = integer(row.last_seq), lastRead = integer(row.last_read_seq, lastSeq)
   integer(row.user_id); choice(row.priority, ['normal', 'high', 'urgent'])
-  if (assigned.id !== engineerId) throw new DemandWireError()
+  const serviceId = row.service_profile_id === undefined || row.service_profile_id === '' ? '' : id(row.service_profile_id)
+  const serviceName = optional(row.service_profile_name, 200)
+  const intakeMode = row.intake_mode === undefined ? 'direct' : choice(row.intake_mode, ['platform', 'direct'])
+  const hasAssignee = row.assigned === undefined ? true : boolean(row.assigned)
+  if (assigned.id !== engineerId || serviceId.length > 40
+    || intakeMode === 'platform' && (serviceId === '' || serviceName === '')
+    || intakeMode === 'direct' && (serviceId !== '' || !hasAssignee)
+    || !hasAssignee && engineerId !== 'platform-intake' || hasAssignee && engineerId === 'platform-intake') throw new DemandWireError()
   return { id: id(row.id), number: text(row.number, 128), engineer_id: engineerId, engineer: assigned,
+    service_profile_id: serviceId, service_profile_name: serviceName, intake_mode: intakeMode, assigned: hasAssignee,
     status: choice(row.status, statuses), revision: integer(row.revision), last_seq: lastSeq, last_read_seq: lastRead,
     unread_count: integer(row.unread_count), title: optional(row.title, 200), preview: text(row.preview, 10_000, true),
     budget: optional(row.budget, 100), expected_date: optional(row.expected_date, 100),
@@ -223,6 +278,8 @@ export function message(value: unknown): WireMessage {
  */
 export interface WireConfig {
   readonly enabled: boolean
+  readonly service_profiles: boolean
+  readonly engineer_pagination: boolean
   readonly categories: readonly { readonly id: string; readonly name: string; readonly enabled: boolean }[]
   readonly upload_rules: {
     readonly max_image_bytes: number
@@ -243,16 +300,19 @@ export function configuration(value: unknown): WireConfig {
   integer(reply.server_time); boolean(capabilities.resumable_upload); boolean(capabilities.polling)
   const chunk = integer(rules.chunk_bytes, 16_777_216)
   if (chunk < 1) throw new DemandWireError()
-  return { enabled: boolean(row.enabled), categories: array(row.categories, 64, (value) => {
-    const item = object(value)
-    return { id: id(item.id), name: text(item.name, 200), enabled: boolean(item.enabled) }
-  }), upload_rules: { max_image_bytes: integer(rules.max_image_bytes, 2 ** 31), max_video_bytes: integer(rules.max_video_bytes, 2 ** 31),
-    max_attachments: integer(rules.max_attachments, 64), chunk_bytes: chunk,
-    allowed_mime_types: array(rules.allowed_mime_types, 32, (value) => {
-      const mime = text(value, 128)
-      if (!/^(?:image|video)\/[A-Za-z0-9.+-]+$/u.test(mime)) throw new DemandWireError()
-      return mime
-    }), upload_ttl_seconds: integer(rules.upload_ttl_seconds) } }
+  return { enabled: boolean(row.enabled),
+    service_profiles: capabilities.service_profiles === undefined ? false : boolean(capabilities.service_profiles),
+    engineer_pagination: capabilities.engineer_pagination === undefined ? false : boolean(capabilities.engineer_pagination),
+    categories: array(row.categories, 64, (value) => {
+      const item = object(value)
+      return { id: id(item.id), name: text(item.name, 200), enabled: boolean(item.enabled) }
+    }), upload_rules: { max_image_bytes: integer(rules.max_image_bytes, 2 ** 31), max_video_bytes: integer(rules.max_video_bytes, 2 ** 31),
+      max_attachments: integer(rules.max_attachments, 64), chunk_bytes: chunk,
+      allowed_mime_types: array(rules.allowed_mime_types, 32, (value) => {
+        const mime = text(value, 128)
+        if (!/^(?:image|video)\/[A-Za-z0-9.+-]+$/u.test(mime)) throw new DemandWireError()
+        return mime
+      }), upload_ttl_seconds: integer(rules.upload_ttl_seconds) } }
 }
 /**
  * Decode the actual published engineer directory.

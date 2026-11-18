@@ -25,8 +25,26 @@ export interface DemandEngineer {
   readonly canStart: boolean
   readonly unavailableReason: string | null
 }
+/** A published service capability routed through platform reception, never a live person. */
+export interface DemandServiceProfile {
+  readonly id: string
+  readonly code: string
+  readonly displayName: string
+  readonly serviceDirection: string
+  readonly introduction: string
+  readonly categoryIds: readonly string[]
+  readonly avatarUrl: string | null
+  readonly canStart: boolean
+}
+/** Optional additive routing facts preserve compatibility with older direct-engineer projections. */
+export interface DemandRouting {
+  readonly serviceProfileId?: string | null
+  readonly serviceProfileName?: string | null
+  readonly intakeMode?: 'platform' | 'direct'
+  readonly assigned?: boolean
+}
 /** A user's existing private demand. */
-export interface DemandSummary {
+export interface DemandSummary extends DemandRouting {
   readonly id: string
   readonly number: string
   readonly title: string
@@ -70,7 +88,7 @@ export interface DemandDelivery {
   readonly attachments: readonly DemandAttachment[]
 }
 /** Selected demand or an unpublished draft with its own unique viewing identity. */
-export interface DemandConversation {
+export interface DemandConversation extends DemandRouting {
   readonly scopeKey: string
   readonly requestId: string | null
   readonly number: string | null
@@ -102,7 +120,7 @@ export interface DemandDraft extends DemandDraftFields {
   readonly error: string | null
 }
 /** A real local scope that can be reopened without minting another request or operation key. */
-export interface DemandDraftSummary {
+export interface DemandDraftSummary extends DemandRouting {
   readonly scopeKey: string
   readonly title: string
   readonly engineer: DemandEngineer | null
@@ -124,6 +142,14 @@ export interface DemandPageState {
   readonly error: string | null
   readonly categories: readonly DemandCategory[]
   readonly engineers: readonly DemandEngineer[]
+  readonly directoryMode: 'services' | 'engineers'
+  readonly serviceProfiles: readonly DemandServiceProfile[]
+  readonly servicesStatus: 'loading' | 'ready' | 'error'
+  readonly servicesHaveMore: boolean
+  readonly loadingMoreServices: boolean
+  readonly servicesTotal: number
+  readonly serviceQuery: string
+  readonly serviceCategoryId: string
   readonly requests: readonly DemandSummary[]
   readonly drafts: readonly DemandDraftSummary[]
   readonly requestsStatus: 'loading' | 'ready' | 'error'
@@ -139,6 +165,9 @@ export interface DemandPageFace {
   readonly refresh: () => void
   readonly openLogin: () => void
   readonly startRequest: (engineerId: string) => void
+  readonly startServiceRequest: (serviceProfileId: string) => void
+  readonly setServiceFilter: (query: string, categoryId: string) => void
+  readonly loadMoreServices: () => void
   readonly openRequest: (requestId: string) => void
   readonly openDraft: (scopeKey: string) => void
   readonly loadMoreRequests: () => void

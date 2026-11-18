@@ -49,26 +49,38 @@ const engineers = [engineer,
   { ...engineer, id: 'synthetic-long-name', display_name: '测试工程师欧阳明远·企业系统与数据工作流顾问',
     introduction: '测试资料：帮助团队梳理复杂业务流程，开发表单、数据看板和文件处理工具；从需求确认、方案沟通到交付验收提供清晰的进度记录。'.repeat(3) },
 ]
+const platform = { ...engineer, id: 'platform-intake', display_name: '平台统一接待', category_ids: [],
+  introduction: '由平台审核需求后分派工程师', presence: 'offline', accepting: false, can_start: false, capacity: 0, service_hours: '' }
+const profiles = Array.from({ length: 100 }, (_, index) => ({ id: `test-service-${String(index + 1).padStart(3, '0')}`,
+  code: `SERVICE_${String(index + 1).padStart(3, '0')}`, display_name: `测试服务 ${String(index + 1).padStart(3, '0')}`,
+  service_direction: index % 2 === 0 ? '软件流程与表单' : '文档处理与整理', introduction: '合成测试资料：平台统一接待的服务入口。',
+  category_ids: [index % 2 === 0 ? 'software' : 'documents'], avatar_attachment_id: '', published: true, enabled: true,
+  sort: index, revision: 1, intake_mode: 'platform', can_start: true }))
 
 /** Test-only control over confirmed records and raw upload receipt counters. */
 export interface DemandFixture {
   readonly createBodies: string[]
   readonly records: Map<string, Demand>
   readonly chunks: Map<string, number>
+  readonly directoryRequests: string[]
+  readonly services: typeof profiles
   /** Serve the same uploaded synthetic bytes to native browser downloads, which bypass Playwright routing. */
   serveMedia(request: IncomingMessage, response: ServerResponse): void
+  assign(id: string): void
   deliver(id: string): void
 }
 
 /**
  * Route local Host envelopes while retaining the real shipped UI, controller, journal and media elements.
  * @param page - Isolated browser page whose network is owned by this test.
+ * @param options - Explicitly opt into synthetic service profiles; absent retains the legacy API shape.
  * @returns Fixture counters and a synthetic engineer delivery command.
  */
-export async function installDemandFixture(page: Page): Promise<DemandFixture> {
+export async function installDemandFixture(page: Page, options: { serviceProfiles?: boolean } = {}): Promise<DemandFixture> {
   const records = new Map<string, Demand>(), messages = new Map<string, Message[]>(), createBodies: string[] = []
   const receipts = new Map<string, Json>(), uploads = new Map<string, { attachment: Attachment; bytes: Buffer; client: string }>()
   const chunks = new Map<string, number>()
+  const directoryRequests: string[] = []
   let firstUnknown = true, uploadUnknown = true
   const answer = (route: Route, payload: unknown, extra: Json = {}) => route.fulfill({ json: {
     ok: true, payload, account: { id: '7' }, accountOwner: owner, httpStatus: 200, ...extra,
@@ -110,12 +122,27 @@ export async function installDemandFixture(page: Page): Promise<DemandFixture> {
     if (request.headers()['x-yunshu-account-owner'] !== owner || request.headers()['x-yunshu-account-id'] !== '7') throw new Error('Missing fixture owner guard')
     const suffix = path.slice('/credits/api/demands'.length)
     if (suffix === '/config') {
-      await answer(route, { config: { enabled: true, categories: [{ id: 'software', name: '软件开发', enabled: true }], upload_rules: {
+      await answer(route, { config: { enabled: true, categories: [{ id: 'software', name: '软件开发', enabled: true },
+        ...options.serviceProfiles ? [{ id: 'documents', name: '文档处理', enabled: true }] : []], upload_rules: {
         max_image_bytes: 20_971_520, max_video_bytes: 536_870_912, max_attachments: 8, chunk_bytes: 4_194_304,
         allowed_mime_types: ['image/png', 'video/mp4'], upload_ttl_seconds: 86400,
-      } }, server_time: now(), capabilities: { resumable_upload: true, polling: true } }); return
+      } }, server_time: now(), capabilities: { resumable_upload: true, polling: true,
+        ...options.serviceProfiles ? { service_profiles: true, engineer_pagination: true } : {} } }); return
     }
     if (suffix === '/engineers') { await answer(route, { items: engineers, server_time: now() }); return }
+    if (suffix === '/service-profiles' && options.serviceProfiles) {
+      directoryRequests.push(url.search)
+      const query = url.searchParams.get('q') ?? '', category = url.searchParams.get('category_id') ?? ''
+      const after = url.searchParams.get('after_id') ?? '', limit = Number(url.searchParams.get('limit') ?? 30)
+      const cursor = after === '' ? { index: 0, query, category }
+        : JSON.parse(Buffer.from(after, 'base64url').toString('utf8')) as { index: number; query: string; category: string }
+      if (cursor.query !== query || cursor.category !== category) throw new Error('Synthetic directory cursor mixed filters')
+      const selected = profiles.filter(item => (category === '' || item.category_ids.includes(category))
+        && [item.display_name, item.code, item.service_direction].join(' ').toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+      const items = selected.slice(cursor.index, cursor.index + limit), next = cursor.index + items.length, more = next < selected.length
+      await answer(route, { items, total: selected.length, has_more: more, server_time: now(),
+        next_after_id: more ? Buffer.from(JSON.stringify({ index: next, query, category })).toString('base64url') : '' }); return
+    }
     if (suffix === '/unread') { await answer(route, { unread_count: 0, unread_demands: 0, server_time: now() }); return }
     if (suffix === '' && method === 'GET') { await answer(route, { items: [...records.values()].reverse(), has_more: false, next_before_id: '' }); return }
     if (suffix === '/uploads' && method === 'POST') {
@@ -155,9 +182,12 @@ export async function installDemandFixture(page: Page): Promise<DemandFixture> {
       if (create) createBodies.push(request.postData() ?? '')
       let receipt = receipts.get(key)
       if (receipt === undefined) {
-        const row = create ? { id: randomUUID(), number: `SYNTHETIC-${records.size + 1}`, engineer_id: engineer.id, engineer,
+        const profile = create ? profiles.find(item => item.id === body.service_profile_id) : undefined
+        const assignee = profile === undefined ? engineer : platform
+        const row = create ? { id: randomUUID(), number: `SYNTHETIC-${records.size + 1}`, engineer_id: assignee.id, engineer: assignee,
           user_id: 7, status: 'pending', priority: 'normal', revision: 1, last_seq: 0, last_read_seq: 0, unread_count: 0, preview: '',
-          title: typeof body.title === 'string' ? body.title : '', budget: '', expected_date: '', created_at: now(), updated_at: now() }
+          title: typeof body.title === 'string' ? body.title : '', budget: '', expected_date: '', created_at: now(), updated_at: now(),
+          ...profile === undefined ? {} : { service_profile_id: profile.id, service_profile_name: profile.display_name, intake_mode: 'platform', assigned: false } }
           : records.get(suffix.split('/')[1] ?? '')
         if (row === undefined) throw new Error('Fixture request is missing')
         records.set(row.id, row)
@@ -191,9 +221,14 @@ export async function installDemandFixture(page: Page): Promise<DemandFixture> {
     }
     throw new Error(`Unexpected demand fixture route: ${method} ${suffix}`)
   })
-  return { records, createBodies, chunks, serveMedia(request, response) {
+  return { records, createBodies, chunks, directoryRequests, services: profiles, serveMedia(request, response) {
     const result = media(new URL(request.url ?? '/', 'http://synthetic.invalid'), request.headers.range)
     response.writeHead(result.status, result.headers); response.end(result.body)
+  }, assign(id) {
+    const row = records.get(id)
+    if (row === undefined || row.service_profile_id === undefined) throw new Error('Synthetic platform request is missing')
+    row.engineer_id = engineer.id; row.engineer = engineer; row.assigned = true; row.revision += 1
+    append(row, '测试平台已分派真人工程师', 'system', randomUUID(), [], 'system')
   }, deliver(id) {
     const row = records.get(id)
     if (row === undefined) throw new Error('Fixture delivery target is missing')

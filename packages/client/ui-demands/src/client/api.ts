@@ -52,7 +52,9 @@ const failure = (signal: AbortSignal): DemandResult => ({ ok: false, code: signa
  * @returns An owner-verified payload or a safe failure classification.
  */
 export async function requestDemand(owner: DemandOwner, request: DemandRequest): Promise<DemandResult> {
-  if (!/^[/?][A-Za-z0-9_/?=&%-]*$/u.test(request.path) && request.path !== '') return { ok: false, code: 'DEMAND_INVALID_INPUT', httpStatus: 400, unknown: false }
+  const [path, query, ...extra] = request.path.split('?')
+  if (path !== '' && !/^\/[A-Za-z0-9_/-]*$/u.test(path ?? '') || extra.length > 0
+    || query !== undefined && !/^[A-Za-z0-9_=&%+.*-]*$/u.test(query)) return { ok: false, code: 'DEMAND_INVALID_INPUT', httpStatus: 400, unknown: false }
   if (request.signal.aborted) return failure(request.signal)
   const url = appPath('/credits/api/demands' + request.path)
   if (request.blob !== undefined && typeof XMLHttpRequest !== 'undefined') {
