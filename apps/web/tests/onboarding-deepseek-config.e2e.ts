@@ -39,8 +39,10 @@ describe.skipIf(MODE === 'record')('web e2e: first-run DeepSeek credential setup
       extraOverlayPath: fileURLToPath(new URL('./fixtures/stock-deepseek-onboarding.patch.yml', import.meta.url)),
     })
     scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { events.push(event) })
+    expect(scaffold.ctx.settings.describe().find(row => row.ns === 'llm-pi-ai')?.value)
+      .toMatchObject({ providers: { 'yunshu-local': { baseURL: 'http://127.0.0.1:9/v1' } } })
     await expect(scaffold.ctx.llm.listModels('yunshu-local'))
-      .rejects.toThrow('产品模型地址或生命周期已变化，请重新读取模型列表。')
+      .rejects.toThrow('请先登录产品账号，再读取可用模型。')
     browser = await chromium.launch()
     // The scenario asserts the shipped Chinese copy, so the browser asks for it.
     page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: ZH_BROWSER_LOCALE })

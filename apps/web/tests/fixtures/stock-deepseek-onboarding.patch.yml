@@ -1,4 +1,19 @@
 # Explicitly exercise the optional official-provider setup in an isolated home.
+# Match the scaffold's loopback Credits API so the product catalog stops at the unsigned-in guard.
+- id: llm-pi-ai
+  config:
+    providers:
+      yunshu-local:
+        displayName: 云枢
+        api: openai-completions
+        baseURL: http://127.0.0.1:9/v1
+        apiKeyEnv: YUNSHU_RELAY_TOKEN
+        compat:
+          supportsStore: false
+          supportsDeveloperRole: false
+          maxTokensField: max_tokens
+        models:
+          - id: deepseek-v4-flash
 - id: ui-settings-models
   config:
     credentialOnboarding: true

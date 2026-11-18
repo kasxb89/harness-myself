@@ -33,9 +33,11 @@ describe.skipIf(MODE === 'record').each([false, true])('web e2e: native credenti
       ],
     })
     scaffold.ctx.on('session/event', (_session, event: SessionEvent) => { events.push(event) })
-    // The scaffold's loopback API intentionally cannot authorize the shipped product route.
+    // The explicit loopback route reaches the unsigned-in guard before any model-directory request.
+    expect(scaffold.ctx.settings.describe().find(row => row.ns === 'llm-pi-ai')?.value)
+      .toMatchObject({ providers: { 'yunshu-local': { baseURL: 'http://127.0.0.1:9/v1' } } })
     await expect(scaffold.ctx.llm.listModels('yunshu-local'))
-      .rejects.toThrow('产品模型地址或生命周期已变化，请重新读取模型列表。')
+      .rejects.toThrow('请先登录产品账号，再读取可用模型。')
     browser = await chromium.launch()
     page = await browser.newPage({ viewport: { width: 1440, height: 960 }, locale: ZH_BROWSER_LOCALE })
     // The shared menu golden uses the Linux shortcut profile on every test host.
