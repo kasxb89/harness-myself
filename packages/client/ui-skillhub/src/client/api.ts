@@ -1,4 +1,5 @@
 /** Same-origin, cancellable requests to the authenticated SkillHub Host routes. */
+import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
 import { SKILLHUB_INSTALL_PATH, SKILLHUB_INSTALLED_PATH, SKILLHUB_RECOMMENDATIONS_PATH, SKILLHUB_SEARCH_PATH } from '../paths.ts'
 import type {
   InstalledSkill, SkillHubError, SkillHubErrorCode, SkillHubInstallResponse,
@@ -37,7 +38,7 @@ async function request<T>(
 ): Promise<T | SkillHubError> {
   try {
     signal.throwIfAborted()
-    const response = await fetch(new Request(new URL(path, window.location.href), {
+    const response = await fetch(new Request(new URL(appPath(path), document.baseURI), {
       method: payload === undefined ? 'GET' : 'POST',
       credentials: 'same-origin',
       cache: 'no-store',

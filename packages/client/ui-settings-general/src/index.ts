@@ -1,4 +1,4 @@
-/** Welcome acknowledgement stored in the plugin configuration. */
+/** General settings layout and retained profile preferences. */
 import type {} from '@deepseek-ai/dsh-settings'
 
 import type { Volatile, Context } from '@deepseek-ai/cordis'
@@ -7,13 +7,13 @@ import z from '@deepseek-ai/schemastery'
 
 /** Runtime preferences projected to the browser. */
 export interface Config {
-  /** Last acknowledged welcome notice version. */
+  /** Historical welcome acknowledgement retained for existing profiles and imports. */
   welcomeNoticeVersion: Volatile<string | undefined>
   /** Existing section ids displayed as tabs inside another installed section. */
   sectionGroups?: Record<string, string[]>
 }
 
-/** Live welcome preference. */
+/** General settings configuration with the historical acknowledgement field. */
 export const Config = z.object({
   welcomeNoticeVersion: z.string().volatile(),
   sectionGroups: z.dict(z.array(z.string())).default({}),

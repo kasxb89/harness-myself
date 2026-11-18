@@ -47,10 +47,10 @@ describe('native employee page', () => {
     expect({
       title: screen.getByRole('heading', { level: 1 }).textContent,
       roles: within(list).getAllByRole('heading', { level: 3 }).map(row => row.textContent),
-      description: screen.getByText(zh.employeesCapabilities).textContent,
+      description: screen.getByText(zh.employeesIntro).textContent,
     }).toMatchInlineSnapshot(`
       {
-        "description": "沿用当前工作区的模型和账户积分，图片、视频任务使用云枢现有创作工具",
+        "description": "选择岗位开始对话，沿用当前模型与账户积分",
         "roles": [
           "短视频编导",
           "行政文秘",
@@ -84,9 +84,12 @@ describe('native employee page', () => {
   it('searches names and responsibilities, clears search, and follows roster changes', () => {
     const actions = page()
     const input = screen.getByRole('searchbox', { name: zh.employeesSearch })
+    expect(screen.getByText('2 个岗位')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: zh.employeesClearSearch })).toBeNull()
     fireEvent.change(input, { target: { value: '会议记录' } })
     expect(screen.queryByText('短视频编导')).toBeNull()
     expect(screen.getByText('行政文秘')).toBeTruthy()
+    expect(screen.getByText('找到 1 个岗位')).toBeTruthy()
     fireEvent.change(input, { target: { value: '不存在的岗位' } })
     expect(screen.getByText(zh.employeesNoResults)).toBeTruthy()
     expect(screen.queryByRole('list')).toBeNull()
@@ -95,9 +98,28 @@ describe('native employee page', () => {
       { id: 'employee-language', name: '英语助手', description: '商务翻译' },
     ] }) })
     expect(screen.getByText('英语助手')).toBeTruthy()
-    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: zh.employeesClearSearch }))
+    expect(input).toHaveProperty('value', '')
+    expect(document.activeElement).toBe(input)
+    expect(screen.getByText('1 个岗位')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: zh.employeesClearSearch })).toBeNull()
     expect(screen.queryByText(zh.employeesNoResults)).toBeNull()
     expect(actions.startEmployeeDraft).not.toHaveBeenCalled()
+  })
+
+  it('uses preset ids for blank names in cards, search and accessible actions', () => {
+    const actions = page({ options: [
+      { id: 'my-empty-role', name: '', description: '' },
+      { id: 'my-space-role', name: '  \t  ', description: '  \n  ' },
+    ] })
+    expect(screen.getAllByRole('heading', { level: 3 }).map(heading => heading.textContent))
+      .toEqual(['my-empty-role', 'my-space-role'])
+    expect(screen.getAllByText(zh.noDescription)).toHaveLength(2)
+    expect(screen.getByRole('button', { name: '与my-empty-role开始对话' })).toBeTruthy()
+    fireEvent.change(screen.getByRole('searchbox', { name: zh.employeesSearch }), { target: { value: 'my-space-role' } })
+    expect(screen.queryByRole('button', { name: '与my-empty-role开始对话' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '与my-space-role开始对话' }))
+    expect(actions.startEmployeeDraft).toHaveBeenCalledExactlyOnceWith('my-space-role')
   })
 
   it('offers Retry without clearing cards after a roster read fails', () => {

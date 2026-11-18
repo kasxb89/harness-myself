@@ -1,5 +1,4 @@
-// Trusted non-loopback Web access cannot call the loopback-only settings API;
-// the notice therefore advances for this browser process and returns on reload.
+// Remote access keeps the workspace usable without the retired preview notice.
 import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -12,7 +11,7 @@ import { ZH_BROWSER_LOCALE } from './support.ts'
 
 const MODE = webSnapshotMode()
 
-describe.skipIf(MODE === 'record')('web e2e: remote welcome notice', () => {
+describe.skipIf(MODE === 'record')('web e2e: remote startup without preview notice', () => {
   let scaffold: WebScaffold
   let browser: Browser
   let page: Page
@@ -38,13 +37,9 @@ describe.skipIf(MODE === 'record')('web e2e: remote welcome notice', () => {
     await scaffold?.close()
   })
 
-  it('advances process-locally and presents the notice again after reload', async () => {
-    const welcome = page.getByRole('dialog', { name: WELCOME_NOTICE_COPY.zh.title })
-    await welcome.waitFor({ timeout: 15_000 })
-    expect(await page.locator('#root').evaluate(root => (root as HTMLElement).inert)).toBe(true)
-
-    await welcome.getByRole('button', { name: WELCOME_NOTICE_COPY.zh.continueLabel }).click()
-    await welcome.waitFor({ state: 'detached', timeout: 15_000 })
+  it('keeps the workspace usable before and after reload without a preview notice', async () => {
+    await page.waitForSelector('[class*="frame"]', { timeout: 15_000 })
+    expect(await page.getByRole('dialog', { name: WELCOME_NOTICE_COPY.zh.title }).count()).toBe(0)
     await expect.poll(
       () => page.locator('#root').evaluate(root => (root as HTMLElement).inert),
       { timeout: 15_000 },
@@ -53,7 +48,9 @@ describe.skipIf(MODE === 'record')('web e2e: remote welcome notice', () => {
     const reloadWarnings = tripwire.warnings.length
     await page.reload({ waitUntil: 'load' })
     acknowledgeReloadConnectionLoss(tripwire, reloadWarnings)
-    await welcome.waitFor({ timeout: 15_000 })
+    await page.waitForSelector('[class*="frame"]', { timeout: 15_000 })
+    expect(await page.getByRole('dialog', { name: WELCOME_NOTICE_COPY.zh.title }).count()).toBe(0)
+    expect(await page.locator('#root').evaluate(root => (root as HTMLElement).inert)).toBe(false)
     expect(tripwire.warnings).toEqual([])
     expect(tripwire.pageErrors).toEqual([])
   }, 60_000)

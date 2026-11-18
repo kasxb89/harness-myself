@@ -108,7 +108,10 @@ describe('SkillHub page', () => {
     })
     render(<SkillHubPage {...face} />)
     try {
-      expect(screen.getByRole('status', { name: '正在加载推荐技能' })).toBeTruthy()
+      const loading = screen.getByRole('status', { name: '正在加载推荐技能' })
+      expect(loading.querySelectorAll('li')).toHaveLength(6)
+      expect(loading.firstElementChild?.getAttribute('aria-hidden')).toBe('true')
+      expect(within(loading).queryAllByRole('listitem')).toHaveLength(0)
       fireEvent.click(screen.getByRole('tab', { name: '已安装' }))
       await screen.findByRole('heading', { name: review.name })
       expect(readRecommendations).toHaveBeenCalledTimes(1)
@@ -117,6 +120,43 @@ describe('SkillHub page', () => {
     } finally {
       await act(async () => { recommendations.resolve({ ok: true, skills: [] }) })
     }
+  })
+
+  it('shows silent installed skeletons on first load and retains real cards during refresh', async () => {
+    const first = deferred<SkillHubInstalledResponse>()
+    const refreshed = deferred<SkillHubInstalledResponse>()
+    const readInstalled = vi.fn<SkillHubPageProps['readInstalled']>()
+      .mockImplementationOnce(() => first.promise).mockImplementationOnce(() => refreshed.promise)
+    render(<SkillHubPage {...props({ readInstalled })} />)
+    fireEvent.click(screen.getByRole('tab', { name: '已安装' }))
+    const loading = screen.getByRole('status', { name: '正在读取已安装的技能' })
+    expect(loading.querySelectorAll('li')).toHaveLength(6)
+    expect(loading.firstElementChild?.getAttribute('aria-hidden')).toBe('true')
+
+    await act(async () => { first.resolve({ ok: true, skills: [installed] }) })
+    await screen.findByRole('heading', { name: review.name })
+    fireEvent.click(screen.getByRole('button', { name: '刷新已安装列表' }))
+
+    expect(screen.getByRole('heading', { name: review.name })).toBeTruthy()
+    expect(screen.getByRole('status', { name: '正在读取已安装的技能' }).querySelectorAll('li')).toHaveLength(0)
+    await act(async () => { refreshed.resolve({ ok: true, skills: [installed] }) })
+  })
+
+  it('uses canonical slugs as names for blank community and installed skills, including details', async () => {
+    const unnamed = { ...review, name: ' \t ', slug: '@community/unnamed' }
+    const local = { ...installed, name: '', slug: '@community/local' }
+    render(<SkillHubPage {...props({
+      readRecommendations: async () => ({ ok: true, skills: [unnamed] }),
+      readInstalled: async () => ({ ok: true, skills: [local] }),
+    })} />)
+    await screen.findByRole('heading', { name: unnamed.slug })
+    fireEvent.click(screen.getByRole('button', { name: '查看详情' }))
+    expect(within(screen.getByRole('dialog', { name: '技能详情' })).getByRole('heading', { name: unnamed.slug })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '关闭技能详情' }))
+    fireEvent.click(screen.getByRole('tab', { name: '已安装' }))
+    expect(screen.getByRole('heading', { name: local.slug })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '查看详情' }))
+    expect(within(screen.getByRole('dialog', { name: '技能详情' })).getByRole('heading', { name: local.slug })).toBeTruthy()
   })
 
   it('shows a recommendation failure and retries recommendations without submitting a search', async () => {
@@ -357,9 +397,60 @@ describe('SkillHub page', () => {
     search('新关键词')
     await screen.findByRole('alert')
     expect(screen.getByRole('heading', { name: review.name })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '“审查”的搜索结果' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: '“新关键词”的搜索结果' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
     await screen.findByText('没有找到相关技能，试试其他关键词')
+    expect(screen.getByRole('heading', { name: '“新关键词”的搜索结果' })).toBeTruthy()
     expect(operation.mock.calls.map(([query]) => query)).toEqual(['审查', '新关键词', '新关键词'])
+  })
+
+  it('retains the successful result page and source while a new search fails', async () => {
+    const skills = Array.from({ length: 30 }, (_, index) => ({ ...review, slug: `review-${index}`, name: `审查技能 ${index + 1}` }))
+    const operation = vi.fn<SkillHubPageProps['search']>()
+      .mockResolvedValueOnce({ ok: true, skills })
+      .mockResolvedValueOnce({ ok: false, code: 'timeout' })
+    render(<SkillHubPage {...props({ search: operation })} />)
+    search('原来的关键词')
+    await screen.findByRole('heading', { name: '审查技能 1' })
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    expect(screen.getByRole('heading', { name: '审查技能 25' })).toBeTruthy()
+
+    search('新的关键词')
+    await screen.findByRole('alert')
+
+    expect(screen.getByRole('heading', { name: '“原来的关键词”的搜索结果' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: '审查技能 25' })).toBeTruthy()
+    expect(screen.getByText('第 2 / 2 页')).toBeTruthy()
+  })
+
+  it('keeps recommendations accurately labelled when the first search fails', async () => {
+    render(<SkillHubPage {...props({
+      readRecommendations: async () => ({ ok: true, skills: [review] }),
+      search: async () => ({ ok: false, code: 'search-failed' }),
+    })} />)
+    await screen.findByRole('heading', { name: review.name })
+
+    search('未能完成的搜索')
+    await screen.findByRole('alert')
+
+    expect(screen.getByRole('heading', { name: '推荐技能' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: review.name })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: '“未能完成的搜索”的搜索结果' })).toBeNull()
+  })
+
+  it('opens Discover from the installed empty state without installing anything', async () => {
+    const face = props()
+    render(<SkillHubPage {...face} />)
+    await screen.findByRole('heading', { name: '暂时没有推荐技能' })
+    fireEvent.click(screen.getByRole('tab', { name: '已安装' }))
+    const panel = screen.getByRole('tabpanel', { name: '已安装' })
+
+    fireEvent.click(within(panel).getByRole('button', { name: '发现技能' }))
+
+    expect(screen.getByRole('tab', { name: '发现技能' }).getAttribute('aria-selected')).toBe('true')
+    expect(face.install).not.toHaveBeenCalled()
+    expect(face.search).not.toHaveBeenCalled()
   })
 
   it('installs only after a click, merges the receipt, refreshes inventory and blocks duplicate clicks', async () => {

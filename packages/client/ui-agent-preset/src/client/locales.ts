@@ -35,8 +35,10 @@ export type AgentPresetSettingsKey =
   | 'createPluginMissing'
   | 'employeesTitle'
   | 'employeesIntro'
-  | 'employeesCapabilities'
   | 'employeesSearch'
+  | 'employeesClearSearch'
+  | 'employeesCount'
+  | 'employeesResultCount'
   | 'employeesList'
   | 'employeesLoading'
   | 'employeesLoadFailed'
@@ -95,9 +97,11 @@ export const en: Record<AgentPresetSettingsKey, string> = {
   createPluginMissing: 'Creator mode is not included in this configuration',
 
   employeesTitle: 'Digital employees',
-  employeesIntro: 'Choose a role and start a conversation about your task.',
-  employeesCapabilities: 'Use your current workspace model and account credits. Image and video tasks use Yunshu’s existing creation tools.',
+  employeesIntro: 'Choose a role to chat, using your current model and account credits.',
   employeesSearch: 'Search employee names or responsibilities',
+  employeesClearSearch: 'Clear search',
+  employeesCount: '{count} roles',
+  employeesResultCount: '{count} matching roles',
   employeesList: 'Available employees',
   employeesLoading: 'Loading employees',
   employeesLoadFailed: 'Employees could not be loaded. Please try again shortly.',
@@ -154,9 +158,11 @@ export const zh: Record<AgentPresetSettingsKey, string> = {
   createPluginMissing: '当前配置未提供创造模式',
 
   employeesTitle: '数字员工',
-  employeesIntro: '选择适合的岗位，开始对话并交代你的任务',
-  employeesCapabilities: '沿用当前工作区的模型和账户积分，图片、视频任务使用云枢现有创作工具',
+  employeesIntro: '选择岗位开始对话，沿用当前模型与账户积分',
   employeesSearch: '搜索员工名称或职责',
+  employeesClearSearch: '清空搜索',
+  employeesCount: '{count} 个岗位',
+  employeesResultCount: '找到 {count} 个岗位',
   employeesList: '可用员工',
   employeesLoading: '正在加载员工',
   employeesLoadFailed: '暂时无法读取员工，请稍后重试',

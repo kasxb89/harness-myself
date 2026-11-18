@@ -15,6 +15,33 @@ function respond(body: unknown, status = 200) {
 }
 
 describe('SkillHub same-origin requests', () => {
+  it.each([
+    { base: 'https://host.invalid/', mount: 'https://host.invalid/' },
+    { base: 'https://host.invalid/product/index.html', mount: 'https://host.invalid/product/' },
+    { base: 'dsh-app://app/', mount: 'dsh-app://app/' },
+  ])('keeps every operation inside the document Host mount: $base', async ({ base, mount }) => {
+    vi.stubGlobal('document', { baseURI: base })
+    const fetch = respond({ ok: true, skills: [] })
+    const signal = new AbortController().signal
+
+    await readRecommendedSkills(signal, true)
+    await searchSkills('review & code', signal)
+    await readInstalledSkills(signal)
+    fetch.mockResolvedValueOnce(Response.json({ ok: true, skill: installed }))
+    expect(await installSkill(skill.slug, signal)).toEqual({ ok: true, skill: installed })
+
+    const requests = fetch.mock.calls.map(([request]) => request)
+    expect(requests.map(request => request.url)).toEqual([
+      `${mount}api/skillhub/recommendations?refresh=1`,
+      `${mount}api/skillhub/search?q=review+%26+code`,
+      `${mount}api/skillhub/installed`,
+      `${mount}api/skillhub/install`,
+    ])
+    expect(requests.map(request => request.method)).toEqual(['GET', 'GET', 'GET', 'POST'])
+    expect(requests.every(request => request.credentials === 'same-origin' && request.cache === 'no-store')).toBe(true)
+    expect(await requests[3]!.json()).toEqual({ slug: skill.slug })
+  })
+
   it('reads official recommendations without a query or an installation request', async () => {
     const fetch = respond({ ok: true, skills: [skill] })
     const controller = new AbortController()

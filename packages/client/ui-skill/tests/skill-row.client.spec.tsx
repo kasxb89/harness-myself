@@ -100,7 +100,7 @@ describe('SkillRow', () => {
     const view = render(<SkillRow {...props(running())} />)
     const row = view.container.querySelector('[data-tool="skill"] > div')!
     expect(row.getAttribute('role')).toBeNull()
-    expect(view.container.textContent).toContain('正在加载 skill')
+    expect(view.container.textContent).toContain('正在加载技能')
     expect(view.container.textContent).toContain('dsh-manage-issues')
     expect(view.container.querySelector('svg [fill="currentColor"]')).not.toBeNull()
   })
@@ -111,7 +111,7 @@ describe('SkillRow', () => {
       isError: true,
       error: { name: 'SkillError', code: 'missing' },
     }))} />)
-    const row = screen.getByRole('button', { name: 'skill 加载失败加载技能SkillError: missing resource' })
+    const row = screen.getByRole('button', { name: '技能加载失败加载技能SkillError: missing resource' })
     expect(view.container.querySelector('[data-tool="skill"]')?.getAttribute('data-state')).toBe('error')
     expect(view.container.querySelector('[data-tool="skill"] [role="button"] svg')).not.toBeNull()
     expect(view.container.querySelector('[data-tool="skill"] [data-state]')).toBeNull()
@@ -126,7 +126,7 @@ describe('SkillRow', () => {
     const stoppedView = render(<SkillRow {...props(settled({
       error: { name: 'InterruptedError', code: 'interrupted' },
     }))} />)
-    const stoppedSummary = stoppedView.getByText('skill 加载已中止')
+    const stoppedSummary = stoppedView.getByText('技能加载已中止')
     expect(stoppedSummary.parentElement?.className).toContain('stoppedSummary')
     expect(stoppedView.container.querySelector('[data-tool="skill"] [role="button"] svg')).not.toBeNull()
     expect(stoppedView.container.querySelector('[data-tool="skill"] [data-state]')).toBeNull()
@@ -144,7 +144,7 @@ describe('SkillRow', () => {
       isError: true,
       error: { name: 'SkillError', code: 'missing' },
     }))} />)
-    const errorRow = screen.getByRole('button', { name: 'skill 加载失败加载技能SkillError: missing' })
+    const errorRow = screen.getByRole('button', { name: '技能加载失败加载技能SkillError: missing' })
     fireEvent.click(errorRow)
     expect(screen.getAllByText('SkillError: missing')).toHaveLength(2)
   })
@@ -165,6 +165,6 @@ describe('SkillRow', () => {
     const blank = render(<SkillRow {...props(settled({ call: null, content: [] }))} />)
     expect(blank.container.textContent).toContain('call-skill')
     expect(blank.container.querySelector('[role="button"]')).toBeNull()
-    expect(blank.container.textContent).not.toContain('正在加载 skill')
+    expect(blank.container.textContent).not.toContain('正在加载技能')
   })
 })

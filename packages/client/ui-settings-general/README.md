@@ -95,7 +95,7 @@ On a loopback page, the Client loads the provider's `hasDocument` capability thr
 
 ### Host half
 
-The Host half declares `welcomeNoticeVersion` as a volatile field of the `ui-settings-general` entry Config. The welcome step contributed by ui-settings-models reads and writes its `welcomeNoticeVersion` through the existing public settings boundary; the shell itself remains policy-free.
+The Host half retains the volatile `welcomeNoticeVersion` field of the `ui-settings-general` entry Config for existing profiles and settings imports. Startup no longer reads or writes it; the shell itself remains policy-free.
 
 </details>
 

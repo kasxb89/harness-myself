@@ -133,10 +133,10 @@ describe('apply', () => {
       namespace: 'skill', dictionaries: {
         zh: {
           'row.title': '加载技能',
-          'row.running': '正在加载 skill',
+          'row.running': '正在加载技能',
           'row.preparing': '准备加载技能',
-          'row.failed': 'skill 加载失败',
-          'row.stopped': 'skill 加载已中止',
+          'row.failed': '技能加载失败',
+          'row.stopped': '技能加载已中止',
           'row.instructions': '说明',
           'row.inspect': '查看',
           'menu.userOnly': '仅用户',

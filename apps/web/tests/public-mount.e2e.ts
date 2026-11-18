@@ -50,8 +50,8 @@ describe.skipIf(MODE === 'record')('web e2e: public mount through a prefix-strip
   const offMountRequests = (): string[] => requestUrls.filter(url => !url.startsWith(scaffold.baseUrl))
 
   it('loads the shell, its plugin bundles, and the Gateway WebSocket under the mount', async () => {
-    const welcome = page.getByRole('dialog', { name: WELCOME_NOTICE_COPY.zh.title })
-    await welcome.waitFor({ timeout: 15_000 })
+    await page.waitForSelector('[class*="frame"]', { timeout: 15_000 })
+    expect(await page.getByRole('dialog', { name: WELCOME_NOTICE_COPY.zh.title }).count()).toBe(0)
     expect(new URL(page.url()).pathname).toBe(MOUNT)
 
     // Every resource the page requested — bundles, manifest, icon, and whatever
@@ -67,9 +67,6 @@ describe.skipIf(MODE === 'record')('web e2e: public mount through a prefix-strip
       manifest?: { id?: string; scope?: string; startUrl?: string }
     }
     expect([manifest?.id, manifest?.scope, manifest?.startUrl]).toEqual([scaffold.baseUrl, scaffold.baseUrl, scaffold.baseUrl])
-
-    await welcome.getByRole('button', { name: WELCOME_NOTICE_COPY.zh.continueLabel }).click()
-    await welcome.waitFor({ state: 'detached', timeout: 15_000 })
 
     // The forward must be a live two-way pipe, not just a handshake: the page's
     // opens reach the Host and its items come back over the same mounted socket.
