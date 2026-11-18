@@ -51,6 +51,7 @@
     "packages/client/*/tests/**/*.host.spec.ts"
   ],
   "references": [
+    { "path": "./packages/client/ui-demands" },
     {
       "path": "./packages/client/ui-plaza"
     },

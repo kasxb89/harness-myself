@@ -914,7 +914,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:136`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:137`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -927,6 +927,18 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Complete deadline for a human-engineer demand JSON request. */
+  demandRequestTimeoutMs?: number
+  /** Complete deadline for one bounded resumable-upload chunk. */
+  demandUploadTimeoutMs?: number
+  /** Complete deadline for one authorized attachment response, including Range. */
+  demandDownloadTimeoutMs?: number
+  /** Maximum JSON request size for the demand proxy. */
+  demandMaxJsonRequestBytes?: number
+  /** Maximum decoded demand metadata response size. */
+  demandMaxJsonResponseBytes?: number
+  /** Local safety ceiling; actual upload slices follow the backend's smaller chunk limit. */
+  demandMaxChunkBytes?: number
   /** Minimum interval between failed session renewals. */
   refreshRetryBaseDelayMs?: number
   /** Maximum locally chosen session-renewal delay; valid Retry-After can be longer. */
@@ -4867,6 +4879,7 @@ export interface Config {
 | `@deepseek-ai/dsh-client-ui-creative` | — | [`packages/client/ui-creative/src/index.ts`](../packages/client/ui-creative/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-credits` | — | [`packages/client/ui-credits/src/index.ts`](../packages/client/ui-credits/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-deliverables` | `systemPrompt` · `connection` · `sessionQuery` · `sessionController` · `workspaceFiles` · `fs` · `sandboxPolicy` · `workspaceChanges` | [`packages/client/ui-deliverables/src/index.ts`](../packages/client/ui-deliverables/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-demands` | — | [`packages/client/ui-demands/src/index.ts`](../packages/client/ui-demands/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-directory-picker-browse` | — | [`packages/client/ui-directory-picker-browse/src/index.ts`](../packages/client/ui-directory-picker-browse/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-directory-picker-native` | — | [`packages/client/ui-directory-picker-native/src/index.ts`](../packages/client/ui-directory-picker-native/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-goal` | — | [`packages/client/ui-goal/src/index.ts`](../packages/client/ui-goal/src/index.ts) |

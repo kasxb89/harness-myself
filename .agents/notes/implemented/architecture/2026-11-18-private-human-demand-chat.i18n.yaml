@@ -1,0 +1,22 @@
+# Bilingual-pair consistency record for 2026-11-18-private-human-demand-chat.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-18-private-human-demand-chat.md
+/agent-note-private-conversations-with-human-engineers:
+  en: 7e1ba783100c40c1
+  zh: 693c7087f4bf0a3a
+/agent-note-private-conversations-with-human-engineers/problem:
+  en: dfcf70b136713e28
+  zh: 7a297bab7ac4a132
+/agent-note-private-conversations-with-human-engineers/decision:
+  en: 30689aad00d621ff
+  zh: b704bd9b1f1bb03c
+/agent-note-private-conversations-with-human-engineers/verification:
+  en: 1d7e3fda00f6ce89
+  zh: 82f1a7bbbe4ada35
+/agent-note-private-conversations-with-human-engineers/alternatives-considered:
+  en: ff0988d590d20941
+  zh: 8f10a6a80f152e79
+/agent-note-private-conversations-with-human-engineers/consequences:
+  en: d341b5f05b6a85ad
+  zh: cbc0c781f229f4ed

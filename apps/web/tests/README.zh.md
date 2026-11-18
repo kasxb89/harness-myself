@@ -20,6 +20,8 @@ pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps 
 
 [手机号登录恢复](phone-login-fixture.e2e.ts)仅在 `DSH_PHONE_FIXTURE_RECEIPT` 指向全新隔离 controller fixture 回执时运行。测试要求本机 `/harness` 入口、出站 HTTP 阻断、合成大陆号码场景以及无生产访问。各用例使用临时 harness home 和真实 Host 转发；浏览器覆盖短信明确未发送、发送结果未知、成功响应丢失后跨 Host 重启恢复，以及声明支持的 MFA 备用码表单。fixture 提供虚拟发送次数和会话数量，不发送真实短信或付费请求。生产 HTTPS Cookie 策略需单独验证。
 
+[真人工程师需求](demands.e2e.ts)始终使用无密钥的 Host 回执 fixture 验证已构建的界面和控制器，覆盖独立草稿恢复、原提交准确重试、图片视频分片续传、媒体控件及交付验收。设置 `DSH_DEMAND_FIXTURE` 后，还会使用明确标记为合成数据的本机服务联测真实 Go → Host → 浏览器。私有清单提供一次性测试账号凭证；用例拒绝非本机入口或过期 fixture，保留原测试服务，并检查用户与工程师权限、转派及内部备注隔离，不使用生产账号或模型生成。
+
 ## 完成状态观察
 
 依赖状态的用例使用 Workspace、接纳、附件和模型流屏障，区分可见中间状态与已完成操作。模型选择器的持久化断言等待默认设置保存完成，不以菜单关闭作为完成信号。详情关闭等待框架过渡结束；归档验证为 seed Session 设置显式标题，并跨重载跟踪该身份。[CI 测试可靠性工作流](../../../.agents/skills/dsh-ci-test-reliability/SKILL.md#synchronize-on-state)负责这些同步规则。

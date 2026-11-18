@@ -1922,6 +1922,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       'client-ui-creative AudioPage',
       'client-ui-credits CreditsPage',
       'client-ui-credits RechargePage',
+      'client-ui-demands DemandPage',
       'client-ui-imagegen ImagePage',
       'client-ui-mobile MobilePage',
       'client-ui-plaza PlazaPage',
@@ -3419,6 +3420,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
     occupants: [
       'client-ui-agent-preset EmployeePanelIcon',
       'client-ui-artifacts ArtifactsPanelIcon',
+      'client-ui-demands DemandPanelIcon',
       'client-ui-imagegen ImagePanelIcon',
       'client-ui-plaza PlazaPanelIcon',
       'client-ui-plugin-manager PluginsPanelIcon',

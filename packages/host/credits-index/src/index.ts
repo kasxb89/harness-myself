@@ -61,6 +61,7 @@ import type { CreationTaskObserver } from './creation-activity.ts'
 import { readAnnouncements } from './announcements.ts'
 import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
+import { createDemandProxy } from './demand-proxy.ts'
 import { ONBOARDING_SURVEY_RESPONSE_LIMIT, parseSurveyRequest, readOnboardingSurvey } from './onboarding-survey.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
@@ -142,6 +143,18 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Complete deadline for a human-engineer demand JSON request. */
+  demandRequestTimeoutMs?: number
+  /** Complete deadline for one bounded resumable-upload chunk. */
+  demandUploadTimeoutMs?: number
+  /** Complete deadline for one authorized attachment response, including Range. */
+  demandDownloadTimeoutMs?: number
+  /** Maximum JSON request size for the demand proxy. */
+  demandMaxJsonRequestBytes?: number
+  /** Maximum decoded demand metadata response size. */
+  demandMaxJsonResponseBytes?: number
+  /** Local safety ceiling; actual upload slices follow the backend's smaller chunk limit. */
+  demandMaxChunkBytes?: number
   /** Minimum interval between failed session renewals. */
   refreshRetryBaseDelayMs?: number
   /** Maximum locally chosen session-renewal delay; valid Retry-After can be longer. */
@@ -258,6 +271,12 @@ export const Config: z<Config> = z.object({
   creditsPerYuan: z.number().min(1).default(1000),
   stateDir: z.string().default(''),
   timeoutMs: z.number().step(1).min(1).default(15_000),
+  demandRequestTimeoutMs: z.natural().min(1).max(3_600_000).default(20_000),
+  demandUploadTimeoutMs: z.natural().min(1).max(3_600_000).default(120_000),
+  demandDownloadTimeoutMs: z.natural().min(1).max(3_600_000).default(300_000),
+  demandMaxJsonRequestBytes: z.natural().min(1).max(1_048_576).default(65_536),
+  demandMaxJsonResponseBytes: z.natural().min(1).max(16_777_216).default(2_097_152),
+  demandMaxChunkBytes: z.natural().min(1).max(67_108_864).default(67_108_864),
   refreshRetryBaseDelayMs: z.number().step(1).min(1).max(2_147_483_647).default(1000),
   refreshRetryMaxDelayMs: z.number().step(1).min(1).max(2_147_483_647).default(60_000),
   refreshRecoveryRetryLimit: z.number().step(1).min(0).max(5).default(2),
@@ -2555,6 +2574,43 @@ export function apply(ctx: Context, config: Config): void {
     return await send(latest)
   }
 
+  const demandProxy = createDemandProxy({
+    baseUrl: apiBaseUrl,
+    requestRejection: (request) => {
+      const connection = ctx.get('connection')
+      return connection === undefined ? 403 : connection.requestRejection(request)
+    },
+    captureAccount: async (signal) => {
+      const version = identityVersion
+      const session = await liveSession()
+      if (signal.aborted || session?.upstream?.token === undefined || !await rechargeOwnerCurrent(session, version)) return null
+      return {
+        id: session.account.id,
+        owner: productOwner(session),
+        isCurrent: async () => !signal.aborted && await rechargeOwnerCurrent(session, version),
+        fetch: async (route, init) => {
+          signal.throwIfAborted()
+          if (!await rechargeOwnerCurrent(session, version)) return new Response(null, { status: 401 })
+          const latest = await store.read()
+          if (latest?.upstream?.token === undefined || latest.token !== session.token) return new Response(null, { status: 401 })
+          const response = await apiFetch(route, { ...init,
+            headers: { ...Object.fromEntries(new Headers(init.headers)), authorization: `Bearer ${latest.upstream.token}` },
+            signal: init.signal ?? signal,
+          })
+          // A chunk is a one-shot stream. Rejected access is renewed by the next
+          // captured operation; this invocation never replays a request body.
+          if (response.status === 401 && await rechargeOwnerCurrent(session, version)) await renewal.rejectAccess(latest)
+          return response
+        },
+      }
+    },
+    fetchPublic: async (route, init) => await apiFetch(route, init),
+    limits: () => ({ requestTimeoutMs: resolved.demandRequestTimeoutMs, uploadTimeoutMs: resolved.demandUploadTimeoutMs,
+      downloadTimeoutMs: resolved.demandDownloadTimeoutMs, maxJsonRequestBytes: resolved.demandMaxJsonRequestBytes,
+      maxJsonResponseBytes: resolved.demandMaxJsonResponseBytes, maxChunkBytes: resolved.demandMaxChunkBytes }),
+  })
+  ctx.effect(() => async () => { await demandProxy.close() }, 'credits-index: private human-engineer demand requests')
+
   /** All account data reads share one login-owned admission and the existing unique renewal owner. */
   const accountRequest = (session: StoredSession | null): AccountGetRequest => async (path, authenticated, signal, body) => {
     if (body !== undefined && (!authenticated || path !== '/api/log/self/batch')) throw new AccountReadError('protocol')
@@ -3253,6 +3309,7 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (await demandProxy.handle(request, response, route, method)) return
         if (route === '/api/onboarding-survey' || route === '/api/onboarding-survey/defer') {
           const connection = ctx.get('connection')
           const rejected = connection === undefined ? 403 : connection.requestRejection(request)

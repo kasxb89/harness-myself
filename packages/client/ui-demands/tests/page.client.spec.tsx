@@ -1,0 +1,339 @@
+// @vitest-environment jsdom
+/** Server-supplied people, request receipts, and scoped drafts govern the demand page. */
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
+import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
+import type {} from '../src/client/index.ts'
+import { DemandPage } from '../src/client/DemandPage.tsx'
+import { zh } from '../src/client/locales.ts'
+import type { DemandPageProps, DemandPageState } from '../src/client/types.ts'
+import { attachment, conversation, demandState, draft, draftSummary, exampleEngineers, message, request } from './fixtures.client.ts'
+
+afterEach(cleanup)
+const translations: ReadonlyMap<string, string> = new Map(Object.entries(zh))
+
+function unusedHook(): never { throw new Error('The demand page reads only its injected service snapshot') }
+
+function page(partial: Partial<DemandPageState> = {}) {
+  const store = createSnapshotStore(demandState(partial))
+  const actions = {
+    refresh: vi.fn<() => void>(), openLogin: vi.fn<() => void>(), startRequest: vi.fn<(id: string) => void>(),
+    openRequest: vi.fn<(id: string) => void>(), updateDraft: vi.fn<DemandPageProps['updateDraft']>(),
+    openDraft: vi.fn<DemandPageProps['openDraft']>(),
+    send: vi.fn<() => void>(), addAttachments: vi.fn<DemandPageProps['addAttachments']>(),
+    removeAttachment: vi.fn<(id: string) => void>(), retryAttachment: vi.fn<(id: string) => void>(),
+    retryMessage: vi.fn<(id: string) => void>(), loadEarlierMessages: vi.fn<() => void>(),
+    loadMoreRequests: vi.fn<() => void>(),
+    downloadAttachment: vi.fn<(id: string) => void>(), acceptDelivery: vi.fn<(id: string) => void>(),
+  }
+  const props: DemandPageProps = {
+    ...actions,
+    usePanelInfo: unusedHook, useSessions: unusedHook, useSessionStatus: unusedHook, useSessionRetainInfo: unusedHook,
+    useWorkspaces: unusedHook, useResource: unusedHook, useDemands: bindSnapshotSelector(store),
+    t: (key, params) => (translations.get(key) ?? key).replace(/\{(\w+)\}/gu, (placeholder: string, name: string) =>
+      params !== undefined && name in params ? String(params[name]) : placeholder),
+  }
+  render(<DemandPage {...props} />)
+  return {
+    ...actions, store,
+    set: (next: Partial<DemandPageState>) => { act(() => { store.set({ ...store.getSnapshot(), ...next }) }) },
+  }
+}
+
+function openRequests() {
+  fireEvent.click(screen.getByRole('tab', { name: zh.myRequests }))
+}
+
+describe('human-engineer demand page', () => {
+  it('shows an unconfigured service without invented engineers or an ineffective retry', () => {
+    const actions = page({ availability: 'unconfigured', categories: [], engineers: [] })
+    expect(screen.getByRole('heading', { name: zh.unconfiguredTitle })).toBeTruthy()
+    expect(screen.getByText(zh.unconfiguredHint)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: zh.retry })).toBeNull()
+    expect(screen.queryByRole('button', { name: /向.+发起需求/u })).toBeNull()
+    expect(screen.queryByText('示例工程师林')).toBeNull()
+    expect(actions.refresh).not.toHaveBeenCalled()
+    expect(actions.startRequest).not.toHaveBeenCalled()
+  })
+
+  it('requests another page without hiding retained requests and prevents repeated loading clicks', () => {
+    const actions = page({ requests: [request()], requestsHaveMore: true })
+    openRequests()
+    fireEvent.click(screen.getByRole('button', { name: zh.loadMoreRequests }))
+    expect(actions.loadMoreRequests).toHaveBeenCalledOnce()
+    expect(screen.getByRole('button', { name: /示例订单页面改版/u })).toBeTruthy()
+    actions.set({ loadingMoreRequests: true })
+    const loading = screen.getByRole('button', { name: zh.loadingMoreRequests })
+    expect(loading).toHaveProperty('disabled', true)
+    fireEvent.click(loading)
+    expect(actions.loadMoreRequests).toHaveBeenCalledOnce()
+    actions.set({ requestsHaveMore: false, loadingMoreRequests: false })
+    expect(screen.queryByRole('button', { name: zh.loadMoreRequests })).toBeNull()
+    expect(screen.getByRole('button', { name: /示例订单页面改版/u })).toBeTruthy()
+  })
+
+  it('offers sign-in only when required, and retry only for a failed read', () => {
+    const actions = page({ availability: 'login-required', categories: [], engineers: [] })
+    fireEvent.click(screen.getByRole('button', { name: zh.openLogin }))
+    expect(actions.openLogin).toHaveBeenCalledOnce()
+    expect(screen.queryByRole('button', { name: zh.retry })).toBeNull()
+    actions.set({ availability: 'disabled' })
+    expect(screen.getByRole('heading', { name: zh.disabledTitle })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: zh.retry })).toBeNull()
+    actions.set({ availability: 'error', error: 'Example service read failed' })
+    fireEvent.click(screen.getByRole('button', { name: zh.retry }))
+    expect(actions.refresh).toHaveBeenCalledOnce()
+  })
+
+  it('filters the supplied directory by category and skill and clears the search', () => {
+    page()
+    expect(screen.getByText('3 位工程师')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '示例业务自动化' }))
+    expect(screen.getByRole('button', { name: '向示例工程师陈发起需求' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '向示例工程师林发起需求' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.allCategories }))
+    const search = screen.getByRole('searchbox', { name: zh.searchEngineers })
+    fireEvent.change(search, { target: { value: 'react' } })
+    expect(screen.getByRole('button', { name: '向示例工程师林发起需求' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '向示例工程师陈发起需求' })).toBeNull()
+    fireEvent.change(search, { target: { value: '没有此技能' } })
+    expect(screen.getByText(zh.noMatches)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.clearSearch }))
+    expect(search).toHaveProperty('value', '')
+    expect(screen.getByText('3 位工程师')).toBeTruthy()
+  })
+
+  it('honors admission separately from presence and starts only the chosen engineer request', () => {
+    const actions = page()
+    const unavailable = screen.getByRole('button', { name: '向示例工程师周发起需求' })
+    expect(unavailable).toHaveProperty('disabled', true)
+    fireEvent.click(unavailable)
+    expect(actions.startRequest).not.toHaveBeenCalled()
+    expect(screen.getByText(zh.presenceOffline)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '向示例工程师陈发起需求' }))
+    expect(actions.startRequest).toHaveBeenCalledExactlyOnceWith('example-engineer-chen')
+    expect(screen.getByRole('tab', { name: zh.myRequests }).getAttribute('aria-selected')).toBe('true')
+  })
+
+  it('opens the exact saved request and displays the server status and unread count', () => {
+    const actions = page({ requests: [request(), request({
+      id: 'example-request-complete', number: 'EXAMPLE-019', title: '示例文件归档',
+      engineer: exampleEngineers[1] ?? null, status: 'completed', preview: '已整理完毕', unreadCount: 0,
+    })] })
+    openRequests()
+    const selected = screen.getByRole('button', { name: /示例订单页面改版/u })
+    expect(within(selected).getByText(zh.statusCommunicating)).toBeTruthy()
+    expect(within(screen.getByRole('button', { name: /示例文件归档/u })).getByText(zh.statusCompleted)).toBeTruthy()
+    expect(screen.getByLabelText('示例订单页面改版，2 条未读消息')).toBeTruthy()
+    fireEvent.click(selected)
+    expect(actions.openRequest).toHaveBeenCalledExactlyOnceWith('example-request')
+    expect(actions.startRequest).not.toHaveBeenCalled()
+  })
+
+  it('keeps text under controller ownership and permits the first text-only submission', () => {
+    const selected = conversation({ scopeKey: 'example-draft', requestId: null, number: null, title: '', status: null })
+    const actions = page({ conversation: selected, draft: draft({ scopeKey: selected.scopeKey }) })
+    openRequests()
+    const input = screen.getByPlaceholderText(zh.describeRequest)
+    const send = screen.getByRole('button', { name: zh.sendAndPublish })
+    expect(send).toHaveProperty('disabled', true)
+    fireEvent.change(input, { target: { value: '请制作一个可筛选的订单列表' } })
+    expect(actions.updateDraft).toHaveBeenCalledExactlyOnceWith({ text: '请制作一个可筛选的订单列表' })
+    actions.set({ draft: draft({ scopeKey: selected.scopeKey, text: '请制作一个可筛选的订单列表' }) })
+    fireEvent.click(send)
+    expect(actions.send).toHaveBeenCalledOnce()
+    expect(input).toHaveProperty('value', '请制作一个可筛选的订单列表')
+    expect(actions.openRequest).not.toHaveBeenCalled()
+  })
+
+  it('permits attachment-only submission but blocks uploading and failed attachments', () => {
+    const selected = conversation({ scopeKey: 'example-draft', requestId: null, number: null, status: null })
+    const pending = attachment({ status: 'uploading', progressPercent: 42 })
+    const actions = page({ conversation: selected, draft: draft({ scopeKey: selected.scopeKey, attachments: [pending] }) })
+    openRequests()
+    const send = screen.getByRole('button', { name: zh.sendAndPublish })
+    expect(send).toHaveProperty('disabled', true)
+    expect(screen.getByText('已上传 42%')).toBeTruthy()
+    const picker = screen.getByLabelText(zh.addAttachments)
+    expect(picker.getAttribute('accept')).toBe('image/*,video/*,.pdf,.txt')
+    expect(picker).toHaveProperty('multiple', true)
+    const file = new File(['Example request'], '示例需求.txt', { type: 'text/plain' })
+    fireEvent.change(picker, { target: { files: [file] } })
+    expect(actions.addAttachments).toHaveBeenCalledExactlyOnceWith([file])
+    actions.set({ draft: draft({ scopeKey: selected.scopeKey, attachments: [attachment({ status: 'failed' })] }) })
+    expect(send).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: zh.retryAttachment }))
+    expect(actions.retryAttachment).toHaveBeenCalledExactlyOnceWith('example-file')
+    fireEvent.click(screen.getByRole('button', { name: '移除示例说明.pdf' }))
+    expect(actions.removeAttachment).toHaveBeenCalledExactlyOnceWith('example-file')
+    actions.set({ draft: draft({ scopeKey: selected.scopeKey, attachments: [attachment()] }) })
+    expect(send).toHaveProperty('disabled', false)
+    fireEvent.click(send)
+    expect(actions.send).toHaveBeenCalledOnce()
+    actions.set({ draft: draft({ scopeKey: selected.scopeKey, attachments: [attachment()], sending: true }) })
+    expect(screen.getByRole('button', { name: zh.sending })).toHaveProperty('disabled', true)
+  })
+
+  it('keeps the visible attachment formats synchronized with the supplied upload rules', () => {
+    const selected = conversation()
+    const uploadRules = { ...demandState().uploadRules, accept: 'image/png,video/mp4,.png' }
+    const actions = page({ conversation: selected, draft: draft(), uploadRules })
+    openRequests()
+    expect(screen.getByText(/格式：PNG \/ MP4$/u)).toBeTruthy()
+    expect(screen.getByLabelText(zh.addAttachments).getAttribute('accept')).toBe(uploadRules.accept)
+    const changedAccept = 'video/webm,application/x-custom,.special'
+    actions.set({ uploadRules: { ...uploadRules, accept: changedAccept } })
+    expect(screen.getByText(/格式：WebM \/ application\/x-custom \/ \.special$/u)).toBeTruthy()
+    expect(screen.queryByText(/格式：PNG \/ MP4$/u)).toBeNull()
+    expect(screen.getByLabelText(zh.addAttachments).getAttribute('accept')).toBe(changedAccept)
+    actions.set({ uploadRules: { ...uploadRules, accept: 'image/*,video/*' } })
+    expect(screen.getByText(/格式：所有图片格式 \/ 所有视频格式$/u)).toBeTruthy()
+  })
+
+  it('preserves historical authors after reassignment and does not guess missing message authors', () => {
+    page({ conversation: conversation({ engineer: exampleEngineers[1] ?? null, messages: [
+      message({ id: 'example-former-author', author: 'engineer', authorName: '示例工程师林', text: '示例历史交接内容' }),
+      message({ id: 'example-unnamed-author', author: 'engineer', text: '示例缺名历史内容' }),
+    ] }), draft: draft() })
+    openRequests()
+    expect(screen.getByRole('heading', { name: '示例工程师陈' })).toBeTruthy()
+    const messages = within(screen.getByRole('log'))
+    expect(messages.getByText('示例工程师林')).toBeTruthy()
+    expect(messages.getByText(zh.engineerName)).toBeTruthy()
+    expect(messages.queryByText('示例工程师陈')).toBeNull()
+  })
+
+  it('uses server send and read receipts and retries only the selected failed message', () => {
+    const selected = conversation({ messages: [
+      message({ id: 'example-sending', text: '示例发送中', state: 'sending' }),
+      message({ id: 'example-sent', text: '示例已发送', state: 'sent' }),
+      message({ id: 'example-read', text: '示例已读', state: 'sent', read: true }),
+      message({ id: 'example-failed', text: '示例发送失败', state: 'failed', retryable: true }),
+    ] })
+    const actions = page({ conversation: selected, draft: draft() })
+    openRequests()
+    expect(screen.getByText(zh.sending)).toBeTruthy()
+    expect(screen.getByText(zh.sent)).toBeTruthy()
+    expect(screen.getByText(zh.read)).toBeTruthy()
+    expect(screen.getByText(zh.sendFailed)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.retryMessage }))
+    expect(actions.retryMessage).toHaveBeenCalledExactlyOnceWith('example-failed')
+    expect(actions.send).not.toHaveBeenCalled()
+  })
+
+  it('retains conversation messages when an earlier-message read fails and respects read-only state', () => {
+    const selected = conversation({
+      messages: [message()], messagesStatus: 'error', hasEarlier: true, canSend: false,
+      readOnlyReason: '示例需求已经关闭',
+    })
+    const actions = page({ conversation: selected, draft: draft({ text: '待保留的草稿' }) })
+    openRequests()
+    expect(screen.getByText('请增加订单筛选功能')).toBeTruthy()
+    expect(screen.getByText(zh.messagesFailed)).toBeTruthy()
+    expect(screen.getByText('示例需求已经关闭')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: zh.send })).toBeNull()
+    expect(screen.queryByRole('textbox', { name: zh.messagePlaceholder })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.loadEarlier }))
+    expect(actions.loadEarlierMessages).toHaveBeenCalledOnce()
+    expect(actions.send).not.toHaveBeenCalled()
+  })
+
+  it('opens authorized images in a dismissible preview and preserves native video controls', () => {
+    const selected = conversation({ messages: [message({ author: 'engineer', attachments: [
+      attachment({ id: 'example-image', kind: 'image', name: '示例界面.png', previewUrl: 'https://example.invalid/preview.png' }),
+      attachment({ id: 'example-video', kind: 'video', name: '示例演示.mp4', previewUrl: 'https://example.invalid/demo.mp4' }),
+    ] })] })
+    const actions = page({ conversation: selected, draft: draft() })
+    openRequests()
+    const opener = screen.getByRole('button', { name: '预览示例界面.png' })
+    opener.focus()
+    fireEvent.click(opener)
+    const dialog = screen.getByRole('dialog', { name: zh.imagePreview })
+    expect(within(dialog).getByRole('img', { name: '示例界面.png' }).getAttribute('src')).toBe('https://example.invalid/preview.png')
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(document.activeElement).toBe(opener)
+    expect(screen.getByLabelText('示例演示.mp4')).toHaveProperty('controls', true)
+    fireEvent.click(screen.getByRole('button', { name: '下载示例界面.png' }))
+    expect(actions.downloadAttachment).toHaveBeenCalledExactlyOnceWith('example-image')
+  })
+
+  it('requires inline delivery confirmation before invoking the exact acceptance action', () => {
+    const selected = conversation({ status: 'awaiting_acceptance', delivery: {
+      id: 'example-delivery', title: '示例订单页面交付', description: '包含筛选表单和移动端页面',
+      submittedAt: '2026-11-18T03:00:00Z', status: 'pending', attachments: [],
+    } })
+    const actions = page({ conversation: selected, draft: draft() })
+    openRequests()
+    fireEvent.click(screen.getByRole('button', { name: zh.acceptDelivery }))
+    expect(actions.acceptDelivery).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: zh.acceptConfirm })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.cancel }))
+    expect(screen.queryByRole('button', { name: zh.acceptConfirm })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.acceptDelivery }))
+    fireEvent.click(screen.getByRole('button', { name: zh.acceptConfirm }))
+    expect(actions.acceptDelivery).toHaveBeenCalledExactlyOnceWith('example-delivery')
+    actions.set({ conversation: { ...selected, acceptingDelivery: true } })
+    expect(screen.getByRole('button', { name: zh.accepting })).toHaveProperty('disabled', true)
+  })
+
+  it('reopens each saved draft by its existing scope and does not duplicate the selected draft row', () => {
+    const first = draftSummary({ scopeKey: 'example-draft-a', title: '示例历史草稿' })
+    const second = draftSummary({ scopeKey: 'example-draft-b', title: '示例当前草稿' })
+    const actions = page({ drafts: [first, second],
+      conversation: conversation({ scopeKey: second.scopeKey, requestId: null, number: null, status: null, title: second.title }),
+      draft: draft({ scopeKey: second.scopeKey, text: '当前草稿正文' }),
+    })
+    openRequests()
+    const group = screen.getByRole('group', { name: zh.draftsGroup })
+    expect(within(group).getAllByRole('button')).toHaveLength(2)
+    expect(within(group).getAllByText(second.title)).toHaveLength(1)
+    fireEvent.click(within(group).getByRole('button', { name: /示例历史草稿/u }))
+    expect(actions.openDraft).toHaveBeenCalledExactlyOnceWith(first.scopeKey)
+    expect(actions.startRequest).not.toHaveBeenCalled()
+    expect(actions.send).not.toHaveBeenCalled()
+    actions.set({ conversation: conversation({ scopeKey: first.scopeKey, requestId: null, number: null, status: null, title: first.title }),
+      draft: draft({ scopeKey: first.scopeKey, text: '恢复的旧草稿正文' }) })
+    expect(screen.getByRole('textbox', { name: zh.describeRequest })).toHaveProperty('value', '恢复的旧草稿正文')
+  })
+
+  it('labels unresolved publication and checks the original operation without allowing its body to change', () => {
+    const pending = draftSummary({ pending: true, error: zh.resultUnknown })
+    const actions = page({ drafts: [pending],
+      conversation: conversation({ scopeKey: pending.scopeKey, requestId: null, number: null, status: null, canSend: false }),
+      draft: draft({ scopeKey: pending.scopeKey, text: '原始发布正文', attachments: [attachment()] }),
+    })
+    openRequests()
+    expect(screen.getAllByText(zh.pendingPublish).length).toBeGreaterThan(0)
+    expect(screen.getByText(zh.resultUnknown)).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: zh.describeRequest })).toHaveProperty('disabled', true)
+    const remove = screen.getByRole('button', { name: '移除示例说明.pdf' })
+    expect(remove).toHaveProperty('disabled', true)
+    fireEvent.click(remove)
+    expect(actions.removeAttachment).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: zh.sendAndPublish })).toBeNull()
+    actions.set({ draft: draft({ scopeKey: pending.scopeKey, text: '' }) })
+    expect(screen.getByRole('button', { name: zh.confirmPublication })).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByRole('button', { name: zh.confirmPublication }))
+    expect(actions.send).toHaveBeenCalledOnce()
+    expect(actions.startRequest).not.toHaveBeenCalled()
+    actions.set({ draft: draft({ scopeKey: pending.scopeKey, text: '', sending: true }) })
+    expect(screen.getByRole('button', { name: zh.sending })).toHaveProperty('disabled', true)
+  })
+
+  it('freezes attachment removal and retry while this draft is sending', () => {
+    const actions = page({ conversation: conversation(), draft: draft({ sending: true,
+      attachments: [attachment({ status: 'failed', error: '示例上传尚未确认' })],
+    }) })
+    openRequests()
+    const remove = screen.getByRole('button', { name: '移除示例说明.pdf' })
+    const retry = screen.getByRole('button', { name: zh.retryAttachment })
+    expect(remove).toHaveProperty('disabled', true)
+    expect(retry).toHaveProperty('disabled', true)
+    fireEvent.click(remove)
+    fireEvent.click(retry)
+    expect(actions.removeAttachment).not.toHaveBeenCalled()
+    expect(actions.retryAttachment).not.toHaveBeenCalled()
+  })
+})
