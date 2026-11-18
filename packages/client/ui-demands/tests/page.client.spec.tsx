@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** Server-supplied people, request receipts, and scoped drafts govern the demand page. */
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
 import { bindSnapshotSelector } from '@deepseek-ai/dsh-client-test-runtime'
 import type {} from '../src/client/index.ts'
@@ -10,7 +10,14 @@ import { zh } from '../src/client/locales.ts'
 import type { DemandPageProps, DemandPageState } from '../src/client/types.ts'
 import { attachment, conversation, demandState, draft, draftSummary, exampleEngineers, message, request, serviceProfile } from './fixtures.client.ts'
 
-afterEach(cleanup)
+beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class {
+    observe(): void { /* Layout is exercised by the browser suite. */ }
+    unobserve(): void { /* No layout observation in jsdom. */ }
+    disconnect(): void { /* No retained browser observer. */ }
+  })
+})
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 const translations: ReadonlyMap<string, string> = new Map(Object.entries(zh))
 
 function unusedHook(): never { throw new Error('The demand page reads only its injected service snapshot') }
@@ -217,7 +224,7 @@ describe('human-engineer demand page', () => {
     const actions = page({ conversation: selected, draft: draft({ scopeKey: selected.scopeKey }) })
     openRequests()
     const input = screen.getByPlaceholderText(zh.describeRequest)
-    const send = screen.getByRole('button', { name: zh.sendAndPublish })
+    const send = screen.getByRole('button', { name: zh.send })
     expect(send).toHaveProperty('disabled', true)
     fireEvent.change(input, { target: { value: '请制作一个可筛选的订单列表' } })
     expect(actions.updateDraft).toHaveBeenCalledExactlyOnceWith({ text: '请制作一个可筛选的订单列表' })
@@ -233,10 +240,10 @@ describe('human-engineer demand page', () => {
     const pending = attachment({ status: 'uploading', progressPercent: 42 })
     const actions = page({ conversation: selected, draft: draft({ scopeKey: selected.scopeKey, attachments: [pending] }) })
     openRequests()
-    const send = screen.getByRole('button', { name: zh.sendAndPublish })
+    const send = screen.getByRole('button', { name: zh.send })
     expect(send).toHaveProperty('disabled', true)
     expect(screen.getByText('已上传 42%')).toBeTruthy()
-    const picker = screen.getByLabelText(zh.addAttachments)
+    const picker = screen.getByLabelText(zh.selectAttachmentFiles)
     expect(picker.getAttribute('accept')).toBe('image/*,video/*,.pdf,.txt')
     expect(picker).toHaveProperty('multiple', true)
     const file = new File(['Example request'], '示例需求.txt', { type: 'text/plain' })
@@ -261,15 +268,70 @@ describe('human-engineer demand page', () => {
     const uploadRules = { ...demandState().uploadRules, accept: 'image/png,video/mp4,.png' }
     const actions = page({ conversation: selected, draft: draft(), uploadRules })
     openRequests()
+    expect(screen.queryByText(/格式：PNG \/ MP4$/u)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.attachmentRules }))
     expect(screen.getByText(/格式：PNG \/ MP4$/u)).toBeTruthy()
-    expect(screen.getByLabelText(zh.addAttachments).getAttribute('accept')).toBe(uploadRules.accept)
+    expect(screen.getByLabelText(zh.selectAttachmentFiles).getAttribute('accept')).toBe(uploadRules.accept)
     const changedAccept = 'video/webm,application/x-custom,.special'
     actions.set({ uploadRules: { ...uploadRules, accept: changedAccept } })
     expect(screen.getByText(/格式：WebM \/ application\/x-custom \/ \.special$/u)).toBeTruthy()
     expect(screen.queryByText(/格式：PNG \/ MP4$/u)).toBeNull()
-    expect(screen.getByLabelText(zh.addAttachments).getAttribute('accept')).toBe(changedAccept)
+    expect(screen.getByLabelText(zh.selectAttachmentFiles).getAttribute('accept')).toBe(changedAccept)
     actions.set({ uploadRules: { ...uploadRules, accept: 'image/*,video/*' } })
     expect(screen.getByText(/格式：所有图片格式 \/ 所有视频格式$/u)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.attachmentRules }))
+    expect(screen.queryByText(/格式：所有图片格式 \/ 所有视频格式$/u)).toBeNull()
+  })
+
+  it('sends with Enter while preserving newline, composition and held-key behavior', () => {
+    const actions = page({ conversation: conversation(), draft: draft({ text: '确认需求范围' }) })
+    openRequests()
+    const input = screen.getByRole('textbox', { name: zh.messagePlaceholder })
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    fireEvent.compositionStart(input)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.compositionEnd(input)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    fireEvent.keyUp(input, { key: 'Enter' })
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
+    fireEvent.keyDown(input, { key: 'Enter', repeat: true })
+    expect(actions.send).not.toHaveBeenCalled()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(actions.send).toHaveBeenCalledOnce()
+    actions.set({ draft: draft({ text: '' }) })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(actions.send).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the chat composer compact and exposes optional fields without changing the draft scope', () => {
+    const selected = conversation({ scopeKey: 'example-draft', requestId: null, number: null, status: null })
+    const actions = page({ conversation: selected, draft: draft({ scopeKey: selected.scopeKey, text: '当前需求内容' }) })
+    openRequests()
+    expect(screen.queryByRole('heading', { name: zh.pageTitle })).toBeNull()
+    expect(screen.queryByLabelText(zh.budgetLabel)).toBeNull()
+    expect(screen.getByRole('button', { name: zh.send })).toBeTruthy()
+    const input = screen.getByRole('textbox', { name: zh.describeRequest })
+    expect(input.style.height).toBe('36px')
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 300 })
+    actions.set({ draft: draft({ scopeKey: selected.scopeKey, text: '较长需求说明'.repeat(80) }) })
+    expect(input.style.height).toBe('160px')
+    expect(input.style.overflowY).toBe('auto')
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, value: 36 })
+    actions.set({ draft: draft({ scopeKey: selected.scopeKey, text: '当前需求内容' }) })
+    expect(input.style.height).toBe('36px')
+    const details = screen.getByRole('button', { name: zh.optionalDetails })
+    fireEvent.click(details)
+    expect(details.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.change(screen.getByLabelText(zh.titleLabel), { target: { value: '订单页面需求' } })
+    expect(actions.updateDraft).toHaveBeenCalledExactlyOnceWith({ title: '订单页面需求' })
+    expect(screen.getByLabelText(zh.budgetLabel)).toBeTruthy()
+    expect(screen.getByLabelText(zh.expectedDateLabel)).toBeTruthy()
+    fireEvent.click(details)
+    expect(screen.queryByLabelText(zh.budgetLabel)).toBeNull()
+    expect(input).toHaveProperty('value', '当前需求内容')
+    expect(actions.send).not.toHaveBeenCalled()
+    expect(actions.startRequest).not.toHaveBeenCalled()
   })
 
   it('preserves historical authors after reassignment and does not guess missing message authors', () => {
@@ -393,7 +455,7 @@ describe('human-engineer demand page', () => {
     expect(remove).toHaveProperty('disabled', true)
     fireEvent.click(remove)
     expect(actions.removeAttachment).not.toHaveBeenCalled()
-    expect(screen.queryByRole('button', { name: zh.sendAndPublish })).toBeNull()
+    expect(screen.queryByRole('button', { name: zh.send })).toBeNull()
     actions.set({ draft: draft({ scopeKey: pending.scopeKey, text: '' }) })
     expect(screen.getByRole('button', { name: zh.confirmPublication })).toHaveProperty('disabled', false)
     fireEvent.click(screen.getByRole('button', { name: zh.confirmPublication }))

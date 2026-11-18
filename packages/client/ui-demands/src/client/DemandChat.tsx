@@ -1,8 +1,9 @@
 /** Private human conversation, scoped draft, uploads and delivery acceptance. */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import {
   Button, Input, IconChevronLeftOutlineRegular, IconNewChatOutlineRegular,
   IconPaperclipOutlineRegular, IconPaperPlaneOutlineRegular, IconCheckCircleOutlineRegular,
+  IconInfoOutlineRegular, IconListPenOutlineRegular, Tooltip, observeComposition,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DemandConversation, DemandDraft, DemandPageFace, DemandUploadRules } from './types.ts'
 import {
@@ -61,13 +62,42 @@ export function DemandChat(props: {
   const { conversation, draft, pendingPublish, rules, actions, back, create, t } = props
   const scroller = useRef<HTMLDivElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
+  const textInput = useRef<HTMLTextAreaElement>(null)
+  const composition = useRef<ReturnType<typeof observeComposition> | null>(null)
   const pinned = useRef(true)
   const lastScope = useRef(conversation.scopeKey)
   const [confirmDelivery, setConfirmDelivery] = useState<string | null>(null)
+  const [showRules, setShowRules] = useState(false)
+  const [showDetails, setShowDetails] = useState(false)
   const currentDraft = draft?.scopeKey === conversation.scopeKey ? draft : null
   const unassigned = conversation.assigned === false
   const name = unassigned ? t('platformReception') : engineerName(conversation.engineer, t)
   const lastMessage = conversation.messages.at(-1)
+  useEffect(() => {
+    const guard = observeComposition(document)
+    composition.current = guard
+    return () => { composition.current = null; guard.dispose() }
+  }, [])
+  useLayoutEffect(() => {
+    const input = textInput.current
+    if (input === null) return
+    const resize = () => {
+      input.style.height = '0px'
+      const height = Math.max(36, Math.min(input.scrollHeight, 160))
+      input.style.height = `${height}px`
+      input.style.overflowY = input.scrollHeight > height ? 'auto' : 'hidden'
+    }
+    resize()
+    let width = input.getBoundingClientRect().width
+    const observer = new ResizeObserver(() => {
+      const nextWidth = input.getBoundingClientRect().width
+      if (nextWidth === width) return
+      width = nextWidth
+      resize()
+    })
+    observer.observe(input)
+    return () => { observer.disconnect() }
+  }, [currentDraft?.text, conversation.canSend, pendingPublish])
   useEffect(() => {
     const pane = scroller.current
     if (pane === null) return
@@ -100,10 +130,10 @@ export function DemandChat(props: {
           {conversation.number ? <span>{t('requestNumber', { number: conversation.number })}</span>
             : <span>{t(pendingPublish ? 'pendingPublish' : 'notPublished')}</span>}
           {unassigned || conversation.engineer === null ? null : <EngineerPresence engineer={conversation.engineer} t={t} />}
+          {conversation.status === null ? null : <DemandStatusTag status={conversation.status} unassigned={unassigned} t={t} />}
           {!conversation.serviceProfileName?.trim() ? null : <span>{t('serviceSource', { name: conversation.serviceProfileName })}</span>}
         </div>
       </div>
-      {conversation.status === null ? null : <DemandStatusTag status={conversation.status} unassigned={unassigned} t={t} />}
       <Button className={css.chatNew} size="sm" onClick={create} icon={<IconNewChatOutlineRegular size={15} />}>{t('newRequest')}</Button>
     </header>
     <div ref={scroller} className={css.messages} role="log" aria-label={t('chatWith', { name })}
@@ -168,50 +198,62 @@ export function DemandChat(props: {
     {!conversation.canSend && !pendingPublish ? <div className={css.readOnly}>{conversation.readOnlyReason ?? t('requestReadOnly')}</div>
       : <form className={css.composer} onSubmit={(event) => { event.preventDefault(); if (canSend) actions.send() }}>
         {unassigned || conversation.engineer?.presence !== 'offline' ? null : <p className={css.offlineHint}>{t('offlineHint')}</p>}
-        <div className={css.composerFields}>
-          <DemandUploads attachments={currentDraft?.attachments ?? []} remove={actions.removeAttachment}
-            retry={actions.retryAttachment} disabled={editingLocked} t={t} />
-          <textarea value={currentDraft?.text ?? ''} disabled={editingLocked}
-            aria-label={t(conversation.requestId === null ? 'describeRequest' : 'messagePlaceholder')}
-            placeholder={t(conversation.requestId === null ? 'describeRequest' : 'messagePlaceholder')}
-            onChange={(event) => { actions.updateDraft({ text: event.target.value }) }}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.ctrlKey || event.metaKey) && !event.nativeEvent.isComposing) {
-                event.preventDefault()
-                if (canSend) actions.send()
-              }
-            }} />
-          {conversation.requestId !== null ? null : <details className={css.optionalDetails}>
-            <summary>{t('optionalDetails')}</summary>
-            <div className={css.optionalFields}>
-              <label>{t('titleLabel')}<Input value={currentDraft?.title ?? ''} placeholder={t('titlePlaceholder')}
-                disabled={editingLocked}
-                onChange={(event) => { actions.updateDraft({ title: event.target.value }) }} /></label>
-              <label>{t('budgetLabel')}<Input value={currentDraft?.budget ?? ''} placeholder={t('budgetPlaceholder')}
-                disabled={editingLocked}
-                onChange={(event) => { actions.updateDraft({ budget: event.target.value }) }} /></label>
-              <label>{t('expectedDateLabel')}<Input type="date" value={currentDraft?.expectedDate ?? ''}
-                disabled={editingLocked}
-                onChange={(event) => { actions.updateDraft({ expectedDate: event.target.value }) }} /></label>
-            </div>
-          </details>}
+        <div className={css.composerCard}>
+          <div className={css.composerFields}>
+            <DemandUploads attachments={currentDraft?.attachments ?? []} remove={actions.removeAttachment}
+              retry={actions.retryAttachment} disabled={editingLocked} t={t} />
+            <textarea ref={textInput} rows={1} value={currentDraft?.text ?? ''} disabled={editingLocked}
+              aria-label={t(conversation.requestId === null ? 'describeRequest' : 'messagePlaceholder')}
+              placeholder={t(conversation.requestId === null ? 'describeRequest' : 'messagePlaceholder')}
+              onChange={(event) => { actions.updateDraft({ text: event.target.value }) }}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.altKey) {
+                  if (composition.current?.guards(event.nativeEvent) ?? event.nativeEvent.isComposing) return
+                  event.preventDefault()
+                  if (canSend && !event.repeat) actions.send()
+                }
+              }} />
+            {conversation.requestId !== null || !showDetails ? null
+              : <div className={css.optionalFields} id={`details-${conversation.scopeKey}`}>
+                <label>{t('titleLabel')}<Input value={currentDraft?.title ?? ''} placeholder={t('titlePlaceholder')}
+                  disabled={editingLocked}
+                  onChange={(event) => { actions.updateDraft({ title: event.target.value }) }} /></label>
+                <label>{t('budgetLabel')}<Input value={currentDraft?.budget ?? ''} placeholder={t('budgetPlaceholder')}
+                  disabled={editingLocked}
+                  onChange={(event) => { actions.updateDraft({ budget: event.target.value }) }} /></label>
+                <label>{t('expectedDateLabel')}<Input type="date" value={currentDraft?.expectedDate ?? ''}
+                  disabled={editingLocked}
+                  onChange={(event) => { actions.updateDraft({ expectedDate: event.target.value }) }} /></label>
+              </div>}
+          </div>
+          <footer className={css.composerToolbar}>
+            <input ref={fileInput} className={css.fileInput} type="file" accept={rules.accept} multiple={rules.maxFiles > 1}
+              disabled={editingLocked}
+              aria-label={t('selectAttachmentFiles')} onChange={(event) => {
+                const files = Array.from(event.currentTarget.files ?? [])
+                if (files.length > 0) actions.addAttachments(files)
+                event.currentTarget.value = ''
+              }} />
+            <Tooltip label={t('addAttachments')} side="top" portal>
+              <Button size="sm" disabled={editingLocked || rules.maxFiles < 1} aria-label={t('addAttachments')}
+                onClick={() => { fileInput.current?.click() }} icon={<IconPaperclipOutlineRegular size={18} />} />
+            </Tooltip>
+            <Tooltip label={t('attachmentRules')} side="top" portal>
+              <Button size="sm" aria-label={t('attachmentRules')} aria-expanded={showRules} aria-controls={`rules-${conversation.scopeKey}`}
+                onClick={() => { setShowRules(value => !value) }} icon={<IconInfoOutlineRegular size={17} />} />
+            </Tooltip>
+            {conversation.requestId !== null ? null : <Button size="sm" aria-expanded={showDetails}
+              aria-controls={`details-${conversation.scopeKey}`} disabled={editingLocked}
+              onClick={() => { setShowDetails(value => !value) }} icon={<IconListPenOutlineRegular size={16} />}>{t('optionalDetails')}</Button>}
+            <Button className={css.sendButton} type="submit" variant="primary" disabled={!canSend}
+              icon={<IconPaperPlaneOutlineRegular size={16} />}>
+              {t(currentDraft?.sending ? 'sending' : pendingPublish ? 'confirmPublication' : 'send')}
+            </Button>
+          </footer>
         </div>
-        <footer className={css.composerToolbar}>
-          <input ref={fileInput} className={css.fileInput} type="file" accept={rules.accept} multiple={rules.maxFiles > 1}
-            disabled={editingLocked}
-            aria-label={t('addAttachments')} onChange={(event) => {
-              const files = Array.from(event.currentTarget.files ?? [])
-              if (files.length > 0) actions.addAttachments(files)
-              event.currentTarget.value = ''
-            }} />
-          <Button size="sm" disabled={editingLocked || rules.maxFiles < 1}
-            onClick={() => { fileInput.current?.click() }} icon={<IconPaperclipOutlineRegular size={16} />}>{t('addAttachments')}</Button>
-          <span className={css.uploadLimits}>{t('uploadRulesWithFormats', { limits: uploadHint, formats: acceptedFormats(rules.accept, t) })}</span>
-          <Button type="submit" variant="primary" disabled={!canSend} icon={<IconPaperPlaneOutlineRegular size={16} />}>
-            {t(currentDraft?.sending ? 'sending' : pendingPublish ? 'confirmPublication'
-              : conversation.requestId === null ? 'sendAndPublish' : 'send')}
-          </Button>
-        </footer>
+        {!showRules ? null : <p id={`rules-${conversation.scopeKey}`} className={css.uploadLimits}>
+          {t('uploadRulesWithFormats', { limits: uploadHint, formats: acceptedFormats(rules.accept, t) })}
+        </p>}
       </form>}
   </section>
 }

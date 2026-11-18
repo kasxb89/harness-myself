@@ -38,19 +38,20 @@ export function DemandPage(props: DemandPageProps): ReactNode {
     || state.requests.length > 0 || state.drafts.length > 0 || state.conversation !== null
   const unavailable = availability === 'unconfigured' || availability === 'disabled' || availability === 'login-required'
   const showUnavailable = availability === 'login-required' || (unavailable && !hasRetainedData)
-  return <section className={css.page} aria-label={t('pageTitle')}>
+  return <section className={css.page} data-view={view} aria-label={t('pageTitle')}>
     <div className={css.pageContent}>
-      <header className={css.pageHeader}>
+      {view !== 'engineers' ? null : <header className={css.pageHeader}>
         <span className={css.pageIcon} aria-hidden="true"><IconChecklistOutlineRegular size={27} /></span>
         <div><h1>{t('pageTitle')}</h1><p>{t(services ? 'servicePageIntro' : 'pageIntro')}</p></div>
-      </header>
-      <SegmentedTabs className={css.navigation} label={t('navigation')} value={view} onChange={(next) => {
-        setView(next)
-        if (next === 'requests') setMobileChat(false)
-      }} items={[
-        { value: 'engineers', label: findLabel, id: `${navigationId}-engineers`, panelId: `${navigationId}-engineers-panel` },
-        { value: 'requests', label: t('myRequests'), id: `${navigationId}-requests`, panelId: `${navigationId}-requests-panel` },
-      ]} />
+      </header>}
+      <SegmentedTabs className={view === 'requests' ? css.conversationNavigation : css.navigation}
+        label={t('navigation')} value={view} onChange={(next) => {
+          setView(next)
+          if (next === 'requests') setMobileChat(false)
+        }} items={[
+          { value: 'engineers', label: findLabel, id: `${navigationId}-engineers`, panelId: `${navigationId}-engineers-panel` },
+          { value: 'requests', label: t('myRequests'), id: `${navigationId}-requests`, panelId: `${navigationId}-requests-panel` },
+        ]} />
       {availability !== 'error' || !hasRetainedData ? null : <div className={css.pageNotice} role="alert">
         <span>{state.error ?? t('errorHint')}</span><Button size="sm" onClick={refresh}>{t('retry')}</Button>
       </div>}

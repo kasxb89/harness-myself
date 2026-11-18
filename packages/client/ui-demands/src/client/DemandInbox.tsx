@@ -1,8 +1,10 @@
 /** Existing private requests, their server stages and unread counts. */
 import { useState, type ReactNode } from 'react'
-import { Button, Input, Pill, IconPlusOutlineRegular, IconSearchOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, Menu, IconPlusOutlineRegular, IconSearchOutlineRegular, IconSlidersTwoOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DemandDraftSummary, DemandPageState, DemandStatus } from './types.ts'
-import { DemandEmpty, DemandSkeleton, DemandStatusTag, demandTime, engineerName, type DemandTranslate } from './DemandUI.tsx'
+import {
+  DemandEmpty, DemandSkeleton, DemandStatusTag, EngineerAvatar, ServiceProfileAvatar, demandTime, engineerName, type DemandTranslate,
+} from './DemandUI.tsx'
 import css from './DemandPage.module.css'
 
 /**
@@ -22,6 +24,7 @@ export function DemandInbox(props: {
   const { state, open, openDraft, create, refresh, loadMore, t } = props
   const [query, setQuery] = useState('')
   const [status, setStatus] = useState<DemandStatus | ''>('')
+  const [filterOpen, setFilterOpen] = useState(false)
   const search = query.trim().toLocaleLowerCase()
   const rows = state.requests.filter(request => (status === '' || request.status === status)
     && [request.title, request.number, request.preview, request.engineer?.displayName ?? '', request.serviceProfileName ?? '']
@@ -40,12 +43,17 @@ export function DemandInbox(props: {
     <div className={css.inboxHeading}><h2>{t('myRequests')}</h2>
       <Button size="sm" variant="outline" onClick={create} icon={<IconPlusOutlineRegular size={14} />}>{t('newRequest')}</Button>
     </div>
-    <Input type="search" aria-label={t('searchRequests')} placeholder={t('searchRequests')} value={query}
-      icon={<IconSearchOutlineRegular size={15} />} onChange={(event) => { setQuery(event.target.value) }} />
-    <div className={css.inboxFilters}>
-      <Pill active={status === ''} aria-pressed={status === ''} onClick={() => { setStatus('') }}>{t('allRequests')}</Pill>
-      {statusFilters.map(value => <Pill key={value} active={status === value} aria-pressed={status === value}
-        onClick={() => { setStatus(value) }}><DemandStatusTag status={value} t={t} /></Pill>)}
+    <div className={css.inboxSearch}>
+      <Input type="search" aria-label={t('searchRequests')} placeholder={t('searchRequests')} value={query}
+        icon={<IconSearchOutlineRegular size={15} />} onChange={(event) => { setQuery(event.target.value) }} />
+      <Menu open={filterOpen} portal align="end" selectedId={status || 'all'}
+        onClose={() => { setFilterOpen(false) }} items={[
+          { id: 'all', label: t('allRequests') },
+          ...statusFilters.map(value => ({ id: value, label: <DemandStatusTag status={value} t={t} /> })),
+        ]} onSelect={(id) => { setStatus(statusFilters.find(value => value === id) ?? ''); setFilterOpen(false) }}
+        anchor={<Button size="sm" aria-label={t('filterRequests')} aria-haspopup="menu" aria-expanded={filterOpen}
+          data-active={status !== ''} onClick={() => { setFilterOpen(value => !value) }}
+          icon={<IconSlidersTwoOutlineRegular size={16} />}>{t('filterRequests')}</Button>} />
     </div>
     {state.requestsStatus !== 'error' ? null : <div className={css.inlineNotice} role="alert">
       <span>{t('errorHint')}</span><Button size="sm" onClick={refresh}>{t('retry')}</Button>
@@ -58,12 +66,16 @@ export function DemandInbox(props: {
           const selected = row.scopeKey === current?.scopeKey
           return <button type="button" key={row.scopeKey} className={css.requestRow} data-selected={selected}
             aria-current={selected ? 'true' : undefined} onClick={() => { openDraft(row.scopeKey) }}>
-            <span className={css.requestRowTop}><strong>{row.title.trim() || t('newRequest')}</strong>
-              <span className={css.draftLabel} data-pending={row.pending}>{t(row.pending ? 'pendingPublish' : 'notPublished')}</span></span>
-            <span className={css.requestRowMeta}><span>{row.assigned === false ? t('platformReception') : engineerName(row.engineer, t)}</span>
-              {row.updatedAt === '' ? null : <time dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>}</span>
-            {!row.serviceProfileName?.trim() ? null : <span className={css.requestPerson}>{t('serviceSource', { name: row.serviceProfileName })}</span>}
-            {row.error === null ? null : <span className={css.draftError}>{row.error}</span>}
+            {row.assigned === false ? <ServiceProfileAvatar small /> : <EngineerAvatar engineer={row.engineer} small />}
+            <span className={css.requestRowBody}>
+              <span className={css.requestRowTop}><strong>{row.title.trim() || t('newRequest')}</strong>
+                {row.updatedAt === '' ? null : <time dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>}</span>
+              <span className={css.requestPreview}>{row.error ?? (selected && state.draft?.scopeKey === row.scopeKey
+                && state.draft.text.trim() !== '' ? state.draft.text : row.serviceProfileName?.trim()
+                  ? t('serviceSource', { name: row.serviceProfileName })
+                  : row.assigned === false ? t('platformReception') : engineerName(row.engineer, t))}</span>
+              <span className={css.draftLabel} data-pending={row.pending}>{t(row.pending ? 'pendingPublish' : 'notPublished')}</span>
+            </span>
           </button>
         })}
       </div>}
@@ -73,15 +85,22 @@ export function DemandInbox(props: {
         const title = request.title.trim() || t('newRequest')
         return <button type="button" key={request.id} className={css.requestRow} data-selected={selected} aria-current={selected ? 'true' : undefined}
           onClick={() => { open(request.id) }}>
-          <span className={css.requestRowTop}><strong>{title}</strong>
-            {request.unreadCount <= 0 ? null : <span className={css.unread}
-              aria-label={t('unreadNamed', { name: title, count: request.unreadCount })}>{request.unreadCount}</span>}</span>
-          <span className={css.requestRowMeta}><span>{request.assigned === false ? t('platformReception') : engineerName(request.engineer, t)}</span>
-            <time dateTime={request.updatedAt}>{demandTime(request.updatedAt, t)}</time></span>
-          {!request.serviceProfileName?.trim() ? null : <span className={css.requestPerson}>{t('serviceSource', { name: request.serviceProfileName })}</span>}
-          {request.preview.trim() === '' ? null : <span className={css.requestPreview}>{request.preview}</span>}
-          <span className={css.requestRowBottom}><DemandStatusTag status={request.status} unassigned={request.assigned === false} t={t} />
-            <span>{t('requestNumber', { number: request.number })}</span></span>
+          {request.assigned === false ? <ServiceProfileAvatar small /> : <EngineerAvatar engineer={request.engineer} small />}
+          <span className={css.requestRowBody}>
+            <span className={css.requestRowTop}><strong>{title}</strong>
+              <time dateTime={request.updatedAt}>{demandTime(request.updatedAt, t)}</time></span>
+            <span className={css.requestPreview}>{request.preview.trim() || (request.assigned === false
+              ? t('platformReception') : engineerName(request.engineer, t))}</span>
+            <span className={css.requestRowBottom}>
+              <span className={css.requestRowContext}>
+                <DemandStatusTag status={request.status} unassigned={request.assigned === false} t={t} />
+                {!request.serviceProfileName?.trim() ? null
+                  : <span>{t('serviceSource', { name: request.serviceProfileName })}</span>}
+              </span>
+              {request.unreadCount <= 0 ? null : <span className={css.unread}
+                aria-label={t('unreadNamed', { name: title, count: request.unreadCount })}>{request.unreadCount}</span>}
+            </span>
+          </span>
         </button>
       })}
       {!state.requestsHaveMore ? null : <div className={css.historyAction}>
