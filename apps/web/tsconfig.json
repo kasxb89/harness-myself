@@ -29,6 +29,7 @@
     "tests/skin-market-scroll.e2e.ts",
     "tests/recharge-price-comparison.e2e.ts",
     "tests/creation-entry-isolation.e2e.ts",
+    "tests/video-workflow-transition.e2e.ts",
     "tests/independent-generation-requests.e2e.ts",
     "tests/profile-process.ts",
     "tests/session-relay.e2e.ts",

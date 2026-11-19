@@ -343,9 +343,19 @@ function specificationMenu(schema: unknown, parent: unknown, name: Specification
 function hasIndependentResolutionAlternatives(schema: unknown): boolean {
   const record = objectRecord(schema)
   const fields = objectRecord(record?.properties)
+  const referenceFields = ['frame_images', 'reference_images', 'reference_videos', 'reference_audios']
   if (record === null || fields === null || record.type !== 'object' || Object.hasOwn(record, 'x-task-plugin')
     || Object.keys(record).some(key => !['type', 'properties', 'required', 'oneOf'].includes(key) && !key.startsWith('x-'))
-    || Object.keys(fields).some(key => !['resolution', 'seconds', 'ratio', 'context_ir_enabled', 'fast_mode'].includes(key))) return false
+    || Object.keys(fields).some(key => !['resolution', 'seconds', 'ratio', 'context_ir_enabled', 'fast_mode', ...referenceFields].includes(key))) return false
+  for (const name of referenceFields) {
+    if (!Object.hasOwn(fields, name) || fields[name] === false) continue
+    const field = objectRecord(fields[name])
+    const items = objectRecord(field?.items)
+    if (field === null || Object.keys(field).some(key => !['type', 'items', 'maxItems'].includes(key))
+      || field.type !== undefined && field.type !== 'array'
+      || typeof field.maxItems !== 'number' || !Number.isSafeInteger(field.maxItems) || field.maxItems < 0 || field.maxItems > 128
+      || field.items !== undefined && (items === null || items.type !== 'string' || Object.keys(items).some(key => key !== 'type'))) return false
+  }
   const required = record.required
   if (required !== undefined && (!Array.isArray(required)
     || !required.every(key => typeof key === 'string' && ['resolution', 'seconds', 'ratio'].includes(key)))) return false

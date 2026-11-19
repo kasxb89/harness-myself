@@ -8,6 +8,8 @@ export interface Reference {
   name: string
   url: string
   bytes: number
+  /** Image use is retained across model changes; unmarked images remain generation references. */
+  imageRole?: 'writing' | 'generation'
   converted?: boolean
   firstFrameOnly?: boolean
 }

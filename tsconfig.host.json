@@ -15,6 +15,7 @@
     "apps/web/tests/skin-market-scroll.e2e.ts",
     "apps/web/tests/recharge-price-comparison.e2e.ts",
     "apps/web/tests/creation-entry-isolation.e2e.ts",
+    "apps/web/tests/video-workflow-transition.e2e.ts",
     "apps/web/tests/independent-generation-requests.e2e.ts",
     "apps/web/tests/profile-process.ts",
     "apps/web/tests/session-relay.e2e.ts",

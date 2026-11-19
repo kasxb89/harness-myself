@@ -6,7 +6,6 @@ export const NS = 'videogen'
 /** Simplified Chinese copy for the video composer. */
 export const zh = {
   'quality': '质量',
-  'materialsAdjusted': '已按当前模型更新参考素材，图片素材仍可用于 AI 帮写',
   'specification': '完整规格',
   'specificationHint': '以下为可用的完整组合，切换会同时更新质量、尺寸和时长',
   'originalAccepted': '生成中，任务已受理。请查询原任务，不要再次提交生成',
@@ -107,6 +106,7 @@ export const zh = {
   'referenceBytesExceeded': '当前模式的素材合计超过 48 MiB，请移除部分素材后生成',
   'adaptiveNeedsVisual': '跟随素材需在当前模式中添加图片或视频，纯文字或音频参考不支持',
   'referenceOverLimit': '保留的素材超出当前模型上限，请移除超出部分后生成',
+  'workflowUnavailable': '当前模型不支持所选生成方式。素材已保留，请切换模型或主动选择其他生成方式',
   'unsupportedReferencesRetained': '当前模型不支持这些参考素材，已保留供查看或移除，不会自动舍弃',
   'settingsAdjusted': '已按当前模型与分辨率调整为 {resolution}、{duration} 秒、{ratio}，请确认后生成',
   'settingsUnavailableForModel': '当前模型与分辨率暂无已确认的可用参数，请切换选择',
@@ -224,7 +224,6 @@ export const zh = {
 /** English copy for every video composer translation key. */
 export const en: Record<keyof typeof zh, string> = {
   'quality': 'Quality',
-  'materialsAdjusted': 'References were adjusted for this model. Image materials remain available for AI writing.',
   'specification': 'Complete specification',
   'specificationHint': 'Choose a complete combination. Quality, size and duration change together.',
   'originalAccepted': 'Generating. The original task was accepted. Query it without submitting generation again.',
@@ -325,6 +324,7 @@ export const en: Record<keyof typeof zh, string> = {
   'referenceBytesExceeded': 'Media in this input mode exceeds 48 MiB. Remove some files before generating.',
   'adaptiveNeedsVisual': 'Following the media requires image or video in this input mode; text or audio alone is unsupported.',
   'referenceOverLimit': 'Retained media exceeds this model’s limits. Remove the excess before generating.',
+  'workflowUnavailable': 'This model does not support the selected input. Materials are retained. Choose another model or input workflow.',
   'unsupportedReferencesRetained': 'This model does not support these references. They remain available to review or remove.',
   'settingsAdjusted': 'Settings changed to {resolution}, {duration}s and {ratio} for this model and resolution. Review before generating.',
   'settingsUnavailableForModel': 'No confirmed parameter combination is available for this model and resolution. Choose another option.',

@@ -42,7 +42,7 @@ function requestBody(init: RequestInit | undefined): Record<string, unknown> {
   return value as Record<string, unknown>
 }
 
-function setup(overrides: Partial<typeof params> = {}, modelId = 'video-real') {
+function setup(overrides: Partial<typeof params> = {}, modelId = 'video-real', smaller: Partial<typeof params> = { maxReferenceImages: 3 }) {
   const task = vi.fn(async (_init?: RequestInit): Promise<Response> => json({ ok: true, payload: { path: '/credits/media/new.mp4' } }))
   const asset = vi.fn(async (): Promise<Response> => json({ ok: true, asset: { assetId: 'ma_image' } }))
   const projects = vi.fn(async (): Promise<Response> => json({ ok: true, payload: { accountId: sessionAccountId, projects: [] } }))
@@ -55,7 +55,7 @@ function setup(overrides: Partial<typeof params> = {}, modelId = 'video-real') {
     if (path === '/credits/api/summary') return json({ ok: true, payload: { balance_points: 2000 } })
     if (path === '/credits/api/media/catalog') return json({ ok: true, payload: { video: [
       { id: modelId, displayName: 'Real video model', source: 'local-config', verified: true, params: { ...params, ...overrides } },
-      { id: 'video-smaller', displayName: 'Smaller video model', source: 'local-config', verified: true, params: { ...params, ...overrides, maxReferenceImages: 3 } },
+      { id: 'video-smaller', displayName: 'Smaller video model', source: 'local-config', verified: true, params: { ...params, ...overrides, ...smaller } },
     ] } })
     if (path.startsWith('/credits/api/creative/projects?')) return projects()
     if (path === '/credits/api/creative/video/recover') return recover()
@@ -97,6 +97,170 @@ beforeEach(() => { vi.useRealTimers(); sessionAccountId = 'account-a'; chatSessi
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('video composer', () => {
+  it.each(['image', 'frames', 'reference'] as const)('retains the explicit %s workflow and its materials when a different model only supports text', async (workflow) => {
+    const { mount, store, task, props } = setup({ strictReferences: true }, 'video-real', {
+      frameSlots: 0, maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0,
+    })
+    const first = { assetId: 'ma_first', name: 'first.png', url: 'blob:first', bytes: 1 }
+    const last = { assetId: 'ma_last', name: 'last.png', url: 'blob:last', bytes: 1 }
+    store.actions.patch({ workflow, firstFrame: first, lastFrame: last, slots: {
+      image: [first], video: [{ assetId: 'ma_video', name: 'video.mp4', url: 'blob:video', bytes: 1 }], audio: [],
+    } })
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.model }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Smaller video model' }))
+    expect(store.getSnapshot()).toMatchObject({ workflow, firstFrame: first, lastFrame: last,
+      slots: { image: [first], video: [{ assetId: 'ma_video' }] } })
+    expect(props.releasePreview).not.toHaveBeenCalled()
+    const submit = screen.getByRole('button', { name: zh.submit })
+    expect(submit).toHaveProperty('disabled', true)
+    fireEvent.click(submit)
+    expect(task).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([])
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.text'] }))
+    fireEvent.click(submit)
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({
+      frameImages: [], referenceImages: [], referenceVideos: [], referenceAudios: [],
+    })
+  })
+
+  it('retains both endpoint frames and blocks a model whose frame ceiling falls to one', async () => {
+    const { mount, store, task, props } = setup({ strictReferences: true }, 'video-real', { frameSlots: 1 })
+    const first = { assetId: 'ma_first', name: 'first.png', url: 'blob:first', bytes: 1 }
+    const last = { assetId: 'ma_last', name: 'last.png', url: 'blob:last', bytes: 1 }
+    store.actions.patch({ workflow: 'frames', firstFrame: first, lastFrame: last })
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.model }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Smaller video model' }))
+    expect(store.getSnapshot()).toMatchObject({ workflow: 'frames', firstFrame: first, lastFrame: last })
+    expect(props.releasePreview).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(task).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([])
+  })
+
+  it('retains every video and audio reference when their published ceilings shrink', async () => {
+    const { mount, store, task, props } = setup({ strictReferences: true, maxReferenceVideos: 2, maxReferenceAudios: 2 },
+      'video-real', { maxReferenceVideos: 1, maxReferenceAudios: 1 })
+    const slots = { image: [], video: [0, 1].map(index => ({ assetId: `ma_video${index}`, name: `video${index}.mp4`, url: `blob:video${index}`, bytes: 1 })),
+      audio: [0, 1].map(index => ({ assetId: `ma_audio${index}`, name: `audio${index}.wav`, url: `blob:audio${index}`, bytes: 1 })) }
+    store.actions.patch({ workflow: 'reference', slots })
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.model }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Smaller video model' }))
+    expect(store.getSnapshot().slots).toEqual(slots)
+    expect(props.releasePreview).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(task).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([])
+  })
+
+  it('blocks a bound first frame when the replacement model only accepts references without activating hidden media', async () => {
+    const { mount, store, task } = setup({ strictReferences: true }, 'video-real', { frameSlots: 0, maxReferenceImages: 3 })
+    const first = { assetId: 'ma_bound', name: 'bound.png', url: 'blob:bound', bytes: 1 }
+    store.actions.patch({ workflow: 'image', firstFrame: first, slots: { image: [],
+      video: [{ assetId: 'ma_hidden_video', name: 'hidden.mp4', url: 'blob:hidden-video', bytes: 1 }],
+      audio: [{ assetId: 'ma_hidden_audio', name: 'hidden.wav', url: 'blob:hidden-audio', bytes: 1 }] } })
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.model }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Smaller video model' }))
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect(task).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([])
+    expect(screen.getByRole('alert').textContent).toBe(zh.workflowUnavailable)
+    expect(store.getSnapshot()).toMatchObject({ workflow: 'image', firstFrame: first })
+  })
+
+  it('blocks a retained generation image when a model still accepts the other reference kind', async () => {
+    const { mount, store, task } = setup({ strictReferences: true, frameSlots: 0 }, 'video-real', { maxReferenceImages: 0 })
+    const image = { assetId: 'ma_generation', name: 'generation.png', url: 'blob:generation', bytes: 1 }
+    store.actions.patch({ workflow: 'reference', slots: { image: [image],
+      video: [{ assetId: 'ma_video', name: 'video.mp4', url: 'blob:video', bytes: 1 }], audio: [] } })
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.model }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Smaller video model' }))
+    expect(store.getSnapshot().slots.image).toEqual([image])
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(task).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toEqual([])
+  })
+
+  it('retains generation image use across a live ceiling change and a remount, then forwards it when support returns', async () => {
+    const { mount, store, task } = setup({ strictReferences: true, frameSlots: 0 })
+    let imageLimit = 3
+    const original = fetcher.getMockImplementation()!
+    fetcher.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { video: [{ id: 'video-real', displayName: 'Real video model', source: 'live', verified: true,
+        params: { ...params, strictReferences: true, frameSlots: 0, maxReferenceImages: imageLimit } }] } })
+      : original(input, init))
+    const view = mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['image'], 'generation.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().slots.image[0]?.imageRole).toBe('generation') })
+    writePrompt()
+    const uploadedPosts = fetcher.mock.calls.filter(([, init]) => init?.method === 'POST').length
+    imageLimit = 0
+    fireEvent.focus(window)
+    await waitFor(() => { expect(screen.getByRole('alert').textContent).toBe(zh.referenceOverLimit) })
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(task).not.toHaveBeenCalled()
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(uploadedPosts)
+    view.unmount()
+    mount()
+    await ready()
+    expect(store.getSnapshot().slots.image[0]).toMatchObject({ assetId: 'ma_image', imageRole: 'generation' })
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    imageLimit = 3
+    fireEvent.focus(window)
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ frameImages: [], referenceImages: ['ma_image'] })
+  })
+
+  it('keeps writing-only images out of generation after a model gains image support and the page remounts', async () => {
+    const { mount, store, asset, task } = setup({ strictReferences: true, frameSlots: 0, maxReferenceImages: 0,
+      maxReferenceVideos: 1, maxReferenceAudios: 0 })
+    const view = mount()
+    await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['image'], 'writing.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().slots.image[0]?.imageRole).toBe('writing') })
+    asset.mockResolvedValueOnce(json({ ok: true, asset: { assetId: 'ma_video' } }))
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['video'], 'motion.mp4', { type: 'video/mp4' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().slots.video).toHaveLength(1) })
+    fireEvent.click(screen.getByRole('button', { name: zh.model }))
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Smaller video model' }))
+    view.unmount()
+    mount()
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.model }).textContent).toContain('Smaller video model') })
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ referenceImages: [], referenceVideos: ['ma_video'] })
+    expect(store.getSnapshot().slots.image[0]?.imageRole).toBe('writing')
+  })
+
   it('opens the audio workspace only after an audio model appears in the live catalog', async () => {
     const { props } = setup()
     const openAudio = vi.fn()
@@ -118,14 +282,19 @@ describe('video composer', () => {
   })
 
   it('sends supported video references without AI-writing-only images for an explicit live restriction', async () => {
-    const { mount, task, store } = setup({ strictReferences: true, frameSlots: 0, maxReferenceImages: 0,
+    const { mount, task, store, asset } = setup({ strictReferences: true, frameSlots: 0, maxReferenceImages: 0,
       maxReferenceVideos: 1, maxReferenceAudios: 0 })
-    store.actions.patch({ workflow: 'reference', slots: {
-      image: [{ assetId: 'ma_image', url: 'blob:image', name: 'writing.png', bytes: 1 }],
-      video: [{ assetId: 'ma_video', url: 'blob:video', name: 'motion.mp4', bytes: 1 }], audio: [],
-    } })
     mount()
     await ready()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['image'], 'writing.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().slots.image[0]?.imageRole).toBe('writing') })
+    asset.mockResolvedValueOnce(json({ ok: true, asset: { assetId: 'ma_video' } }))
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['video'], 'motion.mp4', { type: 'video/mp4' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().slots.video).toHaveLength(1) })
     writePrompt()
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
@@ -344,7 +513,7 @@ describe('video composer', () => {
       frameImages: [], referenceImages: ['ma_image'], referenceVideos: ['ma_video'], referenceAudios: [] })
   })
 
-  it('clears unsupported video, audio and frame references while retaining image materials for AI writing', async () => {
+  it('retains unsupported video, audio and frame references until the user explicitly changes the generation workflow', async () => {
     const { mount, task, props, store } = setup({ strictReferences: true, frameSlots: 0, maxReferenceImages: 0,
       maxReferenceVideos: 0, maxReferenceAudios: 0 })
     const image = { assetId: 'ma_image', url: 'blob:image', name: 'image.png', bytes: 1 }
@@ -353,12 +522,13 @@ describe('video composer', () => {
         audio: [{ assetId: 'ma_audio', url: 'blob:audio', name: 'audio.wav', bytes: 1 }] } })
     mount()
     await ready()
-    expect(store.getSnapshot()).toMatchObject({ firstFrame: null, lastFrame: null, workflow: 'text',
-      slots: { image: [image], video: [], audio: [] } })
-    expect(props.releasePreview).toHaveBeenCalledWith('blob:video')
-    expect(props.releasePreview).toHaveBeenCalledWith('blob:audio')
-    expect(props.releasePreview).not.toHaveBeenCalledWith('blob:image')
+    expect(store.getSnapshot()).toMatchObject({ firstFrame: image, lastFrame: image, workflow: 'reference',
+      slots: { image: [image], video: [{ assetId: 'ma_video' }], audio: [{ assetId: 'ma_audio' }] } })
+    expect(props.releasePreview).not.toHaveBeenCalled()
     writePrompt()
+    expect(screen.getByRole('alert').textContent).toBe(zh.workflowUnavailable)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.text'] }))
     fireEvent.click(screen.getByRole('button', { name: zh.submit }))
     await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
     expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({

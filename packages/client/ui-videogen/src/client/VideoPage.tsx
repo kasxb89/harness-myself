@@ -206,12 +206,12 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   if (params !== null && params.frameSlots > 0) workflows.push('image')
   if (params !== null && params.frameSlots > 1) workflows.push('frames')
   if (params !== null && params.maxReferenceImages + params.maxReferenceVideos + params.maxReferenceAudios > 0) workflows.push('reference')
-  const workflow = workflows.includes(draft.workflow) ? draft.workflow
-    : draft.workflow === 'image' && workflows.includes('reference') ? 'reference' : 'text'
+  const workflow = draft.workflow
+  const workflowUnavailable = !workflows.includes(workflow)
+  const workflowChoices = workflowUnavailable ? [...workflows, workflow] : workflows
   const frameImages = workflow === 'frames' ? [firstFrame, lastFrame]
     : workflow === 'image' && (params?.frameSlots ?? 0) > 0 ? [firstFrame] : []
-  const referenceImages = params?.strictReferences === true && params.maxReferenceImages === 0 ? []
-    : workflow === 'reference' || workflow === 'image' && params?.frameSlots === 0 ? slots.image : []
+  const referenceImages = workflow === 'reference' ? slots.image.filter(item => item.imageRole !== 'writing') : []
   const referenceVideos = workflow === 'reference' ? slots.video : []
   const referenceAudios = workflow === 'reference' ? slots.audio : []
   const compatibleMode = (value: string | undefined): boolean => {
@@ -284,7 +284,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const referenceBytesExceeded = requestReferenceBytes > 48 * 1024 * 1024
 
   useEffect(() => {
-    if (params === null || locked) return
+    if (params === null || locked || workflowUnavailable) return
     if (specifications !== undefined && selectedSpecification === undefined) return
     const current = readDraft()
     const updates: Partial<VideoDraft> = {}
@@ -301,7 +301,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       resolution: selectedResolution, duration: String(duration),
     }) } : settingsInvalid ? { message: null } : {}) })
   }, [actions, duration, locked, mode, params, readDraft, selectedMode, selectedQuality, selectedSize,
-    selectedRatio, selectedResolution, selectedSpecification, settingsInvalid, specifications, t])
+    selectedRatio, selectedResolution, selectedSpecification, settingsInvalid, specifications, t, workflowUnavailable])
 
   useEffect(() => {
     if (locked || signedIn !== true || params === null || accountIdentity === null) return
@@ -313,28 +313,12 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     const first = current.slots.image[0]
     actions.patch({ frameWorkflowSelection: key,
       ...((workflow === 'image' || workflow === 'frames') && params.frameSlots > 0 && current.firstFrame === null && first !== undefined
-        ? { firstFrame: first } : {}),
+        ? { firstFrame: { ...first, imageRole: 'generation' },
+          slots: { ...current.slots, image: current.slots.image.map(item => item.assetId === first.assetId
+            ? { ...item, imageRole: 'generation' } : item) } } : {}),
     })
   }, [accountIdentity, actions, draft.frameWorkflowSelection, draft.modelId, draft.referenceEpoch, draft.workflow,
     firstFrame, locked, model?.id, params, readDraft, signedIn, slots.image, workflow])
-
-  useEffect(() => {
-    if (params?.strictReferences !== true || locked) return
-    const current = readDraft()
-    const video = current.slots.video.slice(0, params.maxReferenceVideos)
-    const audio = current.slots.audio.slice(0, params.maxReferenceAudios)
-    const removed = [...current.slots.video.slice(video.length), ...current.slots.audio.slice(audio.length)]
-    const firstFrame = params.frameSlots > 0 ? current.firstFrame : null
-    const lastFrame = params.frameSlots > 1 ? current.lastFrame : null
-    if (removed.length === 0 && firstFrame === current.firstFrame && lastFrame === current.lastFrame) return
-    for (const reference of removed) releasePreview(reference.url)
-    for (const reference of [current.firstFrame, current.lastFrame]) {
-      if (reference !== null && reference !== firstFrame && reference !== lastFrame
-        && !current.slots.image.some(item => item.assetId === reference.assetId)) releasePreview(reference.url)
-    }
-    actions.patch({ slots: { ...current.slots, video, audio }, firstFrame, lastFrame,
-      workflow, message: t('materialsAdjusted') })
-  }, [actions, locked, params, readDraft, releasePreview, t, workflow])
 
   const assistReferences = useMemo(() => {
     if (accountIdentity === null || draft.referenceAccountId !== accountIdentity || signedIn !== true) return []
@@ -550,25 +534,31 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         const reference = await upload(slot, file, readDraft())
         if (reference === null) continue
         if (!isReferenceCurrent(context)) { releasePreview(reference.url); return }
-        actions.addReferences(slot, [reference], limit)
+        const current = readDraft()
+        const bindsReference = slot === 'image' && (params?.maxReferenceImages ?? 0) > 0
+          && (current.workflow === 'text' || current.workflow === 'reference')
+        const bindsFrame = slot === 'image' && (params?.frameSlots ?? 0) > 0 && current.firstFrame === null
+          && (current.workflow === 'text' || current.workflow === 'image' || current.workflow === 'frames')
+        const retained = slot === 'image' ? { ...reference, imageRole: bindsReference || bindsFrame ? 'generation' as const : 'writing' as const } : reference
+        actions.addReferences(slot, [retained], limit)
         if (slot === 'image') {
-          const current = readDraft()
-          const selectedWorkflow = workflows.includes(current.workflow) ? current.workflow : 'text'
-          if (selectedWorkflow === 'text' && (params?.maxReferenceImages ?? 0) > 0) actions.patch({ workflow: 'reference' })
-          else if ((params?.frameSlots ?? 0) > 0 && (selectedWorkflow === 'text' || selectedWorkflow === 'image' || selectedWorkflow === 'frames')
-            && current.firstFrame === null) actions.patch({ firstFrame: reference,
-            ...(selectedWorkflow === 'text' ? { workflow: 'image' as const } : {}) })
+          if (current.workflow === 'text' && bindsReference) actions.patch({ workflow: 'reference' })
+          else if (bindsFrame) actions.patch({ firstFrame: retained,
+            ...(current.workflow === 'text' ? { workflow: 'image' as const } : {}) })
         } else actions.patch({ workflow: 'reference' })
       }
     } finally { if (isReferenceCurrent(context)) { operation.current = false; actions.patch({ uploading: null }) } }
-  }, [accountIdentity, busy, imageLimit, isReferenceCurrent, params, readDraft, releasePreview, signedIn, t, upload, actions, workflows])
+  }, [accountIdentity, busy, imageLimit, isReferenceCurrent, params, readDraft, releasePreview, signedIn, t, upload, actions])
 
   const selectFrame = (which: 'first' | 'last', reference: Reference | null): void => {
     const current = readDraft()
     if (locked || signedIn !== true || accountIdentity === null || current.referenceAccountId !== accountIdentity
       || current.referenceEpoch !== draft.referenceEpoch) return
     const previous = which === 'first' ? current.firstFrame : current.lastFrame
-    actions.patch({ ...(which === 'first' ? { firstFrame: reference } : { lastFrame: reference }),
+    const selected = reference === null ? null : { ...reference, imageRole: 'generation' as const }
+    actions.patch({ ...(which === 'first' ? { firstFrame: selected } : { lastFrame: selected }),
+      ...(reference === null ? {} : { slots: { ...current.slots, image: current.slots.image.map(item => item.assetId === reference.assetId
+        ? { ...item, imageRole: 'generation' as const } : item) } }),
       ...(reference === null ? {} : { workflow: which === 'last' || workflow === 'frames' ? 'frames' as const : 'image' as const }), failure: null })
     if (previous !== null) releaseUnusedPreview(previous.url)
   }
@@ -658,7 +648,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       || (workflow === 'reference' && !hasReferences)) {
       actions.patch({ failure: t('mediaRequired') }); return
     }
-    if (settingsInvalid || overReferenceLimit || referenceBytesExceeded) return
+    if (workflowUnavailable || settingsInvalid || overReferenceLimit || referenceBytesExceeded) return
     operation.current = true
     setModelMenu(false)
     actions.patch({ phase: 'running', startedAt: Date.now() })
@@ -722,7 +712,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     } finally { operation.current = false; actions.patch({ phase: 'idle' }) }
   }, [acceptAccount, accountIdentity, submissionLocked, signedIn, actions, prompt, model, params, workflow, firstFrame, lastFrame, slots,
     hasReferences, isReferenceCurrent, readDraft, sessionId,
-    duration, settingsInvalid, overReferenceLimit, referenceBytesExceeded,
+    duration, workflowUnavailable, settingsInvalid, overReferenceLimit, referenceBytesExceeded,
     referenceImages, referenceVideos, referenceAudios,
     selectedResolution, selectedRatio, selectedMode, selectedQuality, selectedSize, seed, audio, t, loadBalance, loadHistory])
 
@@ -791,12 +781,13 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       : sessionId === undefined ? t('sessionRequired') : accountIdentity === null ? t('stateFailed')
         : originalSubmission !== null ? t('originalLocked') : submissionCheck === 'failed' ? t('originalCheckRequired')
           : submissionCheck !== 'ready' || checkedOwner !== ownerKey ? t('originalChecking') : model === null || params === null ? t('noModel')
-            : prompt.trim() === '' ? t('promptRequired') : frameRatiosUnavailable ? t('frameRatiosUnavailable') : settingsInvalid ? t('settingsUnavailable')
-              : overReferenceLimit ? t('referenceOverLimit') : referenceBytesExceeded ? t('referenceBytesExceeded')
-                : (workflow === 'image' || workflow === 'frames') && params.frameSlots > 0 && firstFrame === null ? t('firstFrameRequired')
-                  : workflow === 'frames' && lastFrame === null ? t('lastFrameRequired')
-                    : workflow !== 'text' && !hasReferences ? t('mediaRequired') : null
-  const generationMaterialSummary = workflow === 'text' ? t('generationTextOnly')
+            : prompt.trim() === '' ? t('promptRequired') : workflowUnavailable ? t('workflowUnavailable')
+              : frameRatiosUnavailable ? t('frameRatiosUnavailable') : settingsInvalid ? t('settingsUnavailable')
+                : overReferenceLimit ? t('referenceOverLimit') : referenceBytesExceeded ? t('referenceBytesExceeded')
+                  : (workflow === 'image' || workflow === 'frames') && params.frameSlots > 0 && firstFrame === null ? t('firstFrameRequired')
+                    : workflow === 'frames' && lastFrame === null ? t('lastFrameRequired')
+                      : workflow !== 'text' && !hasReferences ? t('mediaRequired') : null
+  const generationMaterialSummary = workflowUnavailable ? t('workflowUnavailable') : workflow === 'text' ? t('generationTextOnly')
     : workflow === 'image' && (params?.frameSlots ?? 0) > 0 || workflow === 'frames'
       ? t('generationFrames', { n: String(frameImages.filter(item => item !== null).length) })
       : t('generationReferences', { images: String(referenceImages.length), videos: String(referenceVideos.length), audios: String(referenceAudios.length) })
@@ -824,9 +815,12 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
 
     <section className={css.composer} aria-label={t('composer')} aria-busy={busy}>
       <fieldset className={css.composerFields} disabled={signedIn !== true}>
-        <div className={css.workflowBar}>{workflows.map(entry => <button key={entry} type="button" disabled={locked} aria-pressed={workflow === entry}
+        <div className={css.workflowBar}>{workflowChoices.map(entry => <button key={entry} type="button" disabled={locked} aria-pressed={workflow === entry}
           className={workflow === entry ? `${css.workflow} ${css.workflowActive}` : css.workflow}
-          onClick={() => { actions.patch({ workflow: entry, failure: null, message: null }) }}>{t(WORKFLOW_LABELS[entry])}</button>)}</div>
+          onClick={() => { actions.patch({ workflow: entry, failure: null, message: null,
+            ...(entry === 'reference' && (params?.maxReferenceImages ?? 0) > 0 ? { slots: { ...slots,
+              image: slots.image.map(item => ({ ...item, imageRole: 'generation' as const })) } } : {}),
+          }) }}>{t(WORKFLOW_LABELS[entry])}</button>)}</div>
         <div className={css.composerHero}>
           <div className={css.materialToolbar}>
             <label className={css.addMedia}><IconPlusOutlineRegular size={16} /><span>{t('addMedia')}</span>
@@ -956,7 +950,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
             <Tooltip label={submitHint ?? t('submit')} portal side="top">
               <button type="button" className={css.send} aria-label={phase === 'running' ? t('runningShort') : t('submit')}
                 aria-describedby={submitHint === null ? undefined : submitHintId}
-                onClick={() => { void generate() }} disabled={submissionLocked || model === null || sessionId === undefined || prompt.trim() === '' || settingsInvalid
+                onClick={() => { void generate() }} disabled={submissionLocked || model === null || sessionId === undefined || prompt.trim() === '' || workflowUnavailable || settingsInvalid
                   || overReferenceLimit || referenceBytesExceeded}>
                 <span className={phase === 'running' ? css.spinner : css.sendArrow} aria-hidden="true">{phase === 'running' ? '' : '↑'}</span>
               </button>
@@ -973,7 +967,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
         </div>}
         {phase === 'running' && <p className={css.notice}>{t('running', { seconds: String(elapsed) })}</p>}
         {uploading !== null && <p className={css.notice}>{t('uploading')}</p>}
-        {overReferenceLimit && <p className={css.error} role="alert">{t('referenceOverLimit')}</p>}
+        {workflowUnavailable ? <p className={css.error} role="alert">{t('workflowUnavailable')}</p>
+          : overReferenceLimit && <p className={css.error} role="alert">{t('referenceOverLimit')}</p>}
         {settingsInvalid && <p className={css.error} role="alert">{t(frameRatiosUnavailable ? 'frameRatiosUnavailable' : 'settingsUnavailableForModel')}</p>}
         {referenceBytesExceeded && <p className={css.error} role="alert">{t('referenceBytesExceeded')}</p>}
         {failure !== null && <p className={css.error} role="alert">{failure}</p>}

@@ -3,8 +3,8 @@ import { readFileSync } from 'node:fs'
 import { copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
-import { extname, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { extname, join, resolve, sep } from 'node:path'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { afterEach, describe, expect, it } from 'vitest'
 import sharp from 'sharp'
 import { Context } from '@deepseek-ai/cordis'
@@ -62,6 +62,8 @@ interface RetainedImageFixture {
   readonly manifest?: 'wrong-task' | 'wrong-key' | 'wrong-prefix'
   readonly existingModel?: string
   readonly unknownReads?: number
+  readonly referenceUploadUrls?: readonly string[]
+  readonly referenceUploadBySha256?: ReadonlyMap<string, string>
 }
 function object(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected object')
@@ -89,7 +91,7 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
   directory = await mkdtemp(join(tmpdir(), 'dsh-media-specifications-'))
   const root = directory
   const pngBytes = await sharp({ create: { width: 1, height: 1, channels: 3, background: '#ffffff' } }).png().toBuffer()
-  let api = '', generatedModel = retainedImage?.existingModel ?? '', taskReads = 0
+  let api = '', generatedModel = retainedImage?.existingModel ?? '', taskReads = 0, referenceUploads = 0
   const contentUrl = () => `${api}/v1/tasks/${retainedTaskId}/artifacts/image-1/content?access=synthetic-content-capability`
   upstream = createServer((request, response) => {
     void (async () => {
@@ -133,7 +135,10 @@ async function boot(visibleModels: readonly string[] = rows.map(row => row.model
       }
       if (path === '/harness/v1/uploads/images') {
         const file = object(body.file)
-        answer({ id: 'file-synthetic-reference', url: 'https://assets.token6688.com/sha256/ab/' + 'c'.repeat(62) + '.png',
+        const url = retainedImage?.referenceUploadBySha256?.get(String(file.sha256))
+          ?? retainedImage?.referenceUploadUrls?.[referenceUploads++]
+          ?? 'https://assets.token6688.com/sha256/ab/' + 'c'.repeat(62) + '.png'
+        answer({ id: 'file-synthetic-reference', url,
           mime_type: file.type, size: file.size }); return
       }
       if (retainedImage !== undefined && path === retainedTaskPath) {
@@ -410,6 +415,36 @@ async function recordRecoveryRoute(name: string, result: object,
     scope: 'Real Host Loader and loopback HTTP/file IO; synthetic metadata/account/access placeholder; image bytes supplied by the fixture. No provider POST or actual HMAC verification in this test.' }, null, 2) + '\n')
 }
 
+function imageInteropCounts(start = 0) {
+  const wire = imageWireCalls.slice(start)
+  const count = (method: string, path: string): number => wire.filter(call => call.method === method && call.path === path).length
+  return {
+    reference_upload_posts: count('POST', '/harness/v1/uploads/images'),
+    generation_posts: wire.filter(call => call.method === 'POST' && /\/images\/(?:generations|edits)$/u.test(call.path)).length,
+    edit_posts: count('POST', '/harness/v1/images/edits'),
+    standard_generation_posts: count('POST', '/harness/v1/images/generations'),
+    native_generation_posts: count('POST', '/harness/toapis/v1/images/generations'),
+    original_task_gets: count('GET', retainedTaskPath),
+    original_artifact_manifest_gets: count('GET', `${retainedTaskPath}/artifacts`),
+    original_artifact_content_gets: count('GET', `${retainedTaskPath}/artifacts/image-1/content`),
+  }
+}
+
+/** Persist only explicit local test facts, never raw credentials, prompts, URLs or private paths. */
+async function recordImageInteropCase(name: string, facts: object, start = 0): Promise<void> {
+  const output = process.env.DSH_IMAGE_INTEROP_REPORT_DIR
+  if (output === undefined) return
+  const root = resolve(output), worktree = resolve(fileURLToPath(new URL('../../../../', import.meta.url)))
+  if (root === worktree || root.startsWith(worktree + sep)) {
+    throw new Error('Image interop reports must remain outside the worktree')
+  }
+  await mkdir(root, { recursive: true, mode: 0o700 })
+  await writeFile(join(root, name.replaceAll(/[^a-zA-Z0-9_-]/gu, '-') + '.json'), JSON.stringify({
+    schema_version: 1, case_id: name, status: 'passed', counts: imageInteropCounts(start), facts,
+    scope: 'Actual Host Loader with loopback fake gateway and retained synthetic files; no live Go service, supplier POST or charge.',
+  }, null, 2) + '\n', { mode: 0o600, flag: 'wx' })
+}
+
 describe('retained image recovery through the shipped Host HTTP and file IO', () => {
   it('publishes a YCAPI result in the client project after an accepted gateway error and temporary unknown status', async () => {
     const original = retainedCandidate(), sessionId = 'ycapi-recovered-image-chat'
@@ -667,6 +702,8 @@ describe('reference image edits through the shipped Host Loader', () => {
     for (const extra of [{}, { generation_mode: 'text-to-image' }]) {
       expect(await post(base, '/api/image/generate', { ...input, ...extra }))
         .toMatchObject({ ok: false, model, code: 'IMAGE_REFERENCE_REQUIRED', submission_state: 'not-submitted' })
+      await recordImageInteropCase('standard-edit-missing-reference-' + ('generation_mode' in extra ? 'text-mode' : 'omitted-mode'),
+        { model, code: 'IMAGE_REFERENCE_REQUIRED' })
     }
     expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path === '/harness/v1/images/edits'
       || call.path.endsWith('/images/generations'))).toEqual([])
@@ -683,6 +720,8 @@ describe('reference image edits through the shipped Host Loader', () => {
         'image[]': { type: 'image/png', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } } },
     ])
     expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path.endsWith('/images/generations'))).toEqual([])
+    await recordImageInteropCase('standard-edit-multipart', { model, reference_sha256: createHash('sha256').update(bytes).digest('hex'),
+      reference_bytes: bytes.length, forwarded_input_mode: false })
   })
 
   it('selects the unique reference-compatible specification before resolving omitted output controls', async () => {
@@ -707,12 +746,21 @@ describe('reference image edits through the shipped Host Loader', () => {
       { path: '/harness/v1/images/edits', body: { model, prompt: input.prompt, n: 1, size: '1:1', resolution: '1K',
         image: ['https://assets.token6688.com/sha256/ab/' + 'c'.repeat(62) + '.png'] } },
     ])
+    const incompleteStart = imageWireCalls.length
     expect(await post(base, '/api/image/generate', input))
       .toMatchObject({ ok: false, code: 'SPECIFICATION_REQUIRED', submission_state: 'not-submitted' })
+    expect(imageInteropCounts(incompleteStart)).toMatchObject({ reference_upload_posts: 0, generation_posts: 0 })
+    await recordImageInteropCase('edit-specification-incomplete-rejected', { model, code: 'SPECIFICATION_REQUIRED' }, incompleteStart)
+    const unsupportedStart = imageWireCalls.length
     expect(await post(base, '/api/image/generate', { ...input, resolution: '0.5K', references: ['ma_edit'] }))
       .toMatchObject({ ok: false, code: 'SPECIFICATION_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    expect(imageInteropCounts(unsupportedStart)).toMatchObject({ reference_upload_posts: 0, generation_posts: 0 })
+    await recordImageInteropCase('edit-specification-unsupported-rejected', { model, code: 'SPECIFICATION_NOT_SUPPORTED' }, unsupportedStart)
     expect(calls.filter(call => call.path === '/harness/v1/uploads/images')).toHaveLength(1)
     expect(calls.filter(call => call.path.endsWith('/images/generations'))).toEqual([])
+    await recordImageInteropCase('unique-edit-specification-and-invalid-tier', { model,
+      reference_sha256: createHash('sha256').update(bytes).digest('hex'), reference_bytes: bytes.length,
+      selected_resolution: '1K', rejected: ['SPECIFICATION_REQUIRED', 'SPECIFICATION_NOT_SUPPORTED'] })
   })
 
   it('rejects references for an undeclared custom image protocol before upload or generation', async () => {
@@ -730,6 +778,7 @@ describe('reference image edits through the shipped Host Loader', () => {
     expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path === `/harness${route}`
       || call.path === '/harness/v1/images/edits' || call.path === '/harness/v1/images/generations')).toEqual([])
     expect(await publishedImageFiles()).toEqual([])
+    await recordImageInteropCase('custom-edit-protocol-rejected', { model, code: 'IMAGE_REFERENCE_PROTOCOL_NOT_SUPPORTED' })
   })
 
   it.each(['ycapi', 'codebloom-image'] as const)('saves the original %s edit after a truncated response and submits only once', async (plugin) => {
@@ -773,6 +822,10 @@ describe('reference image edits through the shipped Host Loader', () => {
     }
     expect(imageWireCalls.filter(call => call.path === retainedTaskPath)).toHaveLength(1)
     expect(imageWireCalls.filter(call => call.path === `${retainedTaskPath}/artifacts`)).toHaveLength(1)
+    await recordImageInteropCase(plugin + '-truncated-edit-original', { model,
+      reference_sha256: createHash('sha256').update(referenceBytes).digest('hex'), reference_bytes: referenceBytes.length,
+      expected_output_sha256: createHash('sha256').update(bytes).digest('hex'),
+      saved_output_sha256: createHash('sha256').update(await readFile(payload.path)).digest('hex') })
     await recordRecoveryRoute(plugin + '-reference-edit-original-save', result)
   })
 
@@ -799,6 +852,63 @@ describe('reference image edits through the shipped Host Loader', () => {
     await writeFile(join(refs, 'ma_edit.png'), Buffer.concat([bytes, Buffer.alloc(129)]))
     expect(await post(base, '/api/image/generate', input)).toMatchObject({ ok: false, code: 'IMAGE_REFERENCE_INVALID', submission_state: 'not-submitted' })
     expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path === '/harness/v1/images/edits' || call.path.endsWith('/images/generations'))).toEqual([])
+    await recordImageInteropCase('invalid-edit-tier-owner-and-size', { model,
+      rejected: ['SPECIFICATION_NOT_SUPPORTED', 'IMAGE_REFERENCE_INVALID', 'IMAGE_REFERENCE_INVALID'] })
+  })
+})
+
+describe('native ToAPI references through the shipped Host Loader', () => {
+  it.each([6, 7] as const)('keeps the native route and reference limit for %i actual inputs', async (count) => {
+    const model = 'yunshu-internal-gpt-image-2'
+    // This existing internal alias owns its native protocol and six-reference ceiling without an edit marker.
+    const row = { model_name: model, supported_endpoint_types: ['image-generation'] }
+    const output = await sharp({ create: { width: 4, height: 4, channels: 3, background: '#ee33aa' } }).png().toBuffer()
+    const urls = Array.from({ length: count }, (_, index) => `https://files.toapis.cn/uploads/host-reference-${String(index + 1)}.png`)
+    const inputs = await Promise.all(Array.from({ length: count }, async (_, index) =>
+      sharp({ create: { width: 2, height: 2, channels: 3, background: { r: 20 + index * 25, g: 80, b: 180 } } }).png().toBuffer()))
+    const referenceHashes = inputs.map(bytes => createHash('sha256').update(bytes).digest('hex'))
+    const referenceUploadBySha256 = new Map(referenceHashes.map((hash, index) => [hash, urls[index]!]))
+    const base = await boot([model], true, [row], { body: 'complete', bytes: output, referenceUploadBySha256 })
+    if (directory === undefined) throw new Error('Expected isolated Host directory')
+    const refs = join(directory, 'credits', 'refs')
+    await mkdir(refs, { recursive: true })
+    const references: string[] = []
+    for (const [index, bytes] of inputs.entries()) {
+      const id = `ma_native${String(index + 1)}`
+      await writeFile(join(refs, id + '.png'), bytes)
+      await writeFile(join(refs, id + '.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '7' }))
+      references.push(id)
+    }
+    const result = await post(base, '/api/image/generate', { model, prompt: 'Preserve every supplied reference',
+      resolution: '1k', references, generation_mode: 'image-to-image' })
+    if (count === 7) {
+      expect(result).toMatchObject({ ok: false, code: 'REFERENCES_NOT_SUPPORTED', submission_state: 'not-submitted' })
+      expect(imageInteropCounts()).toMatchObject({ reference_upload_posts: 0, generation_posts: 0 })
+      expect(await publishedImageFiles()).toEqual([])
+      await recordImageInteropCase('native-toapi-seven-references-rejected', { model, reference_count: count,
+        reference_sha256: referenceHashes, code: 'REFERENCES_NOT_SUPPORTED' })
+      return
+    }
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, mode: 'edit', submission_state: 'completed' })
+    const uploads = calls.filter(call => call.path === '/harness/v1/uploads/images')
+    expect(uploads).toHaveLength(6)
+    expect(uploads.map(call => object(call.body.file).sha256).sort()).toEqual([...referenceHashes].sort())
+    expect(calls.filter(call => call.path === '/harness/toapis/v1/images/generations')).toEqual([
+      { path: '/harness/toapis/v1/images/generations', body: { model, prompt: 'Preserve every supplied reference',
+        n: 1, resolution: '1k', reference_images: urls } },
+    ])
+    expect(imageInteropCounts()).toMatchObject({ reference_upload_posts: 6, generation_posts: 1,
+      native_generation_posts: 1, edit_posts: 0, standard_generation_posts: 0, original_task_gets: 0,
+      original_artifact_manifest_gets: 0, original_artifact_content_gets: 1 })
+    const saved = object(result.payload).path
+    if (typeof saved !== 'string') throw new Error('Expected saved native image')
+    const savedHash = createHash('sha256').update(await readFile(saved)).digest('hex')
+    expect(savedHash).toBe(createHash('sha256').update(output).digest('hex'))
+    await recordImageInteropCase('native-toapi-six-references', { model, reference_count: count,
+      reference_sha256: referenceHashes, uploaded_reference_sha256: uploads.map(call => object(call.body.file).sha256).sort(),
+      submitted_reference_url_sha256: urls.map(url => createHash('sha256').update(url).digest('hex')),
+      expected_output_sha256: createHash('sha256').update(output).digest('hex'), saved_output_sha256: savedHash,
+      invented_edit_marker: false, forwarded_input_mode: false })
   })
 })
 
@@ -811,8 +921,19 @@ describe.skipIf(observedEditFixtures.length === 0)('actual gateway image-edit de
     const model = fixture.model_name, label = fixture.label, imagePath = fixture.image_path, referencePath = fixture.reference_path
     if (typeof model !== 'string' || typeof label !== 'string' || typeof imagePath !== 'string' || typeof referencePath !== 'string') throw new Error('Invalid source-bound image fixture')
     const original = await readFile(imagePath), reference = await readFile(referencePath)
+    const request = object(fixture.request), ycapi = model.startsWith('ycapi-')
+    const referenceUrls: string[] = []
+    if (ycapi) {
+      if (!Array.isArray(request.reference_images)) throw new Error('Expected actual-Go uploaded reference URLs')
+      for (const url of request.reference_images) {
+        if (typeof url !== 'string') throw new Error('Expected an actual-Go reference URL')
+        referenceUrls.push(url)
+      }
+      expect(referenceUrls).toHaveLength(1)
+    }
     const row = { model_name: model, kind: 'image', parameters: fixture.parameters }
-    const base = await boot([model], true, [row], { body: model.startsWith('ycapi-') ? 'accepted' : 'truncated', bytes: original })
+    const base = await boot([model], true, [row], { body: ycapi ? 'accepted' : 'truncated', bytes: original,
+      ...ycapi ? { referenceUploadUrls: referenceUrls } : {} })
     const active = context, root = directory
     if (active === undefined || root === undefined) throw new Error('Expected isolated client Host')
     const sessionId = 'observed-image-edit-client'
@@ -827,15 +948,22 @@ describe.skipIf(observedEditFixtures.length === 0)('actual gateway image-edit de
     await mkdir(refs, { recursive: true })
     await writeFile(join(refs, 'ma_observed.png'), reference)
     await writeFile(join(refs, 'ma_observed.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '7', originalName: 'reference.png' }))
-    const request = object(fixture.request)
-    const result = await post(base, '/api/image/generate', { session_id: sessionId, account_id: '7', model,
+    await writeFile(join(refs, 'ma_observedextra.png'), reference)
+    await writeFile(join(refs, 'ma_observedextra.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '7' }))
+    const input = { session_id: sessionId, account_id: '7', model,
       prompt: request.prompt, ...request.size === undefined ? {} : { size: request.size },
       ...request.resolution === undefined ? {} : { resolution: request.resolution },
-      ...request.quality === undefined ? {} : { quality: request.quality }, count: 1, references: ['ma_observed'] }, { cookie })
+      ...request.quality === undefined ? {} : { quality: request.quality }, count: 1, generation_mode: 'image-to-image' }
+    expect(await post(base, '/api/image/generate', { ...input, references: ['ma_observed', 'ma_observedextra'] }, { cookie }))
+      .toMatchObject({ ok: false, code: 'REFERENCES_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    expect(imageInteropCounts()).toMatchObject({ reference_upload_posts: 0, generation_posts: 0 })
+    await recordImageInteropCase(label + '-reference-overlimit', { model, reference_count: 2, code: 'REFERENCES_NOT_SUPPORTED' })
+    const result = await post(base, '/api/image/generate', { ...input, references: ['ma_observed'] }, { cookie })
     expect(result, JSON.stringify(result)).toMatchObject({ ok: true, submission_state: 'completed', task_id: retainedTaskId })
     const payload = object(result.payload)
     if (typeof payload.path !== 'string') throw new Error('Expected saved original image path')
-    expect(createHash('sha256').update(await readFile(payload.path)).digest('hex')).toBe(fixture.image_sha256)
+    const savedHash = createHash('sha256').update(await readFile(payload.path)).digest('hex')
+    expect(savedHash).toBe(fixture.image_sha256)
     const listing = object(object(await (await fetch(base + '/api/creative/projects?session_id=' + sessionId, { headers: { cookie } })).json()).payload)
     if (!Array.isArray(listing.projects)) throw new Error('Expected visible image project')
     const project = listing.projects.map(object).find(project => project.id === result.plan_id)
@@ -846,13 +974,41 @@ describe.skipIf(observedEditFixtures.length === 0)('actual gateway image-edit de
     const preview = await fetch(new URL(output.url, base), { headers: { cookie } })
     expect(preview.status).toBe(200)
     const bytes = Buffer.from(await preview.arrayBuffer())
-    expect(createHash('sha256').update(bytes).digest('hex')).toBe(fixture.image_sha256)
+    const previewHash = createHash('sha256').update(bytes).digest('hex')
+    expect(previewHash).toBe(fixture.image_sha256)
     expect((await sharp(bytes).metadata()).width).toBe((await sharp(original).metadata()).width)
     const submissions = imageWireCalls.filter(call => call.method === 'POST' && (call.path.endsWith('/images/edits') || call.path.endsWith('/images/generations')))
     expect(submissions).toHaveLength(1)
     expect(submissions[0]?.path).toBe('/harness/v1/images/edits')
-    if (model.startsWith('ycapi-')) expect(submissions[0]?.prefer).toBe('respond-async')
-    expect(imageWireCalls.filter(call => call.path === retainedTaskPath)).toHaveLength(1)
+    const referenceHash = createHash('sha256').update(reference).digest('hex')
+    const edit = calls.find(call => call.path === '/harness/v1/images/edits')
+    if (edit === undefined) throw new Error('Expected the original edit submission')
+    expect(edit.body).not.toHaveProperty('mode')
+    expect(edit.body).not.toHaveProperty('generation_mode')
+    const uploads = calls.filter(call => call.path === '/harness/v1/uploads/images')
+    if (ycapi) {
+      expect(submissions[0]?.prefer).toBe('respond-async')
+      expect(uploads).toHaveLength(1)
+      expect(uploads[0]?.body).toEqual({ model, file: { type: 'image/png', size: reference.length, sha256: referenceHash } })
+      expect(edit.body).toEqual({ model, prompt: request.prompt, n: 1,
+        ...request.size === undefined ? {} : { size: request.size },
+        ...request.resolution === undefined ? {} : { resolution: request.resolution },
+        ...request.quality === undefined ? {} : { quality: request.quality }, image: referenceUrls })
+    } else {
+      expect(uploads).toHaveLength(0)
+      expect(edit.body).toMatchObject({ model, n: '1',
+        'image[]': { type: 'image/png', size: reference.length, sha256: referenceHash } })
+    }
+    expect(imageInteropCounts()).toMatchObject({ generation_posts: 1, edit_posts: 1,
+      native_generation_posts: 0, standard_generation_posts: 0, original_task_gets: 1,
+      original_artifact_manifest_gets: 1, original_artifact_content_gets: 1 })
+    const wireReference = object(ycapi ? uploads[0]?.body.file : edit.body['image[]'])
+    await recordImageInteropCase(label + '-original-reference-edit', { model, reference_count: 1,
+      reference_sha256: referenceHash, reference_bytes: reference.length,
+      wire_reference_sha256: wireReference.sha256, wire_reference_bytes: wireReference.size,
+      submitted_reference_url_sha256: referenceUrls.map(url => createHash('sha256').update(url).digest('hex')),
+      expected_output_sha256: fixture.image_sha256, saved_output_sha256: savedHash, preview_output_sha256: previewHash,
+      forwarded_input_mode: false })
     await recordRecoveryRoute(label.replaceAll('/', '-'), result)
   })
 })
