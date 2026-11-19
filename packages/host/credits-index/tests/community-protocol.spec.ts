@@ -96,4 +96,32 @@ describe('community contract is separate from official demand-v1', () => {
     expect(communityResponse('upload-chunk', success(communityUpload({ object_key: 'hidden' })), account)).toEqual(communityUpload())
     expect(() => communityResponse('upload-complete', success(communityUpload({ status: 'ready' })), account)).toThrow(DemandProtocolError)
   })
+  it('preserves optional approval capability and exact calendar dates without changing old create bodies', () => {
+    const old = { client_request_id: communityIds.key, publish_to_community: true, title: '整理资料', public_summary: '公开说明',
+      public_budget: 'RM800，可商议', private_text: '', public_attachment_ids: [], private_attachment_ids: [] }
+    expect(communityRequest('create', old)).not.toHaveProperty('expected_delivery_date')
+    expect(communityRequest('create', { ...old, expected_delivery_date: '' }).expected_delivery_date).toBe('')
+    expect(communityRequest('create', { ...old, expected_delivery_date: '2000-02-29' }).expected_delivery_date).toBe('2000-02-29')
+    for (const invalid of ['0000-01-01', '1900-02-29', '2026-02-29', '2026-11-31', ' 2026-12-08']) {
+      expect(() => communityRequest('create', { ...old, expected_delivery_date: invalid })).toThrow(DemandProtocolError)
+    }
+    const original = communityConfiguration()
+    const next = { ...original, capabilities: { ...demandObject(original.capabilities), community_approval_v1: true },
+      publication_policy: 'approval_required' }
+    expect(communityResponse('config', success(next), account)).toEqual(next)
+    expect(communityResponse('config', success(original), account)).not.toHaveProperty('publication_policy')
+    const listing = communityListingFixture({ expected_delivery_date: '2026-12-08', approval_status: 'approved' })
+    expect(communityListing(listing)).toMatchObject({ expected_delivery_date: '2026-12-08', approval_status: 'approved' })
+    expect(() => communityListing({ ...listing, approval_status: 'visible' })).toThrow(DemandProtocolError)
+  })
+  it('keeps rejection notes restricted to the publisher or administrator order projection', () => {
+    const rejected = communityListingFixture({ approval_status: 'rejected', approval_reason: '仅发布人和管理员可见' })
+    expect(communityListing(rejected)).not.toHaveProperty('approval_reason')
+    const ownerView = communityResponse('order', success({ order: communityOrder({ listing: rejected }) }), account)
+    expect(demandObject(demandObject(ownerView.order).listing).approval_reason).toBe('仅发布人和管理员可见')
+    const acceptorView = communityResponse('order', success({ order: communityOrder({ listing: rejected, my_role: 'acceptor' }) }), { id: '43' })
+    expect(demandObject(demandObject(acceptorView.order).listing)).not.toHaveProperty('approval_reason')
+    expect(() => communityRequest('action', { client_action_id: communityIds.key, revision: 1,
+      action: 'approve_listing' })).toThrow(DemandProtocolError)
+  })
 })

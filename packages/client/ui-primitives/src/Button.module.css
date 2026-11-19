@@ -42,6 +42,15 @@
   background: var(--dsw-alias-button-primary-hover);
 }
 
+.accent {
+  background: var(--dsw-alias-demand-accent);
+  color: var(--dsw-alias-demand-on-accent);
+}
+
+.accent:hover:not(:disabled) {
+  background: var(--dsw-alias-demand-accent-hover);
+}
+
 .ghost:hover:not(:disabled) {
   background: var(--dsw-alias-interactive-bg-hover);
 }

@@ -27,12 +27,12 @@ export function CommunityDemandDetails(props: {
   const { open, demand, access, operation, onClose, onClaim, onCheck, onOpenConversation, onDownloadAttachment, t } = props
   const unknown = operation.state === 'unknown'
   const submitting = operation.state === 'submitting'
-  const action = unknown ? <Button variant="primary" disabled={operation.checking} onClick={onCheck}>{t('communityCheckClaim')}</Button>
-    : submitting ? <Button variant="primary" disabled>{t('communityClaiming')}</Button>
-      : operation.state === 'failed' && operation.recoverable ? <Button variant="primary" disabled={operation.recovering}
+  const action = unknown ? <Button variant="accent" disabled={operation.checking} onClick={onCheck}>{t('communityCheckClaim')}</Button>
+    : submitting ? <Button variant="accent" disabled>{t('communityClaiming')}</Button>
+      : operation.state === 'failed' && operation.recoverable ? <Button variant="accent" disabled={operation.recovering}
         onClick={onCheck}>{t('communityRetryOriginal')}</Button>
-        : access.canOpenConversation ? <Button variant="primary" onClick={onOpenConversation}>{t('communicate')}</Button>
-          : access.relation === 'visitor' ? <Button variant="primary" disabled={!access.canClaim} onClick={onClaim}>
+        : access.canOpenConversation ? <Button variant="accent" onClick={onOpenConversation}>{t('communicate')}</Button>
+          : access.relation === 'visitor' ? <Button variant="accent" disabled={!access.canClaim} onClick={onClaim}>
             {t('communityClaim')}</Button> : null
   return <Modal open={open} onClose={onClose} title={t('communityPublicDetails')} closeLabel={t('close')}
     className={clsx(css.dialog)} contentClassName={clsx(css.dialogContent)} footer={<div className={css.actions}>
@@ -43,6 +43,10 @@ export function CommunityDemandDetails(props: {
       <dl className={css.facts}>
         <div><dt>{t('communityService')}</dt><dd>{demand.serviceName}</dd></div>
         <div><dt>{t('communityAuthor')}</dt><dd>{demand.authorDisplayName}</dd></div>
+        {!demand.publicBudget?.trim() ? null : <div><dt>{t('communityBudget')}</dt>
+          <dd className={css.budgetFact}>{demand.publicBudget}</dd></div>}
+        {!demand.expectedDeliveryDate?.trim() ? null : <div><dt>{t('communityExpectedDelivery')}</dt>
+          <dd><time dateTime={demand.expectedDeliveryDate}>{demand.expectedDeliveryDate}</time></dd></div>}
       </dl>
       <p className={css.brief}>{demand.brief}</p>
       {demand.attachments.length === 0 ? null : <section aria-label={t('communityPublicAttachments')}>

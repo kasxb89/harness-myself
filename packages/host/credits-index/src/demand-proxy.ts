@@ -78,7 +78,7 @@ export type DemandTransportRoute = {
   readonly attachmentId?: string
   readonly resourceId?: string
 }
-/** Codecs supplied by the two separately versioned private and community contracts. */
+/** Codecs supplied by the separate private-demand, community-order and public-forum contracts. */
 export interface DemandTransportProtocol {
   readonly localBasePath: string
   readonly selectRoute: (path: string, method: string) => DemandTransportRoute | undefined
@@ -363,7 +363,7 @@ export function createDemandTransport(options: DemandProxyOptions, protocol: Dem
         operationKey = `${route.uploadId}:${offset}`
         init = { method: 'PUT', signal, duplex: 'half', body: uploadStream(request, Number(length), limits.maxChunkBytes, signal, () => account.isCurrent()),
           headers: { accept: 'application/json', 'content-type': 'application/octet-stream', 'content-length': length, 'upload-offset': offset } }
-      } else if (route.method === 'POST') {
+      } else if (route.method === 'POST' || route.method === 'PUT') {
         if (query.size !== 0) throw new DemandInputError('DEMAND_INVALID_INPUT')
         let body: ReturnType<typeof demandRequest>
         try { body = protocol.request(route.kind, await readInput(request, limits.maxJsonRequestBytes, signal)) }
@@ -371,7 +371,7 @@ export function createDemandTransport(options: DemandProxyOptions, protocol: Dem
         const key = body.client_request_id ?? body.client_message_id ?? body.client_action_id ?? body.client_upload_id
         if (route.kind === 'link') linkDisposition = demandText(body.disposition, 10)
         operationKey = typeof key === 'string' ? key : route.kind === 'upload-complete' ? `${route.uploadId}:complete` : undefined
-        init = { method: 'POST', signal, headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify(body) }
+        init = { method: route.method, signal, headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify(body) }
       } else {
         let selected: URLSearchParams
         try { selected = protocol.query(route.kind, query) } catch (_invalidQuery: unknown) { throw new DemandInputError('DEMAND_INVALID_INPUT') }

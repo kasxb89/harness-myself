@@ -1,7 +1,7 @@
 /** Backend-paged service capabilities enter the platform's central reception queue. */
 import { useEffect, useRef, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { Button, Input, Pill, IconSearchOutlineRegular, IconChecklistOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, Pill, IconSearchOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DemandPageFace, DemandPageState } from './types.ts'
 import { DemandEmpty, DemandSkeleton, ServiceProfileAvatar, type DemandTranslate } from './DemandUI.tsx'
 import css from './DemandPage.module.css'
@@ -27,7 +27,6 @@ export function ServiceDirectory(props: {
   const filtered = query.trim() !== '' || category !== ''
   useEffect(() => { if (scroller.current !== null) scroller.current.scrollTop = 0 }, [query, category])
   return <div ref={scroller} className={css.directory}>
-    <p className={css.routingNote}><IconChecklistOutlineRegular size={16} /><span>{t('platformRoutingHint')}</span></p>
     <div className={css.directoryToolbar}>
       <div className={css.searchField}>
         <Input type="search" value={query} maxLength={100} aria-label={t('searchServices')} placeholder={t('searchServices')}

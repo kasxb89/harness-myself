@@ -2,6 +2,7 @@
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { CommunityFace } from './community-types.ts'
+import type { ForumFace } from './forum-types.ts'
 
 /** Service state without discarding already loaded history. */
 export type DemandAvailability = 'loading' | 'ready' | 'login-required' | 'unconfigured' | 'disabled' | 'error'
@@ -191,9 +192,10 @@ export interface DemandPageFace {
 }
 /** Framework-bound main panel props and localized copy. */
 export interface DemandWorkspaceFace extends Omit<DemandPageFace, 'hooks'> {
-  readonly hooks: DemandPageFace['hooks'] & CommunityFace['hooks']
+  readonly hooks: DemandPageFace['hooks'] & CommunityFace['hooks'] & ForumFace['hooks']
   readonly community: Omit<CommunityFace, 'hooks'>
-  readonly setWorkspaceView: (view: 'legacy' | 'community' | 'other') => void
+  readonly forum: Omit<ForumFace, 'hooks'>
+  readonly setWorkspaceView: (view: 'legacy' | 'community' | 'forum' | 'other') => void
 }
 /** Framework-bound main panel with independent official and community models. */
 export type DemandPageProps = PropsRuntime<'main'> & PropsLocale<'demands'> & InjectFace<DemandWorkspaceFace>

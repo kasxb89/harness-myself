@@ -63,6 +63,7 @@ import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
 import { createDemandProxy, type DemandProxyOptions } from './demand-proxy.ts'
 import { createCommunityProxy } from './community-proxy.ts'
+import { createForumProxy } from './forum-proxy.ts'
 import { ONBOARDING_SURVEY_RESPONSE_LIMIT, parseSurveyRequest, readOnboardingSurvey } from './onboarding-survey.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
@@ -2621,8 +2622,13 @@ export function apply(ctx: Context, config: Config): void {
     limits: () => ({ ...demandProxyOptions.limits(), maxJsonRequestBytes: resolved.communityMaxJsonRequestBytes,
       maxJsonResponseBytes: resolved.communityMaxJsonResponseBytes }),
   })
+  const forumProxy = createForumProxy({ ...demandProxyOptions,
+    limits: () => ({ ...demandProxyOptions.limits(), maxJsonRequestBytes: resolved.communityMaxJsonRequestBytes,
+      maxJsonResponseBytes: resolved.communityMaxJsonResponseBytes }),
+  })
   ctx.effect(() => async () => { await demandProxy.close() }, 'credits-index: private human-engineer demand requests')
   ctx.effect(() => async () => { await communityProxy.close() }, 'credits-index: ordinary-user community demand requests')
+  ctx.effect(() => async () => { await forumProxy.close() }, 'credits-index: ordinary-user public forum requests')
 
   /** All account data reads share one login-owned admission and the existing unique renewal owner. */
   const accountRequest = (session: StoredSession | null): AccountGetRequest => async (path, authenticated, signal, body) => {
@@ -3322,6 +3328,7 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (await forumProxy.handle(request, response, route, method)) return
         if (await communityProxy.handle(request, response, route, method)) return
         if (await demandProxy.handle(request, response, route, method)) return
         if (route === '/api/onboarding-survey' || route === '/api/onboarding-survey/defer') {

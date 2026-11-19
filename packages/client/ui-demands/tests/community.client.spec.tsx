@@ -42,6 +42,17 @@ function publishProps(): ComponentProps<typeof CommunityDemandPublish> {
 }
 
 describe('public demand detail view', () => {
+  it('keeps the supplied budget verbatim and distinguishes delivery dates from activity time', () => {
+    const props = detailsProps()
+    const view = render(<CommunityDemandDetails {...props}
+      demand={{ ...props.demand, publicBudget: 'US$300–500', expectedDeliveryDate: '2026-12-08' }} />)
+    expect(screen.getByText('US$300–500')).toBeTruthy()
+    const dialog = screen.getByRole('dialog', { name: zh.communityPublicDetails })
+    expect(dialog.querySelector('time')?.getAttribute('dateTime')).toBe('2026-12-08')
+    view.rerender(<CommunityDemandDetails {...props} />)
+    expect(screen.queryByText(zh.communityBudget)).toBeNull()
+    expect(screen.queryByText(zh.communityExpectedDelivery)).toBeNull()
+  })
   it('renders only approved public fields and delegates authorized attachment access', () => {
     const props = detailsProps()
     const supplied = { ...props.demand, phone: 'PRIVATE-PHONE', privateHistory: 'PRIVATE-HISTORY' }
@@ -112,6 +123,24 @@ describe('public demand detail view', () => {
 })
 
 describe('explicit public publication view', () => {
+  it('keeps optional budget and supported delivery fields controlled and frozen for the original unknown submission', () => {
+    const props = publishProps()
+    const draft = { ...props.draft, publicBudget: '预算可沟通', expectedDeliveryDate: '2026-12-08' }
+    const view = render(<CommunityDemandPublish {...props} draft={draft} />)
+    fireEvent.change(screen.getByRole('textbox', { name: zh.communityBudget }), { target: { value: 'US$500' } })
+    expect(props.onChange).toHaveBeenLastCalledWith({ publicBudget: 'US$500' })
+    fireEvent.change(screen.getByLabelText(zh.communityExpectedDelivery), { target: { value: '2026-12-12' } })
+    expect(props.onChange).toHaveBeenLastCalledWith({ expectedDeliveryDate: '2026-12-12' })
+    view.rerender(<CommunityDemandPublish {...props} draft={draft} operation={{ state: 'unknown', checking: false }} />)
+    expect(screen.getByRole('textbox', { name: zh.communityBudget })).toHaveProperty('disabled', true)
+    expect(screen.getByLabelText(zh.communityExpectedDelivery)).toHaveProperty('disabled', true)
+    expect(props.onChange).toHaveBeenCalledTimes(2)
+    fireEvent.change(screen.getByRole('textbox', { name: zh.communityBudget }), { target: { value: '不得替换原价格' } })
+    fireEvent.change(screen.getByLabelText(zh.communityExpectedDelivery), { target: { value: '2026-12-20' } })
+    expect(props.onChange).toHaveBeenCalledTimes(2)
+    view.rerender(<CommunityDemandPublish {...props} />)
+    expect(screen.queryByLabelText(zh.communityExpectedDelivery)).toBeNull()
+  })
   it('defaults consent to false and submits no private request or unapproved snapshot', () => {
     const props = publishProps()
     const view = render(<CommunityDemandPublish {...props} />)

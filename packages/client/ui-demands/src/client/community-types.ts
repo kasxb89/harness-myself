@@ -7,6 +7,8 @@ export type CommunityStatus = 'open' | 'accepted' | 'awaiting_acceptance' | 'com
 export type CommunityRole = 'publisher' | 'acceptor' | 'admin'
 /** Immutable attachment visibility domain. */
 export type CommunityScope = 'listing' | 'conversation'
+/** Review state is independent from the existing participant lifecycle. */
+export type CommunityApprovalStatus = 'pending' | 'approved' | 'rejected'
 /** Public user projection without phone, login name or credentials. */
 export interface CommunityUser { readonly id: number; readonly display_name: string }
 /** Validated ready attachment in this namespace only. */
@@ -28,6 +30,9 @@ export interface CommunityListing {
   readonly title: string
   readonly public_summary: string
   readonly public_budget: string
+  readonly expected_delivery_date?: string
+  readonly approval_status?: CommunityApprovalStatus
+  readonly approval_reason?: string
   readonly service_profile_id: string
   readonly service_profile_name: string
   readonly publisher: CommunityUser
@@ -100,7 +105,9 @@ export interface CommunityConfig {
     readonly single_acceptor: boolean
     readonly resumable_upload: boolean
     readonly private_participant_messages: boolean
+    readonly community_approval_v1?: boolean
   }
+  readonly publication_policy?: 'approval_required'
   readonly upload_rules: CommunityUploadRules
 }
 /** Localizable error identity, preserving unknown mutation outcomes. */
@@ -123,6 +130,7 @@ export interface CommunityPublicationFields {
   readonly title: string
   readonly publicSummary: string
   readonly publicBudget: string
+  readonly expectedDeliveryDate?: string
   readonly serviceProfileId: string
   readonly privateText: string
 }

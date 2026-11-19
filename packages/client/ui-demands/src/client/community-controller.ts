@@ -65,7 +65,7 @@ const page = <T>(): Page<T> => ({ items: [], cursor: '', hasMore: false, status:
 const presentation = <T>(value: Page<T>): CommunityPage<T> => ({ items: value.items, status: value.status,
   hasMore: value.hasMore, loadingMore: value.loadingMore, error: value.error })
 const fields = (): CommunityPublicationFields => ({ publishToCommunity: false, title: '', publicSummary: '',
-  publicBudget: '', serviceProfileId: '', privateText: '' })
+  publicBudget: '', expectedDeliveryDate: '', serviceProfileId: '', privateText: '' })
 const issue = (code: string, unknown = false, operationId: string | null = null): CommunityIssue => ({ code, unknown, operationId })
 const blank = (availability: CommunityState['availability']): CommunityState => ({ availability, accountId: null, config: null,
   error: null, listingQuery: '', listingServiceProfileId: '', listings: presentation(page()),
@@ -255,7 +255,8 @@ export function createCommunityController(accountSource: Context['creditsSession
     }
   }
   const readListings = async (captured: CommunityOwner, more = false): Promise<void> => {
-    if (!sameOwner(captured) || server?.enabled !== true || listings.flight !== null || more && !listings.hasMore) return
+    if (!sameOwner(captured) || unsupported || server?.enabled !== true || !wire.communityApprovalAvailable(server)
+      || listings.flight !== null || more && !listings.hasMore) return
     const epoch = listingEpoch, current = listings, flight = new AbortController()
     current.flight = flight; current.loadingMore = more; current.status = current.items.length === 0 ? 'loading' : current.status
     current.error = null; publish()
@@ -268,6 +269,7 @@ export function createCommunityController(accountSource: Context['creditsSession
       if (!sameOwner(captured) || epoch !== listingEpoch || flight.signal.aborted) return
       if (!answer.ok) { current.error = issue(answer.code); current.status = 'error'; return }
       const result = wire.communityPage(answer.payload, wire.communityListing)
+      if (result.items.some(item => item.approval_status !== 'approved')) throw new wire.CommunityWireError()
       const values = new Map((more ? current.items : []).map(item => [item.id, item]))
       for (const item of result.items) {
         values.set(item.id, item)
@@ -315,6 +317,9 @@ export function createCommunityController(accountSource: Context['creditsSession
       if (!answer.ok) { selectedListingStatus = 'error'; selectedListingError = issue(answer.code); return null }
       const result = wire.communityListing(decodeListingReply(answer.payload))
       if (result.id !== id) throw new wire.CommunityWireError()
+      if (result.approval_status !== 'approved') {
+        selectedListingStatus = 'error'; selectedListingError = issue('COMMUNITY_APPROVAL_REQUIRED'); return null
+      }
       selectedListing = result; selectedListingStatus = 'ready'
       for (const asset of result.public_attachments) assets.set(asset.id, asset)
       return result
@@ -368,6 +373,10 @@ export function createCommunityController(accountSource: Context['creditsSession
       }
     }
   }
+  const closePublicDiscovery = (code: string): void => {
+    listingEpoch += 1; detailEpoch += 1; listings.flight?.abort(); listings = page(); selectedListing = null
+    selectedListingStatus = 'error'; selectedListingError = issue(code)
+  }
   const refreshAll = async (): Promise<void> => {
     if (refreshTask !== undefined) return refreshTask
     const captured = owner
@@ -377,17 +386,23 @@ export function createCommunityController(accountSource: Context['creditsSession
         const answer = await perform(captured, { method: 'GET', path: '/config' })
         if (!sameOwner(captured)) return
         if (!answer.ok) {
-          if (answer.httpStatus === 404) { unsupported = true; availability = 'unavailable'; error = null; return }
+          if (answer.httpStatus === 404) {
+            unsupported = true; availability = 'unavailable'; error = null
+            closePublicDiscovery('COMMUNITY_UNAVAILABLE'); return
+          }
           availability = 'error'; error = issue(answer.code); return
         }
         const next = wire.communityConfig(decodeConfigReply(answer.payload))
         if (!next.capabilities.community_orders_v1 || !next.capabilities.explicit_publication
           || !next.capabilities.single_acceptor || !next.capabilities.private_participant_messages) {
-          unsupported = true; availability = 'unavailable'; error = null; return
+          unsupported = true; availability = 'unavailable'; error = null
+          closePublicDiscovery('COMMUNITY_UNAVAILABLE'); return
         }
         server = next; unsupported = false; availability = storageFailed ? 'error' : next.enabled ? 'ready' : 'disabled'
         if (!storageFailed) error = null
-        if (!next.enabled) { listingEpoch += 1; listings.flight?.abort(); listings = page(); selectedListing = null }
+        if (!next.enabled || !wire.communityApprovalAvailable(next)) {
+          closePublicDiscovery(next.enabled ? 'COMMUNITY_APPROVAL_REQUIRED' : 'COMMUNITY_DISABLED')
+        }
         publish()
         await Promise.all([...views.map(view => readOrders(captured, view)), ...next.enabled ? [readListings(captured)] : []])
         if (selectedOrderId !== null && sameOwner(captured)) await readMessages(captured, selectedOrderId)
@@ -434,7 +449,9 @@ export function createCommunityController(accountSource: Context['creditsSession
       if (operation.kind === 'publication') {
         if (receipt.order.my_role !== 'publisher' || String(receipt.order.publisher.id) !== captured.id
           || receipt.order.title !== body.title || receipt.order.listing.public_summary !== body.public_summary
-          || receipt.order.listing.public_budget !== body.public_budget || receipt.order.private_text !== body.private_text
+          || receipt.order.listing.public_budget !== body.public_budget
+          || (receipt.order.listing.expected_delivery_date ?? '') !== (body.expected_delivery_date ?? '')
+          || receipt.order.private_text !== body.private_text
           || receipt.order.listing.service_profile_id !== (body.service_profile_id ?? '')) throw new wire.CommunityWireError()
         const publicIds = wire.communityArray(body.public_attachment_ids, 8, wire.communityId).sort()
         if (JSON.stringify(publicIds) !== JSON.stringify(receipt.order.listing.public_attachments.map(item => item.id).sort())) {
@@ -571,6 +588,7 @@ export function createCommunityController(accountSource: Context['creditsSession
       if (item.kind === 'publication') publications.set(item.scopeKey, { scopeKey: item.scopeKey, createdAt: item.createdAt,
         orderId: null, publishToCommunity: true, title: wire.communityText(body.title, 200),
         publicSummary: wire.communityText(body.public_summary, 4000), publicBudget: wire.communityText(body.public_budget, 100, true),
+        expectedDeliveryDate: body.expected_delivery_date === undefined ? '' : wire.communityCalendarDate(body.expected_delivery_date),
         serviceProfileId: body.service_profile_id === undefined ? '' : wire.communityText(body.service_profile_id, 128, true),
         privateText: wire.communityText(body.private_text, 12_000, true), sending: false, locked: true, error: null })
       if (item.upload !== undefined) {
@@ -640,6 +658,7 @@ export function createCommunityController(accountSource: Context['creditsSession
     if (existing !== undefined) { track(() => execute(existing)); return }
     const accepted = orderRecords.get(id)
     if (accepted?.my_role === 'acceptor' && String(accepted.acceptor?.id) === captured.id) { track(() => readOrder(captured, id)); return }
+    if (!wire.communityApprovalAvailable(server)) { selectedListingError = issue('COMMUNITY_APPROVAL_REQUIRED'); publish(); return }
     if (server?.enabled !== true || claiming.has(id)) return
     claiming.add(id); publish()
     track(async () => {
@@ -650,6 +669,7 @@ export function createCommunityController(accountSource: Context['creditsSession
         if (!answer.ok) { selectedListingError = issue(answer.code); return }
         const fresh = wire.communityListing(decodeListingReply(answer.payload))
         if (fresh.id !== id) throw new wire.CommunityWireError()
+        if (fresh.approval_status !== 'approved') { selectedListingError = issue('COMMUNITY_APPROVAL_REQUIRED'); return }
         if (String(fresh.publisher.id) === captured.id) { selectedListingError = issue('COMMUNITY_SELF_ACCEPT_FORBIDDEN'); return }
         if (!fresh.can_accept || fresh.status !== 'open') { selectedListingError = issue('COMMUNITY_ORDER_NOT_OPEN'); return }
         const operationId = newId(), operation = setOperation(captured, { operationId, scopeKey: `accept:${id}`,
@@ -684,15 +704,24 @@ export function createCommunityController(accountSource: Context['creditsSession
     openListing: (id) => {
       const captured = owner
       try { wire.communityId(id) } catch (_input: unknown) { return }
-      if (captured !== null && server?.enabled === true) track(async () => { await readListing(captured, id) })
+      if (captured !== null && !unsupported && server?.enabled === true && wire.communityApprovalAvailable(server)) {
+        track(async () => { await readListing(captured, id) })
+      }
     }, acceptListing,
     openOrder: (id) => {
       const captured = owner
       try { wire.communityId(id) } catch (_input: unknown) { return }
-      if (captured !== null && server !== null && !unsupported) track(() => readOrder(captured, id))
+      if (captured === null || !sameOwner(captured)) return
+      if (server !== null && !unsupported || orderRecords.has(id)) track(() => readOrder(captured, id))
+      else {
+        selectedOrderId = id; selectedOrderStatus = 'error'; selectedOrderError = issue('COMMUNITY_UNAVAILABLE')
+        activePublicationScope = null; publish()
+      }
     },
     startPublication: () => {
-      if (!mutationReady() || server?.enabled !== true) { error = issue('COMMUNITY_DISABLED'); publish(); return }
+      if (!mutationReady() || server?.enabled !== true || !wire.communityApprovalAvailable(server)) {
+        error = issue('COMMUNITY_APPROVAL_REQUIRED'); publish(); return
+      }
       const scopeKey = `publication:${newId()}`
       publications.set(scopeKey, { ...fields(), scopeKey, createdAt: clock(), orderId: null, sending: false, locked: false, error: null })
       activePublicationScope = scopeKey; selectedOrderId = null; publish()
@@ -713,19 +742,23 @@ export function createCommunityController(accountSource: Context['creditsSession
       if (draft === undefined || draft.orderId !== null) return
       try {
         if (server?.enabled !== true) throw new Error('COMMUNITY_DISABLED')
+        if (!wire.communityApprovalAvailable(server)) throw new Error('COMMUNITY_APPROVAL_REQUIRED')
         if (!draft.publishToCommunity) throw new Error('COMMUNITY_EXPLICIT_PUBLICATION_REQUIRED')
         const title = wire.communityText(draft.title, 200).trim(), summary = wire.communityText(draft.publicSummary, 4000).trim()
         const budget = wire.communityText(draft.publicBudget, 100, true), privateText = wire.communityText(draft.privateText, 12_000, true)
+        const expectedDate = wire.communityCalendarDate(draft.expectedDeliveryDate ?? '')
         const profile = draft.serviceProfileId === '' ? '' : wire.communityId(draft.serviceProfileId)
         const operationId = newId(), target: CommunityUploadTarget = { kind: 'publication', scopeKey }
         const operation = setOperation(captured, { operationId, scopeKey, orderId: null, kind: 'publication', path: '/orders',
           body: JSON.stringify({ client_request_id: operationId, publish_to_community: true, title, public_summary: summary,
-            public_budget: budget, ...profile === '' ? {} : { service_profile_id: profile },
+            public_budget: budget, ...expectedDate === '' ? {} : { expected_delivery_date: expectedDate },
+            ...profile === '' ? {} : { service_profile_id: profile },
             public_attachment_ids: readyIds(target, 'listing'), private_text: privateText,
             private_attachment_ids: readyIds(target, 'conversation') }) })
         if (operation !== null) track(() => execute(operation))
       } catch (failure: unknown) {
-        const code = failure instanceof Error && failure.message.startsWith('COMMUNITY_') ? failure.message : 'COMMUNITY_INVALID_INPUT'
+        const code = failure instanceof wire.CommunityWireError ? 'COMMUNITY_INVALID_INPUT'
+          : failure instanceof Error && failure.message.startsWith('COMMUNITY_') ? failure.message : 'COMMUNITY_INVALID_INPUT'
         publications.set(scopeKey, { ...draft, error: issue(code) }); publish()
       }
     },
@@ -798,7 +831,7 @@ export function createCommunityController(accountSource: Context['creditsSession
     addAttachments: (target, scope, values) => {
       if (!mutationReady() || owner === null || server === null || !server.capabilities.resumable_upload) return
       const captured = owner, scopeKey = targetKey(target), destination = target.kind === 'order' ? target.orderId : null
-      if (target.kind === 'publication' && (!publications.has(target.scopeKey) || ! server.enabled
+      if (target.kind === 'publication' && (!publications.has(target.scopeKey) || !server.enabled || !wire.communityApprovalAvailable(server)
         || pending(scopeKey, 'publication').length > 0) || target.kind === 'order' && (scope !== 'conversation'
           || orderRecords.get(target.orderId)?.can_send !== true)) return
       for (const file of values) {

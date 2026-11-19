@@ -39,6 +39,7 @@ export function CommunityDemandPublish(props: {
   const [serviceMenu, setServiceMenu] = useState(false)
   const unknown = operation.state === 'unknown'
   const editingLocked = props.locked || operation.state === 'submitting' || unknown
+    || operation.state === 'failed' && operation.recoverable === true
   const selected = services.find(item => item.id === draft.serviceId)
   const allowPublic = draft.allowPublic === true
   const validService = services.length === 0 || selected !== undefined && selected.disabled !== true
@@ -50,10 +51,10 @@ export function CommunityDemandPublish(props: {
       {props.onOfficialCustomization === undefined ? null : <Button disabled={editingLocked}
         onClick={props.onOfficialCustomization}>{t('officialCustomization')}</Button>}
       <Button onClick={props.onClose}>{t('cancel')}</Button>
-      {unknown ? <Button variant="primary" disabled={operation.checking} onClick={props.onCheck}>{t('communityCheckPublication')}</Button>
+      {unknown ? <Button variant="accent" disabled={operation.checking} onClick={props.onCheck}>{t('communityCheckPublication')}</Button>
         : operation.state === 'failed' && operation.recoverable
-          ? <Button variant="primary" disabled={operation.recovering} onClick={props.onCheck}>{t('communityRetryOriginal')}</Button>
-          : <Button variant="primary" type="submit" form={formId} disabled={!ready}>
+          ? <Button variant="accent" disabled={operation.recovering} onClick={props.onCheck}>{t('communityRetryOriginal')}</Button>
+          : <Button variant="accent" type="submit" form={formId} disabled={!ready}>
             {t(operation.state === 'submitting' ? 'communityPublishing' : 'communityPublish')}</Button>}
     </div>}>
     <form id={formId} className={css.form} aria-busy={operation.state === 'submitting'} onSubmit={(event) => {
@@ -66,6 +67,13 @@ export function CommunityDemandPublish(props: {
       <label className={css.field} htmlFor={`${formId}-brief`}><span>{t('communityBrief')}</span>
         <textarea id={`${formId}-brief`} value={draft.brief} disabled={editingLocked} required rows={4}
           onChange={(event) => { update({ brief: event.target.value }) }} /></label>
+      <label className={css.field} htmlFor={`${formId}-budget`}><span>{t('communityBudget')}</span>
+        <Input id={`${formId}-budget`} value={draft.publicBudget ?? ''} disabled={editingLocked} maxLength={100}
+          onChange={(event) => { update({ publicBudget: event.target.value }) }} /></label>
+      {draft.expectedDeliveryDate === undefined ? null : <label className={css.field} htmlFor={`${formId}-delivery`}>
+        <span>{t('communityExpectedDelivery')}</span>
+        <Input id={`${formId}-delivery`} type="date" value={draft.expectedDeliveryDate} disabled={editingLocked}
+          onChange={(event) => { update({ expectedDeliveryDate: event.target.value }) }} /></label>}
       {services.length === 0 ? null : <div className={css.field}>
         <span id={`${formId}-service`}>{t('communityService')}</span>
         <Menu open={serviceMenu && !editingLocked} portal selectedId={draft.serviceId}
@@ -93,6 +101,9 @@ export function CommunityDemandPublish(props: {
       {allowPublic ? <section className={css.preview} aria-label={t('communityPublicationPreview')}>
         <h3>{t('communityPublicationPreview')}</h3><strong>{draft.title}</strong><p className={css.brief}>{draft.brief}</p>
         {selected === undefined ? null : <p>{selected.label}</p>}
+        {!draft.publicBudget?.trim() ? null : <p>{t('communityBudget')} {draft.publicBudget}</p>}
+        {!draft.expectedDeliveryDate?.trim() ? null : <p>{t('communityExpectedDelivery')}
+          <time dateTime={draft.expectedDeliveryDate}>{draft.expectedDeliveryDate}</time></p>}
         {attachments.length === 0 ? null : <ul>{attachments.map(item => <li key={item.id}>{item.name}</li>)}</ul>}
       </section> : null}
       <p className={css.note}>{t('communityAdminVisibility')}</p>

@@ -4,7 +4,8 @@ import type { CommunityConfig, CommunityListing, CommunityOrder, CommunityState 
 /** Explicit synthetic capability response with bounded image/video upload rules. */
 export function communityConfig(): CommunityConfig {
   return { schema_version: 1, enabled: true, capabilities: { community_orders_v1: true, explicit_publication: true,
-    single_acceptor: true, resumable_upload: true, private_participant_messages: true },
+    single_acceptor: true, resumable_upload: true, private_participant_messages: true, community_approval_v1: true },
+  publication_policy: 'approval_required',
   upload_rules: { max_image_bytes: 20_000_000, max_video_bytes: 512_000_000, max_attachments: 8,
     chunk_bytes: 1024 * 1024, allowed_mime_types: ['image/png', 'video/mp4'], upload_ttl_seconds: 3600 } }
 }
@@ -13,6 +14,7 @@ export function communityConfig(): CommunityConfig {
 export function communityListing(patch: Partial<CommunityListing> = {}): CommunityListing {
   return { schema_version: 1, id: '11111111-1111-4111-8111-111111111111', number: 'COMMUNITY-TEST-1',
     title: '公开网页需求', public_summary: '整理活动页', public_budget: '', service_profile_id: '', service_profile_name: '网页设计',
+    expected_delivery_date: '', approval_status: 'approved',
     publisher: { id: 2, display_name: '测试发布人' }, status: 'open', public_attachments: [],
     created_at: 1795000000, updated_at: 1795000000, can_accept: true, ...patch }
 }

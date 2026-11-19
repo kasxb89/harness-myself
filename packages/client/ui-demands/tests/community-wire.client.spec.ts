@@ -48,4 +48,26 @@ describe('community wire', () => {
     expect(() => wire.communityText('unsafe\u0000')).toThrow()
     expect(() => wire.communityBoolean(1)).toThrow()
   })
+  it('keeps legacy capability optional and validates exact calendar dates without time zone changes', () => {
+    const old = { ...listing() }; delete old.approval_status; delete old.expected_delivery_date
+    expect(wire.communityListing(old)).not.toHaveProperty('approval_status')
+    expect(wire.communityListing(old)).not.toHaveProperty('expected_delivery_date')
+    expect(wire.communityCalendarDate('0001-01-01')).toBe('0001-01-01')
+    expect(wire.communityCalendarDate('2000-02-29')).toBe('2000-02-29')
+    expect(wire.communityCalendarDate('')).toBe('')
+    for (const invalid of ['0000-01-01', '1900-02-29', '2026-02-29', '2026-04-31', ' 2026-12-08', '2026-12-08T00:00:00Z']) {
+      expect(() => wire.communityCalendarDate(invalid)).toThrow()
+    }
+    const legacy = { ...config(), capabilities: { ...config().capabilities } }
+    delete legacy.capabilities.community_approval_v1; delete legacy.publication_policy
+    expect(wire.communityApprovalAvailable(wire.communityConfig(legacy))).toBe(false)
+    expect(wire.communityApprovalAvailable(wire.communityConfig(config()))).toBe(true)
+    expect(() => wire.communityListing({ ...listing(), approval_status: 'visible' })).toThrow()
+  })
+  it('does not expose rejection notes through public listings or acceptor projections', () => {
+    const rejected = listing({ approval_status: 'rejected', approval_reason: '仅管理员和发布人可见' })
+    expect(wire.communityListing(rejected)).not.toHaveProperty('approval_reason')
+    expect(wire.communityOrder(order({ listing: rejected }), '1').listing.approval_reason).toBe('仅管理员和发布人可见')
+    expect(wire.communityOrder(order({ listing: rejected, my_role: 'acceptor' }), '2').listing).not.toHaveProperty('approval_reason')
+  })
 })

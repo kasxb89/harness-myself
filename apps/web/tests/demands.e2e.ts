@@ -51,7 +51,7 @@ async function navigateService(page: Page, url: string, directory: 'engineers' |
   await page.bringToFront()
   await page.getByRole('button', { name: '需求发布', exact: true }).click({ timeout: 30_000 })
   const service = page.getByRole('region', { name: '工程师服务', exact: true })
-  const personal = service.getByRole('tab', { name: '个人需求', exact: true })
+  const personal = service.getByRole('tab', { name: '需求广场', exact: true })
   await personal.waitFor()
   expect(await personal.getAttribute('aria-selected')).toBe('true')
   expect(await service.getByRole('searchbox', { name: directory === 'services' ? '搜索服务或能力' : '搜索工程师或技能', exact: true }).count()).toBe(0)
@@ -151,7 +151,7 @@ async function assertPersonalCardLayouts(page: Page, service: Locator, evidence:
         if (['auto', 'scroll'].includes(getComputedStyle(parent).overflowY)) parent.scrollTop = 0
       }
     })
-    expect(await service.getByRole('tab', { name: '个人需求', exact: true }).getAttribute('aria-selected')).toBe('true')
+    expect(await service.getByRole('tab', { name: '需求广场', exact: true }).getAttribute('aria-selected')).toBe('true')
     expect(await cards.count()).toBe(5)
     expect(await list.getByRole('button').filter({ hasText: '继续编辑' }).count()).toBe(3)
     expect(await list.getByRole('button').filter({ hasText: '沟通' }).count()).toBe(2)

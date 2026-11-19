@@ -2,6 +2,11 @@
    font-weight: 500 in this UI — non-variable webfonts snap intermediate
    weights unpredictably across platforms. */
 body {
+  /* Community accents do not replace global navigation or error colors. */
+  --dsw-alias-demand-accent: rgb(220, 33, 66);
+  --dsw-alias-demand-accent-hover: rgb(199, 23, 54);
+  --dsw-alias-demand-on-accent: rgb(255, 255, 255);
+  --dsw-alias-demand-accent-subtle: rgb(255, 240, 243);
   --dsw-static-amber-100: rgb(254, 245, 231);
   --dsw-static-amber-400: rgb(247, 173, 49);
   --dsw-static-amber-500: rgb(245, 158, 11);
@@ -83,6 +88,10 @@ body {
 }
 
 body[data-ds-dark-theme] {
+  --dsw-alias-demand-accent: rgb(255, 113, 137);
+  --dsw-alias-demand-accent-hover: rgb(255, 140, 160);
+  --dsw-alias-demand-on-accent: rgb(43, 16, 22);
+  --dsw-alias-demand-accent-subtle: rgb(53, 27, 36);
   --dsw-static-amber-100: rgb(254, 245, 231);
   --dsw-static-amber-400: rgb(247, 173, 49);
   --dsw-static-amber-500: rgb(245, 158, 11);

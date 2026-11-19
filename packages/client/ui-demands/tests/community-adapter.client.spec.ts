@@ -39,17 +39,17 @@ describe('community UI adapter', () => {
       orders: { ...ready().orders, published: { ...ready().orders.published, items: [order] },
         accepted: { ...ready().orders.accepted, items: [order] } } })
     const before = JSON.stringify({ state, legacy })
-    const mine = communityBoardPresentation(state, legacy, 'mine', '', t)
+    const mine = communityBoardPresentation(state, legacy, 'mine', '', t, () => null)
     expect(mine.rows.map(item => item.key)).toEqual(['legacy-draft:draft:original', 'community-publication:publication:original',
       'legacy-order:same-id', 'community-order:same-id'])
     expect(mine.rows[3]?.updatedAt).toBe(new Date(order.updated_at * 1000).toISOString())
     expect(JSON.stringify(mine.rows)).not.toContain('PRIVATE-')
     expect(JSON.stringify(mine.rows)).not.toContain('public_budget')
-    const discovery = communityBoardPresentation(state, legacy, 'public', 'server-owned-query', t)
+    const discovery = communityBoardPresentation(state, legacy, 'public', 'server-owned-query', t, () => null)
     expect(discovery.rows.map(item => item.key)).toEqual(['community-listing:same-id'])
     expect(discovery.rows[0]?.action).toBe('view-demand')
-    expect(communityBoardPresentation(state, legacy, 'accepted', '', t).rows.map(item => item.key)).toEqual(['community-order:same-id'])
-    expect(communityBoardPresentation(state, legacy, 'mine', '私密需求', t).rows.map(item => item.key)).toEqual(['legacy-order:same-id'])
+    expect(communityBoardPresentation(state, legacy, 'accepted', '', t, () => null).rows.map(item => item.key)).toEqual(['community-order:same-id'])
+    expect(communityBoardPresentation(state, legacy, 'mine', '私密需求', t, () => null).rows.map(item => item.key)).toEqual(['legacy-order:same-id'])
     expect(communityBoardTarget('legacy-draft:draft:original')).toEqual({ kind: 'legacy-draft', id: 'draft:original' })
     expect(communityBoardTarget('community-order:same-id')).toEqual({ kind: 'community-order', id: 'same-id' })
     expect(communityBoardTarget('unrelated:key')).toBeNull()
@@ -62,18 +62,18 @@ describe('community UI adapter', () => {
     const state = ready({ orders: { ...base.orders, accepted: { status: 'error', items: [communityOrder({ can_send: false })],
       hasMore: false, loadingMore: false, error: { code: 'COMMUNITY_FORBIDDEN', unknown: false, operationId: null } } } })
     const legacy = demandState({ requestsStatus: 'loading', requestsHaveMore: true, loadingMoreRequests: true })
-    const accepted = communityBoardPresentation(state, legacy, 'accepted', '', t)
+    const accepted = communityBoardPresentation(state, legacy, 'accepted', '', t, () => null)
     expect(accepted.rows[0]?.action).toBe('view')
     expect(accepted.error).toBe(zh.requestReadOnly)
     expect(accepted.loading).toBe(false)
     expect(accepted.hasMore).toBe(false)
-    expect(communityBoardPresentation(state, legacy, 'mine', '', t)).toMatchObject({ loading: true, hasMore: true, loadingMore: true })
+    expect(communityBoardPresentation(state, legacy, 'mine', '', t, () => null)).toMatchObject({ loading: true, hasMore: true, loadingMore: true })
     const failedConfig = communityBoardPresentation({ ...state, availability: 'error',
-      error: { code: 'COMMUNITY_NETWORK', unknown: false, operationId: null } }, legacy, 'accepted', '', t)
+      error: { code: 'COMMUNITY_NETWORK', unknown: false, operationId: null } }, legacy, 'accepted', '', t, () => null)
     expect(failedConfig.rows).toHaveLength(1)
     expect(failedConfig.error).toContain(zh.communityIssueNetwork)
     const disabled = communityBoardPresentation(ready({ availability: 'disabled',
-      listings: { ...base.listings, items: [communityListing()] } }), legacy, 'public', '', t)
+      listings: { ...base.listings, items: [communityListing()] } }), legacy, 'public', '', t, () => null)
     expect(disabled.rows).toHaveLength(1)
     expect(disabled.error).toBe(zh.communityIssueUnavailable)
   })
@@ -95,6 +95,79 @@ describe('community UI adapter', () => {
     const participant = communityDetailsPresentation(listing, ready({ orders: { ...state.orders,
       accepted: { ...state.orders.accepted, items: [order] } } }), t, urls)
     expect(participant.access).toMatchObject({ relation: 'claimer', canClaim: false, canOpenConversation: true })
+  })
+
+  it('shows original public budget and summary on cards while denying private covers and invented delivery dates', () => {
+    const listing = communityListing({ public_summary: '原公开摘要', public_budget: 'RM 800–1200，可商议',
+      public_attachments: [exampleCommunityAttachment({ id: 'allowed', scope: 'listing' }),
+        exampleCommunityAttachment({ id: 'denied', scope: 'listing' }),
+        exampleCommunityAttachment({ id: 'private-cover', scope: 'conversation' })] })
+    const state = ready({ listings: { ...ready().listings, items: [listing] } })
+    const lookup = vi.fn((id: string): string | null => id === 'allowed' ? '/authorized/allowed' : null)
+    const card = communityBoardPresentation(state, demandState(), 'public', '', t, lookup).rows[0]
+    expect(card).toMatchObject({ brief: '原公开摘要', publicBudget: 'RM 800–1200，可商议',
+      authorDisplayName: listing.publisher.display_name })
+    expect(card?.expectedDeliveryDate).toBe('')
+    expect(card?.attachments).toMatchObject([{ id: 'allowed', previewUrl: '/authorized/allowed' }, { id: 'denied' }])
+    expect(card?.attachments?.[1]?.previewUrl).toBeUndefined()
+    expect(lookup.mock.calls.map(([id]) => id)).toEqual(['allowed', 'denied'])
+    expect(JSON.stringify(card)).not.toContain('private-cover')
+    const detail = communityDetailsPresentation(listing, state, t, lookup)
+    expect(detail.demand.publicBudget).toBe('RM 800–1200，可商议')
+    expect(detail.demand.expectedDeliveryDate).toBe('')
+  })
+
+  it('gates discovery on declared approval and keeps pending owners and participant history separate', () => {
+    const approved = communityListing({ id: 'approved', expected_delivery_date: '2026-12-08' })
+    const pending = communityListing({ id: 'pending', approval_status: 'pending' })
+    const rejected = communityListing({ id: 'rejected', approval_status: 'rejected', approval_reason: '仅发布人可见' })
+    const legacy = { ...communityListing() }; delete legacy.approval_status; delete legacy.expected_delivery_date
+    const rejectedOrder = communityOrder({ id: rejected.id, my_role: 'publisher',
+      publisher: { id: 1, display_name: '发布人' }, listing: { ...rejected, publisher: { id: 1, display_name: '发布人' } },
+      acceptor: { id: 2, display_name: '接单人' } })
+    const state = ready({ listings: { ...ready().listings, items: [approved, pending, rejected, legacy] },
+      orders: { ...ready().orders, published: { ...ready().orders.published, items: [rejectedOrder] } } })
+    const publicBoard = communityBoardPresentation(state, demandState(), 'public', '', t, () => null)
+    expect(publicBoard.approvedPublic).toBe(true)
+    expect(publicBoard.rows.map(row => row.key)).toEqual(['community-listing:approved'])
+    expect(publicBoard.rows[0]?.expectedDeliveryDate).toBe('2026-12-08')
+    const own = communityBoardPresentation(state, demandState(), 'mine', '', t, () => null)
+    expect(own.rows[0]).toMatchObject({ approvalStatus: 'rejected', approvalReason: '仅发布人可见' })
+    const oldConfig = { ...communityConfig(), capabilities: { ...communityConfig().capabilities } }
+    delete oldConfig.capabilities.community_approval_v1; delete oldConfig.publication_policy
+    const oldState = { ...state, config: oldConfig }
+    expect(communityBoardPresentation(oldState, demandState(), 'public', '', t, () => null)).toMatchObject({
+      rows: [], approvedPublic: false, error: zh.communityApprovalUnavailable,
+    })
+    expect(communityBoardPresentation(oldState, demandState(), 'mine', '', t, () => null).rows).toHaveLength(1)
+    const unapproved = communityDetailsPresentation(pending, state, t, () => null)
+    expect(unapproved.access).toMatchObject({ canClaim: false, reason: zh.communityApprovalRequired })
+  })
+
+  it('keeps original acceptance recovery reachable outside a hidden or unsupported public listing', () => {
+    const config = { ...communityConfig(), capabilities: { ...communityConfig().capabilities } }
+    delete config.capabilities.community_approval_v1; delete config.publication_policy
+    const original = { kind: 'accept' as const, operationId: 'original-accept', scopeKey: 'accept:hidden-order',
+      orderId: 'hidden-order', inflight: false,
+      error: { code: 'COMMUNITY_TIMEOUT', unknown: true, operationId: 'original-accept' } }
+    const state = ready({ config, pending: [original], selectedListingStatus: 'error',
+      selectedListingError: { code: 'COMMUNITY_NOT_FOUND', unknown: false, operationId: null } })
+    const accepted = communityBoardPresentation(state, demandState(), 'accepted', '', t, () => null)
+    expect(accepted.rows).toHaveLength(1)
+    expect(accepted.rows[0]).toEqual({ key: 'community-acceptance:original-accept', origin: 'acceptance',
+      title: zh.communityPendingAcceptance, serviceName: '', updatedAt: '', action: 'check-claim', busy: false, disabled: false,
+      operation: { state: 'unknown', checking: false, message: zh.communityIssueUnknown } })
+    expect(communityBoardTarget(accepted.rows[0]?.key ?? '')).toEqual({ kind: 'community-acceptance', id: original.operationId })
+    expect(communityBoardPresentation(state, demandState(), 'public', '', t, () => null).rows).toHaveLength(0)
+    const inflight = communityBoardPresentation({ ...state, pending: [{ ...original, inflight: true }] },
+      demandState(), 'accepted', '', t, () => null)
+    expect(inflight.rows[0]).toMatchObject({ busy: true, disabled: true, operation: { state: 'submitting' } })
+    const failed = communityBoardPresentation({ ...state, pending: [{ ...original,
+      error: { code: 'COMMUNITY_ALREADY_ACCEPTED', unknown: false, operationId: original.operationId } }] },
+    demandState(), 'accepted', '', t, () => null)
+    expect(failed.rows[0]).toMatchObject({ operation: { state: 'failed', recoverable: true, message: zh.communityIssueNotOpen } })
+    expect(communityBoardPresentation({ ...state, accountId: null }, demandState(), 'accepted', '', t, () => null).rows).toHaveLength(0)
+    expect(communityBoardPresentation({ ...state, pending: [] }, demandState(), 'accepted', '', t, () => null).rows).toHaveLength(0)
   })
 
   it('keeps known acceptance failures distinct from unknown outcomes and binds recovery to the original scope', () => {
@@ -129,7 +202,7 @@ describe('community UI adapter', () => {
     expect(view.services[0]).toEqual({ id: '', label: zh.communityUnspecifiedService })
     expect(view.draft.brief).toBe(draft.publicSummary)
     expect(JSON.stringify(view.draft)).not.toContain('PRIVATE-TEXT')
-    expect(JSON.stringify(view.draft)).not.toContain('公开预算原文')
+    expect(view.draft.publicBudget).toBe('公开预算原文')
     expect(view.attachments.map(item => item.id)).toEqual(['original-upload'])
     expect(view.operation).toMatchObject({ state: 'failed', recoverable: true })
     expect(view.operationId).toBe('original-publish')

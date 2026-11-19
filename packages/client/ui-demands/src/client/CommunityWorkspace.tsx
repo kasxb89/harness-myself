@@ -31,7 +31,7 @@ export function CommunityWorkspace(props: {
   t: DemandTranslate
 }): ReactNode {
   const { state, legacy, commands, t } = props
-  const [view, setView] = useState<CommunityBoardView>('mine')
+  const [view, setView] = useState<CommunityBoardView>('public')
   const [search, setSearch] = useState('')
   const [listingId, setListingId] = useState<string | null>(null)
   const [chatId, setChatId] = useState<string | null>(null)
@@ -40,7 +40,9 @@ export function CommunityWorkspace(props: {
   const previousOrder = useRef(state.selectedOrderId)
   const reselect = useRef<HTMLInputElement>(null)
   const [reselectId, setReselectId] = useState<string | null>(null)
-  const board = communityBoardPresentation(state, legacy, view, search, t)
+  const board = communityBoardPresentation(state, legacy, view, search, t, commands.contentUrl)
+  const moderatedSquare = state.config?.capabilities.community_approval_v1 === true
+    && state.config.publication_policy === 'approval_required'
   const draft = state.publications.find(item => item.scopeKey === (publicationKey ?? state.activePublicationScope))
   const publication = draft === undefined ? null : communityPublishPresentation(draft, state, legacy, t)
   const listing = state.selectedListing?.id === listingId ? state.selectedListing : null
@@ -78,6 +80,11 @@ export function CommunityWorkspace(props: {
     else if (target.kind === 'legacy-draft') props.onLegacyDraft(target.id)
     else if (target.kind === 'community-order') { setChatId(target.id); commands.openOrder(target.id) }
     else if (target.kind === 'community-listing') { setListingId(target.id); commands.openListing(target.id) }
+    else if (target.kind === 'community-acceptance') {
+      if (state.pending.some(item => item.kind === 'accept' && item.operationId === target.id && !item.inflight)) {
+        commands.retryOperation(target.id)
+      }
+    }
     else { setPublicationKey(target.id); setPublicationOpen(true); commands.openPublication(target.id) }
   }
   const loadingDetail = listingId !== null && (detail === null || state.selectedListingStatus !== 'ready')
@@ -89,7 +96,7 @@ export function CommunityWorkspace(props: {
         setReselectId(null); event.currentTarget.value = ''
       }} />
     {chatId === null ? <CommunityDemandBoard {...board} view={view} search={search} t={t}
-      canCreate={state.availability === 'ready' && state.config?.enabled === true}
+      canCreate={state.availability === 'ready' && state.config?.enabled === true && moderatedSquare}
       onViewChange={changeView} onSearch={(value) => { setSearch(value); if (view === 'public') commands.setListingFilter(value) }}
       onCreate={() => { setPublicationKey(null); setPublicationOpen(true); commands.startPublication() }}
       onOpen={open} onRetry={refresh} onLoadMore={() => {
@@ -130,6 +137,8 @@ export function CommunityWorkspace(props: {
       attachmentAccept={publication.rules.accept} onClose={() => { setPublicationOpen(false) }}
       onChange={(patch) => { commands.updatePublication(draft.scopeKey, {
         ...patch.title === undefined ? {} : { title: patch.title }, ...patch.brief === undefined ? {} : { publicSummary: patch.brief },
+        ...patch.publicBudget === undefined ? {} : { publicBudget: patch.publicBudget },
+        ...patch.expectedDeliveryDate === undefined ? {} : { expectedDeliveryDate: patch.expectedDeliveryDate },
         ...patch.serviceId === undefined ? {} : { serviceProfileId: patch.serviceId },
         ...patch.allowPublic === undefined ? {} : { publishToCommunity: patch.allowPublic },
       }) }} onAddAttachments={(files) => { commands.addAttachments({ kind: 'publication', scopeKey: draft.scopeKey }, 'listing', files) }}

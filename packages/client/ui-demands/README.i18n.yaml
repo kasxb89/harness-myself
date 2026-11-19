@@ -3,14 +3,14 @@
 # After editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write packages/client/ui-demands/README.md
 /:
-  en: 1c89d6a1a03f34c6
-  zh: c2cf5406fce2d769
+  en: 84d8c11e97c32a47
+  zh: 4ea69d59d3b5a677
 /deepseek-ai-dsh-client-ui-demands:
   en: f1cb6ef6984a434e
   zh: 497d75deca75b4d6
 /deepseek-ai-dsh-client-ui-demands/summary:
-  en: a70d24de87546630
-  zh: 69bd99c2506e7557
+  en: 094d01da9c9180ad
+  zh: ddac511fb6269118
 /deepseek-ai-dsh-client-ui-demands/table-of-contents:
   en: 85ae920690e09162
   zh: 08590556f0b20b8e
@@ -18,8 +18,8 @@
   en: 0a1f9587e288d00a
   zh: 02349157619d0f59
 /deepseek-ai-dsh-client-ui-demands/understand-the-implementation:
-  en: 90ac88515f0c7b9c
-  zh: 316713107d939867
+  en: 74b04da18805cfd1
+  zh: 5453f576c91d32b6
 /deepseek-ai-dsh-client-ui-demands/further-exploration:
   en: d69a07342accc3f8
   zh: 5b1e59976c9b6d60
@@ -30,14 +30,14 @@
   en: 6807706170636515
   zh: bf4675275fc8e9ae
 /deepseek-ai-dsh-client-ui-demands/model-experience/human-engineer-requests/what-the-model-sees:
-  en: ae978c9260f02557
-  zh: 91a941ac9d05d3a6
+  en: c15f90ba8399f725
+  zh: 9c840c845b8d46b9
 /deepseek-ai-dsh-client-ui-demands/model-experience/human-engineer-requests/token-effect:
-  en: 545442c8a6c0a3bc
-  zh: 0c0896db1458c87c
+  en: ed595ee027dd2bad
+  zh: 94197ce7e23ef0dd
 /deepseek-ai-dsh-client-ui-demands/model-experience/human-engineer-requests/kv-cache-effect:
-  en: 5156e2a3f3f6120d
-  zh: a2471ee2ad83ac8a
+  en: 747c4beca4f58335
+  zh: 42d3a0dc13cdb9cd
 /deepseek-ai-dsh-client-ui-demands/known-limitations-and-deferred-work:
   en: 7edbdbed7bdb147c
   zh: ea08559c4f41a918

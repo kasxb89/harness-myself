@@ -10,6 +10,7 @@ import { zh } from '../src/client/locales.ts'
 import type { DemandPageProps, DemandPageState } from '../src/client/types.ts'
 import { communityConfig, communityListing, communityOrder, communityState } from './community-fixtures.client.ts'
 import type { CommunityState } from '../src/client/community-types.ts'
+import type { ForumState } from '../src/client/forum-types.ts'
 import { attachment, conversation, demandState, draft, draftSummary, exampleEngineers, message, request, serviceProfile } from './fixtures.client.ts'
 
 beforeEach(() => {
@@ -24,9 +25,18 @@ const translations: ReadonlyMap<string, string> = new Map(Object.entries(zh))
 
 function unusedHook(): never { throw new Error('The demand page reads only its injected service snapshot') }
 
-function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityState> = {}) {
+function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityState> = {}, discussion: Partial<ForumState> = {}) {
   const store = createSnapshotStore(demandState(partial))
   const communityStore = createSnapshotStore(communityState(shared))
+  const emptyPage = { items: [], status: 'ready' as const, hasMore: false, loadingMore: false, error: null }
+  const forumStore = createSnapshotStore<ForumState>({ availability: 'disabled', accountId: '1', config: null, error: null,
+    posts: emptyPage, selectedPostId: null, selectedPost: null, selectedPostStatus: 'ready', selectedPostError: null,
+    comments: emptyPage, commentDraft: '', activePostDraftScope: null, postDrafts: [], pending: [], ...discussion })
+  const forum: DemandPageProps['forum'] = {
+    refresh: vi.fn(), loadMorePosts: vi.fn(), openPost: vi.fn(), closePost: vi.fn(), startPost: vi.fn(),
+    openPostDraft: vi.fn(), updatePostDraft: vi.fn(), publishPost: vi.fn(), updateCommentDraft: vi.fn(),
+    sendComment: vi.fn(), loadMoreComments: vi.fn(), setLiked: vi.fn(), retryOperation: vi.fn(),
+  }
   const community: DemandPageProps['community'] = {
     refresh: vi.fn(), setListingFilter: vi.fn(), loadMoreListings: vi.fn(), loadOrders: vi.fn(),
     openListing: vi.fn(), acceptListing: vi.fn(), openOrder: vi.fn(), startPublication: vi.fn(), openPublication: vi.fn(),
@@ -51,15 +61,16 @@ function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityS
     ...actions,
     usePanelInfo: unusedHook, useSessions: unusedHook, useSessionStatus: unusedHook, useSessionRetainInfo: unusedHook,
     useWorkspaces: unusedHook, useResource: unusedHook, useDemands: bindSnapshotSelector(store),
-    useCommunity: bindSnapshotSelector(communityStore), community,
+    useCommunity: bindSnapshotSelector(communityStore), community, useForum: bindSnapshotSelector(forumStore), forum,
     t: (key, params) => (translations.get(key) ?? key).replace(/\{(\w+)\}/gu, (placeholder: string, name: string) =>
       params !== undefined && name in params ? String(params[name]) : placeholder),
   }
   render(<DemandPage {...props} />)
   return {
-    ...actions, store, community, communityStore,
+    ...actions, store, community, communityStore, forum, forumStore,
     set: (next: Partial<DemandPageState>) => { act(() => { store.set({ ...store.getSnapshot(), ...next }) }) },
     setCommunity: (next: Partial<CommunityState>) => { act(() => { communityStore.set({ ...communityStore.getSnapshot(), ...next }) }) },
+    setForum: (next: Partial<ForumState>) => { act(() => { forumStore.set({ ...forumStore.getSnapshot(), ...next }) }) },
   }
 }
 
@@ -73,6 +84,96 @@ function openOfficial() {
 }
 
 describe('human-engineer demand page', () => {
+  it('checks an original acceptance from My accepted after its public detail disappears and approval capability is absent', () => {
+    const listing = communityListing(), shared = communityState({ availability: 'ready', config: communityConfig() })
+    const original = { kind: 'accept' as const, operationId: 'original-hidden-acceptance', scopeKey: `accept:${listing.id}`,
+      orderId: listing.id, inflight: false,
+      error: { code: 'COMMUNITY_TIMEOUT', unknown: true, operationId: 'original-hidden-acceptance' } }
+    const actions = page({}, { ...shared, listings: { ...shared.listings, items: [listing] } })
+    fireEvent.click(screen.getByRole('button', { name: `${zh.communityViewDemand}：${listing.title}` }))
+    actions.setCommunity({ selectedListing: listing, selectedListingStatus: 'ready' })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: zh.communityClaim }))
+    actions.setCommunity({ pending: [original], selectedListing: null, selectedListingStatus: 'error',
+      selectedListingError: { code: 'COMMUNITY_NOT_FOUND', unknown: false, operationId: null } })
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: zh.close }))
+    const oldConfig = { ...communityConfig(), capabilities: { ...communityConfig().capabilities } }
+    delete oldConfig.capabilities.community_approval_v1; delete oldConfig.publication_policy
+    actions.setCommunity({ config: oldConfig })
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardMine }))
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardAccepted }))
+    const recoveryName = `${zh.communityCheckClaim}：${zh.communityPendingAcceptance}`
+    expect(screen.getByRole('status').textContent).toBe(zh.communityIssueUnknown)
+    fireEvent.click(screen.getByRole('button', { name: recoveryName }))
+    expect(actions.community.retryOperation).toHaveBeenCalledExactlyOnceWith(original.operationId)
+    expect(actions.community.openListing).toHaveBeenCalledExactlyOnceWith(listing.id)
+    expect(actions.community.acceptListing).toHaveBeenCalledExactlyOnceWith(listing.id)
+    actions.setCommunity({ availability: 'unavailable', config: null })
+    expect(screen.getByRole('heading', { name: zh.communityPendingAcceptance })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: recoveryName }))
+    expect(actions.community.retryOperation).toHaveBeenNthCalledWith(2, original.operationId)
+    actions.setCommunity({ pending: [{ ...original, inflight: true }] })
+    const disabled = screen.getByRole('button', { name: recoveryName })
+    expect(disabled).toHaveProperty('disabled', true)
+    expect(disabled.getAttribute('aria-busy')).toBe('true')
+    fireEvent.click(disabled)
+    expect(actions.community.retryOperation).toHaveBeenCalledTimes(2)
+    actions.setCommunity({ pending: [{ ...original,
+      error: { code: 'COMMUNITY_ALREADY_ACCEPTED', unknown: false, operationId: original.operationId } }] })
+    expect(screen.getByRole('alert').textContent).toBe(zh.communityIssueNotOpen)
+    fireEvent.click(screen.getByRole('button', { name: recoveryName }))
+    expect(actions.community.retryOperation).toHaveBeenNthCalledWith(3, original.operationId)
+    actions.setCommunity({ pending: [] })
+    expect(screen.queryByRole('heading', { name: zh.communityPendingAcceptance })).toBeNull()
+  })
+
+  it('does not retain another account acceptance-recovery card after the account-owned snapshot changes', () => {
+    const config = { ...communityConfig(), capabilities: { ...communityConfig().capabilities } }
+    delete config.capabilities.community_approval_v1; delete config.publication_policy
+    const original = { kind: 'accept' as const, operationId: 'previous-account-accept', scopeKey: 'accept:hidden',
+      orderId: 'hidden', inflight: false, error: null }
+    const actions = page({}, { availability: 'ready', config, pending: [original] })
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardMine }))
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardAccepted }))
+    expect(screen.getByRole('heading', { name: zh.communityPendingAcceptance })).toBeTruthy()
+    actions.setCommunity({ accountId: 'other-account', pending: [] })
+    expect(screen.queryByRole('heading', { name: zh.communityPendingAcceptance })).toBeNull()
+    expect(actions.community.retryOperation).not.toHaveBeenCalled()
+  })
+
+  it('keeps request publishing, actual forum posts and official service tabs independent', () => {
+    const actions = page({ requests: [request({ title: '私有需求标题' })] }, {}, {
+      availability: 'ready', config: { revision: 1, enabled: true,
+        capabilities: { immediate_publish: true, likes: true, comments: true } },
+      posts: { items: [{ id: 'forum-post', title: '真实讨论帖子', body: '独立公开讨论正文',
+        author: { id: 2, display_name: '讨论作者' }, created_at: 100, like_count: 0, comment_count: 0, liked: false }],
+      status: 'ready', hasMore: false, loadingMore: false, error: null },
+    })
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual([zh.demandSquare, zh.forumTabLabel, zh.officialCustomization])
+    expect(screen.getByRole('heading', { name: '私有需求标题' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: zh.forumTabLabel }))
+    expect(screen.getByRole('button', { name: zh.forumOpenPost.replace('{title}', '真实讨论帖子') })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: '私有需求标题' })).toBeNull()
+    expect(actions.setWorkspaceView).toHaveBeenLastCalledWith('forum')
+    fireEvent.click(screen.getByRole('button', { name: zh.forumNewPost }))
+    expect(actions.forum.startPost).toHaveBeenCalledOnce()
+    expect(actions.community.startPublication).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: zh.cancel }))
+    fireEvent.click(screen.getByRole('tab', { name: zh.demandSquare }))
+    expect(screen.getByRole('heading', { name: '私有需求标题' })).toBeTruthy()
+    expect(actions.send).not.toHaveBeenCalled()
+    expect(actions.forum.publishPost).not.toHaveBeenCalled()
+  })
+
+  it('shows forum read history when the separate official service is disabled', () => {
+    page({ availability: 'disabled' }, {}, { availability: 'disabled', posts: { items: [{ id: 'retained-post',
+      title: '保留讨论', body: '先前已确认的讨论', author: { id: 2, display_name: '' }, created_at: 100,
+      like_count: 4, comment_count: 2, liked: false }], status: 'ready', error: null, hasMore: false, loadingMore: false } })
+    fireEvent.click(screen.getByRole('tab', { name: zh.forumTabLabel }))
+    expect(screen.getByRole('button', { name: zh.forumOpenPost.replace('{title}', '保留讨论') })).toBeTruthy()
+    expect(screen.getByRole('button', { name: zh.forumNewPost })).toHaveProperty('disabled', true)
+    expect(screen.queryByText(zh.disabledTitle)).toBeNull()
+  })
+
   it('joins only authorized personal cards while public discovery never receives legacy private text', () => {
     const publicRow = communityListing()
     const owned = communityOrder({ id: 'own-community', title: '我的公开单', my_role: 'publisher',
@@ -82,6 +183,11 @@ describe('human-engineer demand page', () => {
       ...shared, listings: { ...shared.listings, items: [publicRow] },
       orders: { ...shared.orders, published: { ...shared.orders.published, items: [owned] } },
     })
+    expect(screen.getByRole('heading', { name: publicRow.title })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: '旧私密需求' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: owned.title })).toBeNull()
+    expect(screen.queryByText('旧私密聊天不应公开')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardMine }))
     expect(screen.getByRole('heading', { name: '旧私密需求' })).toBeTruthy()
     expect(screen.getByRole('heading', { name: owned.title })).toBeTruthy()
     expect(screen.queryByText('旧私密聊天不应公开')).toBeNull()
@@ -108,7 +214,8 @@ describe('human-engineer demand page', () => {
     const listing = communityListing(), order = communityOrder()
     const shared = communityState({ availability: 'ready', config: communityConfig() })
     const actions = page({}, { ...shared, listings: { ...shared.listings, items: [listing] } })
-    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardPublic }))
+    expect(screen.getByRole('heading', { name: listing.title })).toBeTruthy()
+    expect(screen.queryByText('已接单后可见的消息')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: `${zh.communityViewDemand}：${listing.title}` }))
     actions.setCommunity({ selectedListing: listing, pending: [{ operationId: 'original-acceptance', scopeKey: `accept:${listing.id}`,
       orderId: listing.id, kind: 'accept', inflight: false,
@@ -136,7 +243,8 @@ describe('human-engineer demand page', () => {
     const actions = page({ directoryMode: 'services', serviceProfiles: [] }, {
       availability: 'ready', config: communityConfig(),
     })
-    fireEvent.click(screen.getByRole('button', { name: zh.newRequest }))
+    expect(screen.queryByRole('group', { name: zh.communityBoardCollections })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.communityPublishRequest }))
     expect(actions.community.startPublication).toHaveBeenCalledOnce()
     const publication = { scopeKey: 'publication:test', title: '活动页面', publicSummary: '按照品牌色排版',
       publicBudget: '', serviceProfileId: '', privateText: '', publishToCommunity: false,
@@ -161,7 +269,10 @@ describe('human-engineer demand page', () => {
       orders: { ...shared.orders, accepted: { ...shared.orders.accepted, items: [order] } },
       conversation: { order, messages: [], pendingMessages: [], draftText: '原订单继续沟通', status: 'ready',
         error: null, hasMore: false, loadingMore: false } })
-    expect(screen.getByRole('button', { name: zh.newRequest })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: zh.communityPublishRequest })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('heading', { name: order.title })).toBeNull()
+    expect(screen.queryByDisplayValue('原订单继续沟通')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardMine }))
     fireEvent.click(screen.getByRole('button', { name: zh.communityBoardAccepted }))
     fireEvent.click(screen.getByRole('button', { name: `${zh.communicate}：${order.title}` }))
     expect(actions.community.openOrder).toHaveBeenCalledExactlyOnceWith(order.id)
@@ -181,6 +292,9 @@ describe('human-engineer demand page', () => {
       pending: [{ operationId: 'original-send', scopeKey: `order:${order.id}`, orderId: order.id,
         kind: 'message', inflight: false, error: { code: 'COMMUNITY_NETWORK', unknown: true, operationId: 'original-send' } }],
     })
+    expect(screen.queryByText('结果未知的原消息')).toBeNull()
+    expect(screen.queryByRole('heading', { name: order.title })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardMine }))
     fireEvent.click(screen.getByRole('button', { name: zh.communityBoardAccepted }))
     fireEvent.click(screen.getByRole('button', { name: `${zh.communicate}：${order.title}` }))
     fireEvent.click(screen.getByRole('button', { name: zh.communityCheckMessage }))
@@ -198,6 +312,8 @@ describe('human-engineer demand page', () => {
   it('shows an actual failed order read with retry rather than leaving an endless loading view', () => {
     const order = communityOrder(), shared = communityState({ availability: 'ready', config: communityConfig() })
     const actions = page({}, { ...shared, orders: { ...shared.orders, accepted: { ...shared.orders.accepted, items: [order] } } })
+    expect(screen.queryByRole('heading', { name: order.title })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardMine }))
     fireEvent.click(screen.getByRole('button', { name: zh.communityBoardAccepted }))
     fireEvent.click(screen.getByRole('button', { name: `${zh.communicate}：${order.title}` }))
     actions.setCommunity({ selectedOrderId: order.id, selectedOrderStatus: 'error',
@@ -217,8 +333,8 @@ describe('human-engineer demand page', () => {
       serviceProfileId: profile.id, serviceProfileName: profile.displayName, budget: '   ', unreadCount: 0 })
     const actions = page({ directoryMode: 'services', serviceProfiles: [profile], servicesTotal: 1,
       requests: [first, second], requestsHaveMore: true })
-    expect(screen.getAllByRole('tab')).toHaveLength(2)
-    expect(screen.getByRole('tab', { name: zh.personalRequests }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getAllByRole('tab')).toHaveLength(3)
+    expect(screen.getByRole('tab', { name: zh.demandSquare }).getAttribute('aria-selected')).toBe('true')
     const cards = screen.getByRole('list', { name: zh.personalRequests })
     expect(within(cards).getAllByRole('listitem')).toHaveLength(2)
     const firstCard = within(cards).getByRole('heading', { name: first.title }).closest('li')
@@ -306,7 +422,7 @@ describe('human-engineer demand page', () => {
     openOfficial()
     expect(screen.getByRole('tab', { name: zh.officialCustomization })).toBeTruthy()
     expect(screen.getByText('100 项服务')).toBeTruthy()
-    expect(screen.getByText(zh.platformRoutingHint)).toBeTruthy()
+    expect(screen.queryByText('需求先由平台统一接待，再安排真人工程师')).toBeNull()
     expect(screen.getByRole('heading', { name: '示例订单管理服务' })).toBeTruthy()
     expect(screen.getByText('订单查询与操作流程')).toBeTruthy()
     expect(screen.queryByText(zh.presenceAvailable)).toBeNull()
@@ -452,7 +568,7 @@ describe('human-engineer demand page', () => {
     expect(screen.getByText(zh.presenceOffline)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '向示例工程师陈发起需求' }))
     expect(actions.startRequest).toHaveBeenCalledExactlyOnceWith('example-engineer-chen')
-    expect(screen.getByRole('tab', { name: zh.personalRequests }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: zh.demandSquare }).getAttribute('aria-selected')).toBe('true')
   })
 
   it('opens the exact saved request and displays the server status and unread count', () => {

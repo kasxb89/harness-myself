@@ -1,5 +1,6 @@
 /** UI-owned community presentation data. These types do not describe an API wire format. */
 import type { DemandAttachment } from './types.ts'
+import type { CommunityApprovalStatus } from './community-types.ts'
 
 /** A confirmed attachment explicitly approved for public display by the owning adapter. */
 export type CommunityPublicAttachment = Pick<DemandAttachment, 'id' | 'name' | 'kind' | 'sizeBytes' | 'previewUrl'>
@@ -12,6 +13,10 @@ export interface CommunityPublicDemandView {
   readonly brief: string
   readonly authorDisplayName: string
   readonly attachments: readonly CommunityPublicAttachment[]
+  readonly publicBudget?: string
+  readonly expectedDeliveryDate?: string
+  readonly approvalStatus?: CommunityApprovalStatus
+  readonly approvalReason?: string
 }
 
 /** The current viewer's actual relationship, without treating a user as an engineer. */
@@ -41,13 +46,15 @@ export interface CommunityPublishDraft {
   readonly brief: string
   readonly serviceId: string
   readonly allowPublic?: boolean
+  readonly publicBudget?: string
+  readonly expectedDeliveryDate?: string
 }
 
 /** The parent owns collection selection and resolves each collection through authorized data access. */
 export type CommunityBoardView = 'mine' | 'public' | 'accepted'
 
 /** A card action names presentation only; the parent resolves its original entity and operation. */
-export type CommunityBoardAction = 'view-demand' | 'communicate' | 'view' | 'continue-draft' | 'check-submission'
+export type CommunityBoardAction = 'view-demand' | 'communicate' | 'view' | 'continue-draft' | 'check-submission' | 'check-claim'
 
 /** Minimal card content; a stable parent-owned key keeps legacy and community identities independent. */
 interface CommunityBoardCard {
@@ -55,14 +62,22 @@ interface CommunityBoardCard {
   readonly title: string
   readonly serviceName: string
   readonly updatedAt: string
+  readonly brief?: string
+  readonly publicBudget?: string
+  readonly expectedDeliveryDate?: string
+  readonly authorDisplayName?: string
+  readonly attachments?: readonly CommunityPublicAttachment[]
+  readonly approvalStatus?: CommunityApprovalStatus
+  readonly approvalReason?: string
   readonly action: CommunityBoardAction
   readonly disabled?: boolean
   readonly busy?: boolean
 }
 
-/** Public rows must contain only approved fields; only draft rows accept necessary operation feedback. */
+/** Public rows contain approved fields; drafts and original acceptance operations retain their own recovery feedback. */
 export type CommunityBoardRow = CommunityBoardCard & (
   | { readonly origin: 'draft'; readonly feedback?: string }
+  | { readonly origin: 'acceptance'; readonly operation: CommunityOperationView; readonly feedback?: never }
   | { readonly origin?: 'legacy' | 'community'; readonly feedback?: never }
 )
 

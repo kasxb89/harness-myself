@@ -19,6 +19,7 @@ export function exampleCommunityAttachment(patch: Partial<CommunityAttachment> =
 export function exampleCommunityListing(patch: Partial<CommunityListing> = {}): CommunityListing {
   return { schema_version: 1, id: 'community-order', number: 'COMMUNITY-EXAMPLE', title: 'Example public need',
     public_summary: 'Public work description', public_budget: 'Negotiable', service_profile_id: '', service_profile_name: '',
+    expected_delivery_date: '', approval_status: 'approved',
     publisher: { id: 1, display_name: 'Example publisher' }, status: 'open', public_attachments: [], created_at: 100,
     updated_at: 100, can_accept: false, ...patch }
 }
@@ -52,7 +53,8 @@ export function exampleCommunityMessage(patch: Partial<CommunityMessage> = {}): 
  */
 export function exampleCommunityConfig(enabled = true): CommunityConfig {
   return { schema_version: 1, enabled, capabilities: { community_orders_v1: true, explicit_publication: true,
-    single_acceptor: true, resumable_upload: true, private_participant_messages: true }, upload_rules: {
+    single_acceptor: true, resumable_upload: true, private_participant_messages: true, community_approval_v1: true },
+  publication_policy: 'approval_required', upload_rules: {
     max_image_bytes: 20_971_520, max_video_bytes: 536_870_912, max_attachments: 8, chunk_bytes: 4,
     allowed_mime_types: ['image/png', 'video/mp4'], upload_ttl_seconds: 86400 } }
 }

@@ -9,6 +9,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { createDemandController } from './controller.ts'
 import { createCommunityController } from './community-controller.ts'
+import { createForumController } from './forum-controller.ts'
 import { DemandPage } from './DemandPage.tsx'
 import { DemandPanelIcon } from './DemandPanelIcon.tsx'
 import { en, NS, zh, type DemandLocaleKey } from './locales.ts'
@@ -67,25 +68,30 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
   const { start: startCommunity, dispose: disposeCommunity, setVisible: setCommunityVisible,
     hooks: communityHooks, ...community } = createCommunityController(ctx.creditsSession, resolved)
-  let workspaceView: 'legacy' | 'community' | 'other' = 'other'
+  const { start: startForum, dispose: disposeForum, setVisible: setForumVisible,
+    hooks: forumHooks, ...forum } = createForumController(ctx.creditsSession, resolved)
+  let workspaceView: Parameters<DemandWorkspaceFace['setWorkspaceView']>[0] = 'other'
   const visibility = (): void => {
     const foreground = ctx.layout.panelInfo.getSnapshot().activePanelId === PANEL_ID
       && document.visibilityState !== 'hidden' && document.hasFocus()
     setVisible(foreground && workspaceView === 'legacy')
     setCommunityVisible(foreground && workspaceView === 'community')
+    setForumVisible(foreground && workspaceView === 'forum')
   }
   const setWorkspaceView: DemandWorkspaceFace['setWorkspaceView'] = (view) => { workspaceView = view; visibility() }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main', key: PANEL_ID, locale: NS,
-    inject: () => ({ ...face, hooks: { ...face.hooks, ...communityHooks }, community, setWorkspaceView }),
+    inject: () => ({ ...face, hooks: { ...face.hooks, ...communityHooks, ...forumHooks }, community, forum, setWorkspaceView }),
   }, DemandPage))
   ctx.slots.inject('sidebar.panellist', () => {
     let unregister: (() => void) | undefined
     const reconcile = (): void => {
       const state = face.hooks.demands.getSnapshot()
       const shared = communityHooks.community.getSnapshot()
+      const discussion = forumHooks.forum.getSnapshot()
       const visible = state.availability === 'ready' || state.requests.length > 0 || state.conversation !== null
         || shared.availability === 'ready' || shared.orders.all.items.length > 0 || shared.conversation !== null
+        || discussion.availability === 'ready' || discussion.posts.items.length > 0
       if (visible && unregister === undefined) {
         unregister = ctx.slots.register({
           name: 'sidebar.panellist', id: PANEL_ID, order: 35, label: () => t('panelLabel'), locale: NS,
@@ -97,12 +103,14 @@ export function apply(ctx: Context, config: Config = {}): void {
     }
     const unsubscribe = face.hooks.demands.subscribe(reconcile)
     const unsubscribeCommunity = communityHooks.community.subscribe(reconcile)
+    const unsubscribeForum = forumHooks.forum.subscribe(reconcile)
     reconcile()
-    return () => { unsubscribe(); unsubscribeCommunity(); unregister?.() }
+    return () => { unsubscribe(); unsubscribeCommunity(); unsubscribeForum(); unregister?.() }
   })
   ctx.effect(() => {
     const stop = start()
     const stopCommunity = startCommunity()
+    const stopForum = startForum()
     const unsubscribe = ctx.layout.panelInfo.subscribe(visibility)
     document.addEventListener('visibilitychange', visibility)
     window.addEventListener('focus', visibility)
@@ -115,7 +123,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       window.removeEventListener('blur', visibility)
       stop()
       stopCommunity()
-      await Promise.all([dispose(), disposeCommunity()])
+      stopForum()
+      await Promise.all([dispose(), disposeCommunity(), disposeForum()])
     }
   }, 'ui-demands: account-bound message and upload lifecycle')
 }

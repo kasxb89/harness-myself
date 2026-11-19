@@ -1,6 +1,6 @@
 - banner:
   - button "Open right sidebar"
-- text: Make it real Preview
+- text: Make it real
 - button "Choose workspace": workspace
 - button "Standard mode"
 - textbox "Describe what you want to build, / commands, @ files or sessions"

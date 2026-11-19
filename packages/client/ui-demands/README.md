@@ -1,5 +1,5 @@
 ---
-description: "Private customer conversations, media attachments and delivery acceptance with human engineers."
+description: "Publish requests, discuss public forum posts, and use official services with private media conversations."
 kind: "package-reference"
 ---
 
@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-The Requests sidebar opens Personal requests and Official customization tabs. Personal requests groups the signed-in user's published requests, public requests and accepted requests when the backend provides community orders. Official customization displays the platform's service catalog and retains its private human-engineer conversations. The backend owns publication, acceptance, assignments, permissions and processing status.
+The Publish request sidebar opens Request square, Forum and Official services tabs. Request square opens approved public requests; My requests retains the signed-in user's drafts, published requests, accepted requests and private history. Forum supports public text posts, replies and likes. Official services displays the platform's service catalog and retains its private human-engineer conversations. The backend owns publication, approval, acceptance, assignments, permissions and processing status.
 
 ## Table of Contents
 
@@ -29,9 +29,13 @@ Compose this browser plugin with slots, locale, layout and the existing Credits 
 
 The account-owned controller publishes a stable JSON view to framework-bound injection hooks. Components own viewing controls and narrow-screen navigation. Changing the account or login epoch immediately clears the prior view and cancels its requests and uploads. Responses must match the captured account. Disposal cancels and joins all owned asynchronous operations.
 
-Community orders use an independent controller, journal and authenticated `/credits/api/community-demands` proxy. An older backend without this capability keeps the private request interface. Publication requires explicit public consent; the title, summary and selected public attachments are shown before submission. Existing private requests, messages and attachments are never published automatically. Public discovery receives only listing fields. A single server-confirmed acceptor joins the publisher's private conversation as an ordinary user, with actual sender names and identities; administrators can inspect all community orders, participant messages and media. Disabling new community requests retains existing participants' authorized conversations.
+Community orders use an independent controller, journal and authenticated `/credits/api/community-demands` proxy. Public discovery and new publication or acceptance require the backend's explicit approval capability and policy. An older backend retains My requests and authorized participant conversations. Publication requires explicit public consent and shows the title, summary, budget, optional expected delivery date and public attachments before submission. Existing private requests, messages and attachments are never published automatically. Public discovery accepts only approved listing fields. A single server-confirmed acceptor joins the publisher's private conversation as an ordinary user; administrators can inspect community orders, participant messages and media. Disabling new requests retains authorized conversations and original pending-operation recovery.
 
-Personal requests uses horizontal cards with the request title, service and update time on the left, and the original conversation action on the right. The grid has two columns on wider screens and one on compact screens. Draft actions distinguish continued editing from checking an unconfirmed publication; a scoped error remains visible when recovery needs attention. Optional budgets and expected dates remain independent per-scope data. Communicate opens the original private conversation, and returning to cards does not create or resubmit a demand. The conversation uses a compact inbox, message history and composer. Enter sends a ready message; Shift+Enter inserts a newline, and composition confirmation does not send. Optional request details and current upload rules remain expandable. Switching conversations preserves independent drafts for the controller's lifetime; only journaled pending operations and uploads survive an application restart.
+Forum public text posts, replies and liked-state updates use an independent, account-scoped controller and journal behind `/credits/api/forum`. The forum has no media API or client-key GET lookup. Users recover an unconfirmed post or reply by explicitly resubmitting its original UUID and frozen body with POST. An uncertain like first reads current state with GET; only when a successful read differs from the recorded target does another explicit action repeat the original target-state PUT. A disabled forum retains already verified history for reading. Images and videos remain in community request conversations.
+
+Request square uses responsive cover cards with the public title, short description, original budget, supplied delivery date and publisher. Authorized listing images and videos provide covers; absent or failed media leaves a text card. Opening a card uses its original identifier. My requests shows actual review status and owner-visible rejection reasons, keeping legacy and community records separate. Missing budgets and dates are not invented. Forum uses text-note cards and a dismissible reading dialog with the article beside its replies, stacked on narrow screens. Closing the dialog restores focus and retains unsent reply text.
+
+Legacy private cards retain their original conversation and draft actions. Checking an unconfirmed publication does not create a new request. The conversation uses a compact inbox, message history and composer. Enter sends a ready message; Shift+Enter inserts a newline, and composition confirmation does not send. Optional request details and upload rules remain expandable. Switching conversations preserves independent drafts for the controller's lifetime; only journaled pending operations and uploads survive an application restart.
 
 The compact inbox identifies service conversations by their service name and retains the original title in the preview. Search includes service names, original titles, request numbers and the latest server-confirmed message preview; a draft's body is searchable only while that draft is selected. Separate requests retain their own identifiers even when they use the same service. Draft and server-owned processing states remain explicit, and available service artwork does not imply that an engineer is online.
 
@@ -57,15 +61,15 @@ Community publication, acceptance and messages keep separate durable operation i
 
 #### What the model sees
 
-The `demands` panel adds no prompts, tools, model messages or AI Sessions. Customer conversations belong to the separate demand service.
+The `demands` panel adds no prompts, tools, model messages or AI Sessions. Demand conversations and forum discussions use their separate backend services.
 
 #### Token effect
 
-Human messages and attachment operations do not submit model requests or enter the AI generation billing path.
+Human messages, forum discussions and attachment operations do not submit model requests or enter the AI generation billing path.
 
 #### KV Cache effect
 
-Demand navigation and messages do not alter model context or provider caches.
+Demand and forum navigation and content do not alter model context or provider caches.
 
 ## Known Limitations and Deferred Work
 

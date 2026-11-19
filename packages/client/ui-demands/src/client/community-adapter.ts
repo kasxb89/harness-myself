@@ -2,6 +2,7 @@
 import type { DemandAttachment, DemandPageState, DemandUploadRules } from './types.ts'
 import type { DemandTranslate } from './DemandUI.tsx'
 import type { DemandLocaleKey } from './locales.ts'
+import { communityApprovalAvailable } from './community-wire.ts'
 import type {
   CommunityAttachment, CommunityIssue, CommunityListing, CommunityOrder, CommunityPendingView,
   CommunityPublicationDraft, CommunityState, CommunityUploadRules, CommunityUploadView,
@@ -15,7 +16,7 @@ import type {
 export type CommunityContentLookup = (attachmentId: string) => string | null
 /** Parent-owned card destination; these kinds identify existing entities rather than HTTP routes. */
 export interface CommunityBoardTarget {
-  readonly kind: 'legacy-order' | 'legacy-draft' | 'community-order' | 'community-publication' | 'community-listing'
+  readonly kind: 'legacy-order' | 'legacy-draft' | 'community-order' | 'community-publication' | 'community-listing' | 'community-acceptance'
   readonly id: string
 }
 /** Selected board rows and actual load states from their owning collections. */
@@ -25,6 +26,7 @@ export interface CommunityBoardPresentation {
   readonly error: string | null
   readonly hasMore: boolean
   readonly loadingMore: boolean
+  readonly approvedPublic: boolean
 }
 /** Public-safe detail and the original accept operation, if any. */
 export interface CommunityDetailsPresentation {
@@ -33,7 +35,7 @@ export interface CommunityDetailsPresentation {
   readonly operation: CommunityOperationView
   readonly operationId: string | null
 }
-/** Controlled publication view; private text and budget are not promoted to public fields. */
+/** Controlled publication view exposes explicit public fields without promoting private text. */
 export interface CommunityPublishPresentation {
   readonly draft: CommunityPublishDraft
   readonly services: readonly CommunityServiceChoice[]
@@ -58,7 +60,7 @@ export interface CommunityChatPresentation {
 }
 
 const targetKinds: readonly CommunityBoardTarget['kind'][] = [
-  'legacy-order', 'legacy-draft', 'community-order', 'community-publication', 'community-listing',
+  'legacy-order', 'legacy-draft', 'community-order', 'community-publication', 'community-listing', 'community-acceptance',
 ]
 const key = (kind: CommunityBoardTarget['kind'], id: string): string => `${kind}:${id}`
 const seconds = (value: number): string => new Date(value * 1000).toISOString()
@@ -71,6 +73,7 @@ const issueKeys: Readonly<Record<string, DemandLocaleKey>> = {
   COMMUNITY_FORBIDDEN: 'requestReadOnly', COMMUNITY_READ_ONLY: 'requestReadOnly', COMMUNITY_REOPEN_FORBIDDEN: 'requestReadOnly',
   COMMUNITY_NOT_FOUND: 'communityIssueNotFound', COMMUNITY_ALREADY_ACCEPTED: 'communityIssueNotOpen',
   COMMUNITY_ORDER_NOT_OPEN: 'communityIssueNotOpen', COMMUNITY_STATUS_CONFLICT: 'communityIssueNotOpen',
+  COMMUNITY_APPROVAL_REQUIRED: 'communityApprovalRequired',
   COMMUNITY_SELF_ACCEPT_FORBIDDEN: 'communityIssueSelf', COMMUNITY_EXPLICIT_PUBLICATION_REQUIRED: 'communityIssueConsent',
   COMMUNITY_IDEMPOTENCY_CONFLICT: 'communityIssueOperationChanged', COMMUNITY_REVISION_CONFLICT: 'communityIssueNotOpen',
   COMMUNITY_STATE_CONFLICT: 'communityIssueNotOpen', COMMUNITY_ATTACHMENT_IN_USE: 'communityIssueOperationChanged',
@@ -124,10 +127,21 @@ export function communityBoardTarget(rowKey: string): CommunityBoardTarget | nul
   return null
 }
 
-function orderRow(item: CommunityOrder, t: DemandTranslate): CommunityBoardRow {
+function listingFields(listing: CommunityListing, contentUrl: CommunityContentLookup): Pick<CommunityBoardRow,
+  'brief' | 'publicBudget' | 'authorDisplayName' | 'attachments' | 'expectedDeliveryDate' | 'approvalStatus'> {
+  return { brief: listing.public_summary, publicBudget: listing.public_budget,
+    authorDisplayName: listing.publisher.display_name,
+    ...listing.expected_delivery_date === undefined ? {} : { expectedDeliveryDate: listing.expected_delivery_date },
+    ...listing.approval_status === undefined ? {} : { approvalStatus: listing.approval_status },
+    attachments: listing.public_attachments.filter(item => item.scope === 'listing').map(item => attachment(item, contentUrl)) }
+}
+
+function orderRow(item: CommunityOrder, t: DemandTranslate, contentUrl: CommunityContentLookup): CommunityBoardRow {
   return { key: key('community-order', item.id), origin: 'community', title: item.title,
     serviceName: item.listing.service_profile_name.trim() || t('communityBoardPublic'), updatedAt: seconds(item.updated_at),
-    action: item.can_send ? 'communicate' : 'view' }
+    action: item.can_send ? 'communicate' : 'view', ...listingFields(item.listing, contentUrl),
+    ...item.my_role !== 'publisher' && item.my_role !== 'admin' || item.listing.approval_status !== 'rejected'
+      || item.listing.approval_reason === undefined ? {} : { approvalReason: item.listing.approval_reason } }
 }
 
 function boardError(state: CommunityState, errors: readonly (string | null)[], t: DemandTranslate, publicView = false): string | null {
@@ -144,19 +158,29 @@ function boardError(state: CommunityState, errors: readonly (string | null)[], t
  * @param view - Controlled collection selection.
  * @param search - Local visible-field search for mine/accepted; public search remains server-owned.
  * @param t - Existing demand locale translator.
+ * @param contentUrl - Owner-approved attachment URL lookup; absent authorization leaves the preview absent.
  * @returns Minimal cards and the selected collections' retained loading/error/paging state.
  */
 export function communityBoardPresentation(community: CommunityState, legacy: DemandPageState,
-  view: CommunityBoardView, search: string, t: DemandTranslate): CommunityBoardPresentation {
+  view: CommunityBoardView, search: string, t: DemandTranslate, contentUrl: CommunityContentLookup): CommunityBoardPresentation {
+  const approvedPublic = communityApprovalAvailable(community.config)
   if (view === 'public') return {
-    rows: community.listings.items.map(item => ({ key: key('community-listing', item.id), origin: 'community', title: item.title,
+    rows: !approvedPublic ? [] : community.listings.items.filter(item => item.approval_status === 'approved').map(item => ({
+      key: key('community-listing', item.id), origin: 'community', title: item.title,
       serviceName: item.service_profile_name.trim() || t('communityBoardPublic'),
-      updatedAt: seconds(item.updated_at), action: 'view-demand' })),
-    loading: community.listings.status === 'loading', error: boardError(community, [communityIssueText(community.listings.error, t)], t, true),
-    hasMore: community.listings.hasMore, loadingMore: community.listings.loadingMore,
+      updatedAt: seconds(item.updated_at), action: 'view-demand', ...listingFields(item, contentUrl) })),
+    loading: community.listings.status === 'loading', error: boardError(community, [communityIssueText(community.listings.error, t),
+      community.config !== null && !approvedPublic ? t('communityApprovalUnavailable') : null], t, true),
+    hasMore: approvedPublic && community.listings.hasMore, loadingMore: approvedPublic && community.listings.loadingMore, approvedPublic,
   }
   const page = community.orders[view === 'mine' ? 'published' : 'accepted']
   const rows: CommunityBoardRow[] = []
+  if (view === 'accepted' && community.accountId !== null) for (const item of community.pending) {
+    if (item.kind !== 'accept') continue
+    rows.push({ key: key('community-acceptance', item.operationId), origin: 'acceptance',
+      title: t('communityPendingAcceptance'), serviceName: '', updatedAt: '', action: 'check-claim',
+      busy: item.inflight, disabled: item.inflight, operation: operation(item, null, t) })
+  }
   if (view === 'mine') {
     const current = legacy.conversation
     const drafts = current !== null && current.requestId === null && !legacy.drafts.some(item => item.scopeKey === current.scopeKey)
@@ -172,6 +196,8 @@ export function communityBoardPresentation(community: CommunityState, legacy: De
       const original = community.pending.find(value => value.kind === 'publication' && value.scopeKey === item.scopeKey)
       rows.push({ key: key('community-publication', item.scopeKey), origin: 'draft', title: item.title.trim() || t('newRequest'),
         serviceName: legacy.serviceProfiles.find(value => value.id === item.serviceProfileId)?.displayName || t('communityBoardPublic'),
+        brief: item.publicSummary, publicBudget: item.publicBudget,
+        ...item.expectedDeliveryDate === undefined ? {} : { expectedDeliveryDate: item.expectedDeliveryDate },
         updatedAt: milliseconds(item.createdAt), action: item.locked || original !== undefined ? 'check-submission' : 'continue-draft',
         busy: item.sending, ...(item.error === null ? {} : { feedback: communityIssueText(item.error, t) ?? t('errorHint') }) })
     }
@@ -180,14 +206,14 @@ export function communityBoardPresentation(community: CommunityState, legacy: De
       serviceName: item.serviceProfileName?.trim() || (item.assigned === false ? t('platformReception') : item.engineer?.displayName.trim())
         || t('pageTitle'), updatedAt: item.updatedAt, action: 'communicate' })
   }
-  rows.push(...page.items.map(item => orderRow(item, t)))
+  rows.push(...page.items.map(item => orderRow(item, t, contentUrl)))
   const query = search.trim().toLocaleLowerCase()
   const error = boardError(community, [communityIssueText(page.error, t),
     view === 'mine' && legacy.requestsStatus === 'error' ? legacy.error ?? t('errorHint') : null], t)
   return { rows: query === '' ? rows : rows.filter(item => `${item.title} ${item.serviceName}`.toLocaleLowerCase().includes(query)),
     loading: page.status === 'loading' || view === 'mine' && legacy.requestsStatus === 'loading',
     error, hasMore: page.hasMore || view === 'mine' && legacy.requestsHaveMore,
-    loadingMore: page.loadingMore || view === 'mine' && legacy.loadingMoreRequests }
+    loadingMore: page.loadingMore || view === 'mine' && legacy.loadingMoreRequests, approvedPublic }
 }
 
 function attachment(item: CommunityAttachment, contentUrl: CommunityContentLookup): DemandAttachment {
@@ -213,12 +239,16 @@ export function communityDetailsPresentation(listing: CommunityListing, communit
   const original = community.pending.find(item => item.kind === 'accept' && item.scopeKey === `accept:${listing.id}`)
   const reason = unavailable(community, t)
   const canOpenConversation = community.accountId !== null && (own || order !== undefined)
-  const canClaim = reason === null && listing.can_accept && !own && !canOpenConversation && original === undefined
+  const approved = communityApprovalAvailable(community.config) && listing.approval_status === 'approved'
+  const canClaim = reason === null && approved && listing.can_accept && !own && !canOpenConversation && original === undefined
   return { demand: { id: listing.id, title: listing.title, serviceName: listing.service_profile_name || t('communityBoardPublic'),
-    brief: listing.public_summary, authorDisplayName: listing.publisher.display_name,
+    brief: listing.public_summary, publicBudget: listing.public_budget, authorDisplayName: listing.publisher.display_name,
+    ...listing.expected_delivery_date === undefined ? {} : { expectedDeliveryDate: listing.expected_delivery_date },
+    ...listing.approval_status === undefined ? {} : { approvalStatus: listing.approval_status },
     attachments: listing.public_attachments.filter(item => item.scope === 'listing').map(item => attachment(item, contentUrl)) },
   access: { relation: own ? 'owner' : order?.my_role === 'acceptor' ? 'claimer' : 'visitor', canClaim, canOpenConversation,
-    reason: own ? t('communityIssueSelf') : reason ?? (!canClaim && !canOpenConversation ? t('communityIssueNotOpen') : null) },
+    reason: own ? t('communityIssueSelf') : reason ?? (!canOpenConversation && !approved ? t('communityApprovalRequired')
+      : !canClaim && !canOpenConversation ? t('communityIssueNotOpen') : null) },
   operation: community.claimingListingIds.includes(listing.id) ? { state: 'submitting' }
     : operation(original, community.selectedListingError, t), operationId: original?.operationId ?? null }
 }
@@ -249,7 +279,7 @@ export function communityUploadPresentation(upload: CommunityUploadView, t: Dema
 }
 
 /**
- * Map one explicit publication scope without revealing its private text or changing public consent.
+ * Map one explicit publication scope and public budget without revealing private text or changing public consent.
  * @param draft - Original model publication scope.
  * @param community - Account-owned operations, uploads and capabilities.
  * @param legacy - Actual published service choices from the existing directory.
@@ -259,8 +289,10 @@ export function communityUploadPresentation(upload: CommunityUploadView, t: Dema
 export function communityPublishPresentation(draft: CommunityPublicationDraft, community: CommunityState,
   legacy: DemandPageState, t: DemandTranslate): CommunityPublishPresentation {
   const original = community.pending.find(item => item.kind === 'publication' && item.scopeKey === draft.scopeKey)
-  const reason = unavailable(community, t)
-  return { draft: { title: draft.title, brief: draft.publicSummary,
+  const supported = communityApprovalAvailable(community.config)
+  const reason = unavailable(community, t) ?? (!supported ? t('communityApprovalUnavailable') : null)
+  return { draft: { title: draft.title, brief: draft.publicSummary, publicBudget: draft.publicBudget,
+    ...supported ? { expectedDeliveryDate: draft.expectedDeliveryDate ?? '' } : {},
     serviceId: draft.serviceProfileId, allowPublic: draft.publishToCommunity },
   services: [{ id: '', label: t('communityUnspecifiedService') },
     ...legacy.serviceProfiles.map(item => ({ id: item.id, label: item.displayName, disabled: !item.canStart }))],
@@ -268,8 +300,9 @@ export function communityPublishPresentation(draft: CommunityPublicationDraft, c
       && item.target.scopeKey === draft.scopeKey
       && item.scope === 'listing').map(item => communityUploadPresentation(item, t)),
   locked: draft.locked || original !== undefined || draft.orderId !== null, operation: operation(original, draft.error, t),
-  operationId: original?.operationId ?? null, canPublish: reason === null && community.config?.capabilities.community_orders_v1 === true
-      && community.config.capabilities.explicit_publication,
+  operationId: original?.operationId ?? null,
+  canPublish: reason === null && supported && community.config?.capabilities.community_orders_v1 === true
+    && community.config.capabilities.explicit_publication,
   unavailableReason: reason, rules: communityRulesPresentation(community.config?.capabilities.resumable_upload
     ? community.config.upload_rules : null) }
 }

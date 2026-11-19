@@ -4,7 +4,7 @@ import type { CommunityOwner } from './community-api.ts'
 import type { CommunityAttachment, CommunityScope, CommunityUploadTarget } from './community-types.ts'
 import {
   communityArray, communityAttachment, communityBoolean, communityChoice, communityDigest, communityId, communityInteger,
-  communityJson, communityObject, communityText, communityUuid,
+  communityCalendarDate, communityJson, communityObject, communityText, communityUuid,
 } from './community-wire.ts'
 
 /** A file slice recorded before its first network attempt. */
@@ -72,6 +72,7 @@ export function parseCommunityOperation(value: unknown): CommunityOperation {
     if (payload.publish_to_community !== true || orderId !== null) throw new Error('COMMUNITY_PENDING_INVALID')
     communityText(payload.title, 200); communityText(payload.public_summary, 4000)
     communityText(payload.public_budget, 100, true); communityText(payload.private_text, 12_000, true)
+    if (payload.expected_delivery_date !== undefined) communityCalendarDate(payload.expected_delivery_date)
     if (payload.service_profile_id !== undefined && payload.service_profile_id !== '') communityId(payload.service_profile_id)
     const publicIds = identifiers(payload.public_attachment_ids), privateIds = identifiers(payload.private_attachment_ids)
     if (publicIds.some(id => privateIds.includes(id))) throw new Error('COMMUNITY_PENDING_INVALID')

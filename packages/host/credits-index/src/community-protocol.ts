@@ -14,6 +14,7 @@ export const COMMUNITY_ERRORS: ReadonlySet<string> = new Set([
   'COMMUNITY_REOPEN_FORBIDDEN', 'COMMUNITY_ATTACHMENT_NOT_READY', 'COMMUNITY_ATTACHMENT_IN_USE',
   'COMMUNITY_UPLOAD_OFFSET_CONFLICT', 'COMMUNITY_UPLOAD_TOO_LARGE', 'COMMUNITY_UPLOAD_UNSUPPORTED',
   'COMMUNITY_STORAGE_UNAVAILABLE', 'COMMUNITY_RATE_LIMITED',
+  'COMMUNITY_APPROVAL_REQUIRED',
 ])
 const mediaTypes = ['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime'] as const
 const scopes = ['listing', 'conversation'] as const
@@ -63,6 +64,16 @@ function profileId(value: unknown): string {
 function optionalText(target: DemandObject, value: DemandObject, key: string, maximum: number): void {
   if (value[key] !== undefined) target[key] = text(value[key], maximum, true)
 }
+function calendarDate(value: unknown): string {
+  const result = text(value, 10, true)
+  if (result === '') return result
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/u.exec(result)
+  if (match === null) throw new DemandProtocolError()
+  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3])
+  const days = [31, year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  if (year < 1 || month < 1 || month > 12 || day < 1 || day > (days[month - 1] ?? 0)) throw new DemandProtocolError()
+  return result
+}
 function digest(value: unknown): string {
   const result = demandText(value, 64)
   if (!/^[a-f\d]{64}$/iu.test(result)) throw new DemandProtocolError()
@@ -97,6 +108,7 @@ export function communityRequest(kind: string, input: unknown): DemandObject {
       title: text(value.title, 200), public_summary: text(value.public_summary, 4000),
       public_attachment_ids: resourceIds(value.public_attachment_ids), private_attachment_ids: resourceIds(value.private_attachment_ids) }
     optionalText(result, value, 'public_budget', 100)
+    if (value.expected_delivery_date !== undefined) result.expected_delivery_date = calendarDate(value.expected_delivery_date)
     optionalText(result, value, 'private_text', 12_000)
     if (value.service_profile_id !== undefined) result.service_profile_id = value.service_profile_id === '' ? '' : profileId(value.service_profile_id)
     return result
@@ -171,9 +183,16 @@ function attachment(input: unknown, scope?: string): DemandObject {
  * @returns Only the revision-one public listing fields.
  */
 export function communityListing(input: unknown): DemandObject {
+  return listingView(input, false)
+}
+function listingView(input: unknown, includeApprovalReason: boolean): DemandObject {
   const value = demandObject(input)
   return { schema_version: version(value.schema_version), id: communityId(value.id), number: text(value.number, 128),
     title: text(value.title, 200), public_summary: text(value.public_summary, 4000), public_budget: text(value.public_budget, 100, true),
+    ...value.expected_delivery_date === undefined ? {} : { expected_delivery_date: calendarDate(value.expected_delivery_date) },
+    ...value.approval_status === undefined ? {} : { approval_status: choice(value.approval_status, ['pending', 'approved', 'rejected']) },
+    ...!includeApprovalReason || value.approval_status !== 'rejected' || value.approval_reason === undefined ? {}
+      : { approval_reason: text(value.approval_reason, 1000, true) },
     service_profile_id: value.service_profile_id === '' ? '' : profileId(value.service_profile_id),
     service_profile_name: text(value.service_profile_name, 200, true), publisher: user(value.publisher),
     status: choice(value.status, COMMUNITY_STATUSES), public_attachments: array(value.public_attachments, 8, item => attachment(item, 'listing')),
@@ -181,7 +200,8 @@ export function communityListing(input: unknown): DemandObject {
 }
 function order(input: unknown, accountId: string): DemandObject {
   const value = demandObject(input), publisher = user(value.publisher), acceptor = value.acceptor === null ? null : user(value.acceptor)
-  const role = choice(value.my_role, ['publisher', 'acceptor', 'admin']), listing = communityListing(value.listing)
+  const role = choice(value.my_role, ['publisher', 'acceptor', 'admin'])
+  const listing = listingView(value.listing, role === 'publisher' || role === 'admin')
   const id = communityId(value.id), last = demandInteger(value.last_seq)
   if (listing.id !== id || demandObject(listing.publisher).id !== publisher.id || acceptor?.id === publisher.id
     || role === 'publisher' && String(publisher.id) !== accountId
@@ -226,7 +246,9 @@ function configuration(value: DemandObject): DemandObject {
     community_orders_v1: bool(capabilities.community_orders_v1), explicit_publication: bool(capabilities.explicit_publication),
     single_acceptor: bool(capabilities.single_acceptor), resumable_upload: bool(capabilities.resumable_upload),
     private_participant_messages: bool(capabilities.private_participant_messages),
-  }, upload_rules: { max_image_bytes: positive(rules.max_image_bytes), max_video_bytes: positive(rules.max_video_bytes),
+    ...capabilities.community_approval_v1 === undefined ? {} : { community_approval_v1: bool(capabilities.community_approval_v1) },
+  }, ...value.publication_policy === undefined ? {} : { publication_policy: choice(value.publication_policy, ['approval_required']) },
+  upload_rules: { max_image_bytes: positive(rules.max_image_bytes), max_video_bytes: positive(rules.max_video_bytes),
     max_attachments: demandInteger(rules.max_attachments, 64), chunk_bytes: chunk,
     allowed_mime_types: array(rules.allowed_mime_types, 32, item => choice(item, mediaTypes)),
     upload_ttl_seconds: positive(rules.upload_ttl_seconds) } }

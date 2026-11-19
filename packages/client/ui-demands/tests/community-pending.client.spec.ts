@@ -35,6 +35,16 @@ describe('community pending journal', () => {
     store.data.set(key, '{corrupt')
     expect(() => journal.read(owner)).toThrow()
   })
+  it('retains old and dated publication bytes without backfilling dates or normalizing the original body', () => {
+    const original = publication(), journal = createCommunityJournal(communityMemory())
+    const dated = { ...original, body: original.body.replace('"public_budget":""',
+      '"public_budget":"", "expected_delivery_date":"2026-12-08"') }
+    expect(parseCommunityOperation(original).body).toBe(original.body)
+    expect(parseCommunityOperation(dated).body).toBe(dated.body)
+    journal.put(owner, dated)
+    expect(journal.read(owner)[0]?.body).toBe(dated.body)
+    expect(() => parseCommunityOperation({ ...dated, body: dated.body.replace('2026-12-08', '2026-02-29') })).toThrow()
+  })
   it('keeps upload scope, target, original metadata and slice identities immutable', async () => {
     const file = new File(['example'], 'example.png', { type: 'image/png', lastModified: 7 })
     const data = upload(file), original: CommunityOperation = { version: 1, operationId: uuid, scopeKey: 'publication:example', orderId: null,

@@ -80,7 +80,8 @@ function publishedReceipt(input: CommunityRequest, id: string): CommunityResult 
   const value = order({ id, number: id, title: String(body.title), status: 'open', revision: 1, acceptor: null, last_seq: 0,
     last_read_seq: 0, unread_count: 0, private_text: String(body.private_text), accepted_at: 0,
     listing: listing({ id, number: id, title: String(body.title),
-      public_summary: String(body.public_summary), public_budget: String(body.public_budget) }) })
+      public_summary: String(body.public_summary), public_budget: String(body.public_budget),
+      expected_delivery_date: typeof body.expected_delivery_date === 'string' ? body.expected_delivery_date : '' }) })
   return ok({ order: value, message: null, replayed: true })
 }
 
@@ -100,6 +101,162 @@ describe('community controller', () => {
     h.control.startPublication(); h.control.acceptListing('foreign-order')
     expect(h.request.mock.calls).toHaveLength(1)
     expect(h.snapshot().publications).toHaveLength(0)
+  })
+  it('opens only retained participant orders after config disappears, including an unopened history and a cached conversation', async () => {
+    let unavailable = false
+    const second = order({ id: 'second-history', listing: listing({ id: 'second-history', status: 'accepted' }) })
+    const h = harness({ rows: [order(), second], intercept: (_owner, input) => input.path === '/config' && unavailable
+      ? { ok: false, code: 'COMMUNITY_NOT_FOUND', httpStatus: 404, unknown: false } : undefined })
+    await h.ready(); await h.open()
+    await vi.waitFor(() => { expect(h.snapshot().orders.published.items).toHaveLength(2) })
+    unavailable = true; h.control.refresh()
+    await vi.waitFor(() => { expect(h.snapshot().availability).toBe('unavailable') })
+    expect(h.snapshot().listings.items).toHaveLength(0)
+    const before = h.request.mock.calls.length
+    h.control.startPublication(); h.control.acceptListing('foreign-order'); h.control.openListing('foreign-order')
+    h.control.setListingFilter('not-dispatched'); h.control.loadMoreListings()
+    await h.open('second-history')
+    expect(h.snapshot().conversation?.order.private_text).toBe(second.private_text)
+    await h.open()
+    expect(h.snapshot().conversation?.messages[0]?.text).toBe('Example response')
+    const reads = h.request.mock.calls.slice(before).map(([, input]) => input)
+    expect(reads.some(input => input.path === '/orders/second-history')).toBe(true)
+    expect(reads.every(input => input.method === 'GET' && input.path.startsWith('/orders/'))).toBe(true)
+    expect(h.snapshot().publications).toHaveLength(0)
+  })
+  it('reports an unavailable cold order without a request while retaining exact original acceptance recovery', async () => {
+    const originalId = '00000000-0000-4000-8000-000000000097', target = 'hidden-original'
+    const body = JSON.stringify({ client_action_id: originalId }), journal = createCommunityJournal(communityMemory())
+    journal.put({ id: '1', owner: hash }, { version: 1, operationId: originalId, scopeKey: `accept:${target}`,
+      orderId: target, kind: 'accept', path: `/orders/${target}/accept`, createdAt: 100, body })
+    const accepted = order({ id: target, publisher: { id: 2, display_name: 'Publisher' },
+      acceptor: { id: 1, display_name: 'Current acceptor' }, my_role: 'acceptor',
+      listing: listing({ id: target, publisher: { id: 2, display_name: 'Publisher' }, status: 'accepted' }),
+      last_seq: 0, last_read_seq: 0, unread_count: 0 })
+    const h = harness({ rows: [], journal, intercept: (_owner, input) => {
+      if (input.path === '/config') return { ok: false, code: 'COMMUNITY_NOT_FOUND', httpStatus: 404, unknown: false }
+      if (input.path === `/orders/${target}/accept`) return ok({ order: accepted, replayed: true })
+      if (input.path.startsWith(`/orders/${target}/messages?`)) return ok({ items: [], order: accepted,
+        last_seq: 0, next_after_seq: 0, has_more: false })
+      return undefined
+    } })
+    await vi.waitFor(() => { expect(h.snapshot().availability).toBe('unavailable') })
+    h.control.openOrder('unverified-order')
+    expect(h.snapshot()).toMatchObject({ selectedOrderId: 'unverified-order', selectedOrderStatus: 'error',
+      selectedOrderError: { code: 'COMMUNITY_UNAVAILABLE' }, conversation: null })
+    expect(h.request.mock.calls).toHaveLength(1)
+    expect(h.snapshot().pending[0]?.operationId).toBe(originalId)
+    h.control.retryOperation(originalId)
+    await vi.waitFor(() => { expect(h.snapshot().conversation?.order.id).toBe(target); expect(h.snapshot().pending).toHaveLength(0) })
+    const writes = h.request.mock.calls.filter(([, input]) => input.method === 'POST')
+    expect(writes).toHaveLength(1)
+    expect(writes[0]?.[1]).toMatchObject({ path: `/orders/${target}/accept`, body })
+    expect(h.request.mock.calls.some(([, input]) => input.path.startsWith('/listings'))).toBe(false)
+  })
+  it('clears retained order authorization on account changes before an unavailable-history selection', async () => {
+    let unavailable = false
+    const h = harness({ intercept: (_owner, input) => input.path === '/config' && unavailable
+      ? { ok: false, code: 'COMMUNITY_NOT_FOUND', httpStatus: 404, unknown: false } : undefined })
+    await h.ready(); await h.open()
+    unavailable = true; h.source.set(account('3', 2, 'b'.repeat(64)))
+    await vi.waitFor(() => { expect(h.snapshot()).toMatchObject({ accountId: '3', availability: 'unavailable' }) })
+    const before = h.request.mock.calls.length
+    h.control.openOrder('community-order')
+    expect(h.snapshot()).toMatchObject({ selectedOrderStatus: 'error', selectedOrderError: { code: 'COMMUNITY_UNAVAILABLE' },
+      conversation: null, pending: [] })
+    expect(h.snapshot().orders.all.items).toHaveLength(0)
+    expect(h.request.mock.calls).toHaveLength(before)
+  })
+  it('keeps participant history on an older server while gating the moderated square and new submissions', async () => {
+    const legacy = { ...configuration(), capabilities: { ...configuration().capabilities } }
+    delete legacy.capabilities.community_approval_v1; delete legacy.publication_policy
+    const h = harness({ intercept: (_owner, input) => input.path === '/config' ? ok(legacy) : undefined })
+    await h.ready(); await h.open()
+    h.control.startPublication(); h.control.acceptListing('foreign-order'); h.control.openListing('foreign-order')
+    expect(h.snapshot().publications).toHaveLength(0)
+    expect(h.snapshot().conversation?.order.id).toBe('community-order')
+    expect(h.request.mock.calls.some(([, input]) => input.path.startsWith('/listings'))).toBe(false)
+    expect(h.request.mock.calls.some(([, input]) => input.method === 'POST')).toBe(false)
+    expect(h.snapshot().selectedListingError?.code).toBe('COMMUNITY_APPROVAL_REQUIRED')
+  })
+  it('validates expected delivery before dispatch and freezes it through unknown-result recovery', async () => {
+    let first = true
+    const h = harness({ rows: [], intercept: (_owner, input) => {
+      if (input.path !== '/orders' || input.method !== 'POST') return undefined
+      if (first) { first = false; return unknown() }
+      return publishedReceipt(input, 'dated-order')
+    } }); await h.ready(); h.control.startPublication()
+    const scope = h.snapshot().activePublicationScope ?? ''
+    h.control.updatePublication(scope, { publishToCommunity: true, title: 'Date original', publicSummary: 'Public brief',
+      expectedDeliveryDate: '2026-02-29' }); h.control.publish(scope)
+    expect(h.snapshot().publications[0]?.error?.code).toBe('COMMUNITY_INVALID_INPUT')
+    expect(h.request.mock.calls.some(([, input]) => input.method === 'POST')).toBe(false)
+    h.control.updatePublication(scope, { expectedDeliveryDate: '2026-12-08' }); h.control.publish(scope)
+    await vi.waitFor(() => { expect(h.snapshot().pending[0]?.error?.unknown).toBe(true) })
+    h.control.updatePublication(scope, { expectedDeliveryDate: '2027-01-01' })
+    h.control.retryOperation(h.snapshot().pending[0]?.operationId ?? '')
+    await vi.waitFor(() => { expect(h.snapshot().publications[0]?.orderId).toBe('dated-order') })
+    const posts = h.request.mock.calls.filter(([, input]) => input.path === '/orders' && input.method === 'POST')
+    expect(posts).toHaveLength(2); expect(posts[0]?.[1].body).toBe(posts[1]?.[1].body)
+    expect(publicationBody(posts[1]?.[1] ?? { method: 'POST', path: '', signal: new AbortController().signal })
+      .expected_delivery_date).toBe('2026-12-08')
+  })
+  it('recovers an older frozen publication without adding a date or changing its UUID on a legacy-capability response', async () => {
+    const journal = createCommunityJournal(communityMemory()), originalId = '00000000-0000-4000-8000-000000000099'
+    const originalBody = JSON.stringify({ client_request_id: originalId, publish_to_community: true, title: 'Original old title',
+      public_summary: 'Original old brief', public_budget: 'Negotiable', private_text: '', public_attachment_ids: [], private_attachment_ids: [] })
+    journal.put({ id: '1', owner: hash }, { version: 1, operationId: originalId, scopeKey: 'publication:legacy',
+      orderId: null, kind: 'publication', path: '/orders', createdAt: 100, body: originalBody })
+    const legacy = { ...configuration(), capabilities: { ...configuration().capabilities } }
+    delete legacy.capabilities.community_approval_v1; delete legacy.publication_policy
+    const h = harness({ rows: [], journal, intercept: (_owner, input) => input.path === '/config' ? ok(legacy)
+      : input.path === '/orders' && input.method === 'POST' ? publishedReceipt(input, 'old-confirmed') : undefined })
+    await h.ready()
+    expect(h.request.mock.calls.some(([, input]) => input.method === 'POST')).toBe(false)
+    expect(journal.read({ id: '1', owner: hash })[0]?.body).toBe(originalBody)
+    h.control.updatePublication('publication:legacy', { expectedDeliveryDate: '2026-12-08' })
+    h.control.retryOperation(originalId)
+    await vi.waitFor(() => { expect(h.snapshot().publications[0]?.orderId).toBe('old-confirmed') })
+    const posts = h.request.mock.calls.filter(([, input]) => input.path === '/orders' && input.method === 'POST')
+    expect(posts).toHaveLength(1); expect(posts[0]?.[1].body).toBe(originalBody)
+  })
+  it('checks a restored acceptance with its exact original path and body without public discovery or another submit key', async () => {
+    const originalId = '00000000-0000-4000-8000-000000000098', target = 'hidden-order'
+    const body = JSON.stringify({ client_action_id: originalId }), journal = createCommunityJournal(communityMemory())
+    journal.put({ id: '1', owner: hash }, { version: 1, operationId: originalId, scopeKey: `accept:${target}`,
+      orderId: target, kind: 'accept', path: `/orders/${target}/accept`, createdAt: 100, body })
+    const legacy = { ...configuration(), capabilities: { ...configuration().capabilities } }
+    delete legacy.capabilities.community_approval_v1; delete legacy.publication_policy
+    const accepted = order({ id: target, publisher: { id: 2, display_name: 'Publisher' },
+      acceptor: { id: 1, display_name: 'Current acceptor' }, my_role: 'acceptor',
+      listing: listing({ id: target, publisher: { id: 2, display_name: 'Publisher' }, status: 'accepted', approval_status: 'rejected' }),
+      last_seq: 0, last_read_seq: 0, unread_count: 0 })
+    let attempt = 0
+    const h = harness({ rows: [], journal, intercept: (_owner, input) => {
+      if (input.path === '/config') return ok(legacy)
+      if (input.path === `/orders/${target}/accept` && input.method === 'POST') {
+        attempt += 1
+        return attempt === 1 ? unknown() : attempt === 2
+          ? { ok: false, code: 'COMMUNITY_ALREADY_ACCEPTED', httpStatus: 409, unknown: false }
+          : ok({ order: accepted, replayed: true })
+      }
+      if (input.path.startsWith(`/orders/${target}/messages?`)) return ok({ items: [], order: accepted,
+        last_seq: 0, next_after_seq: 0, has_more: false })
+      return undefined
+    } }); await h.ready()
+    expect(h.request.mock.calls.some(([, input]) => input.method === 'POST')).toBe(false)
+    h.control.retryOperation(originalId); h.control.retryOperation(originalId)
+    await vi.waitFor(() => { expect(h.snapshot().pending[0]?.error?.code).toBe('COMMUNITY_TIMEOUT') })
+    expect(attempt).toBe(1)
+    h.control.retryOperation(originalId)
+    await vi.waitFor(() => { expect(h.snapshot().pending[0]?.error).toMatchObject({ code: 'COMMUNITY_ALREADY_ACCEPTED', unknown: false }) })
+    h.control.retryOperation(originalId)
+    await vi.waitFor(() => { expect(h.snapshot().pending).toHaveLength(0) })
+    expect(h.snapshot().selectedOrderId).toBe(target)
+    const posts = h.request.mock.calls.filter(([, input]) => input.method === 'POST')
+    expect(posts).toHaveLength(3)
+    expect(posts.every(([, input]) => input.path === `/orders/${target}/accept` && input.body === body)).toBe(true)
+    expect(h.request.mock.calls.some(([, input]) => input.path.startsWith('/listings'))).toBe(false)
   })
   it('publishes only after explicit opt-in and reuses the exact original UUID/body after unknown results', async () => {
     let first = true

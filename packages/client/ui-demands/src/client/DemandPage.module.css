@@ -4,25 +4,25 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  padding: 28px 32px 24px;
+  padding: 24px 28px;
   color: var(--dsw-alias-label-primary);
 }
 
-:global([data-platform='darwin']) .page {
-  padding-top: calc(var(--dsh-frame-top-clearance) + 16px);
-}
+:global([data-platform='darwin']) .page { padding-top: calc(var(--dsh-frame-top-clearance) + 12px); }
 
 .page[data-view='requests'] { padding: 0; }
 :global([data-platform='darwin']) .page[data-view='requests'] { padding-top: calc(var(--dsh-frame-top-clearance) + 8px); }
 .page[data-view='requests'] .pageContent { max-width: none; }
 .workspaceNavigation { display: flex; flex: none; padding: 8px 16px 0; }
-.conversationNavigation { flex: none; width: min(calc(100% - 32px), 260px); margin: 8px 16px; }
-.pageContent { display: flex; flex-direction: column; height: 100%; max-width: 1120px; min-width: 0; margin-inline: auto; }
+.conversationNavigation { flex: none; width: min(calc(100% - 32px), 390px); margin: 8px 16px; }
+.pageContent { display: flex; flex-direction: column; height: 100%; max-width: 1560px; min-width: 0; margin-inline: auto; }
 .pageHeader { flex: none; padding: 16px 0 0; text-align: center; }
 .pageHeader h1 { margin: 0; font: var(--dsw-font-xl-24); font-size: 40px; line-height: 48px; font-weight: 500; text-wrap: balance; }
 .pageHeader p { margin: 10px auto 0; max-width: 64ch; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xs-13); text-wrap: balance; }
-.navigation { flex: none; width: min(100%, 280px); margin: 24px auto 28px; }
+.navigation { flex: none; width: min(100%, 420px); margin: 0 auto 28px; }
 .panel { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.forumWorkspace { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+.forumDrafts { display: flex; flex: none; flex-wrap: wrap; gap: 8px; padding-bottom: 8px; }
 .pageNotice, .inlineNotice { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-state-error-primary); }
 .pageNotice { margin: 0 0 12px; }
 .inlineNotice { margin: 8px 0; }
