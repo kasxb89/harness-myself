@@ -2,7 +2,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { apiUrl, normalizeApiBaseUrl } from './api-url.ts'
 import { accountRetryAfter } from './account-read.ts'
-import { DemandProtocolError, demandId, demandInteger, demandObject, demandQuery, demandRequest, demandResponse, demandText } from './demand-protocol.ts'
+import { DemandProtocolError, demandId, demandInteger, demandObject, demandQuery, demandRequest, demandResponse, demandText, type DemandObject } from './demand-protocol.ts'
 
 /** Only the frozen product route family may be supplied by the composition. */
 export const DEMAND_UPSTREAM_BASE_PATH = '/api/product/demands'
@@ -69,14 +69,28 @@ function limitsOf(value: Partial<DemandProxyLimits>): DemandProxyLimits {
   }
   return next
 }
-type Route = {
+/** One operation selected by a product family's closed route whitelist. */
+export type DemandTransportRoute = {
   readonly kind: string
   readonly suffix: string
   readonly method: string
   readonly uploadId?: string
   readonly attachmentId?: string
+  readonly resourceId?: string
 }
-function selectRoute(path: string, method: string): Route | undefined {
+/** Codecs supplied by the two separately versioned private and community contracts. */
+export interface DemandTransportProtocol {
+  readonly localBasePath: string
+  readonly selectRoute: (path: string, method: string) => DemandTransportRoute | undefined
+  readonly request: (kind: string, input: unknown) => DemandObject
+  readonly query: (kind: string, source: URLSearchParams) => URLSearchParams
+  readonly response: (kind: string, input: unknown, account: Pick<DemandAccount, 'id' | 'owner'>, route: DemandTransportRoute) => DemandObject
+  readonly remoteCodes: ReadonlySet<string>
+  readonly mapCode: (code: string) => string
+  readonly contentPath: (id: string, account: Pick<DemandAccount, 'id' | 'owner'>, disposition: string) => string
+  readonly httpErrorFallback?: boolean
+}
+function selectRoute(path: string, method: string): DemandTransportRoute | undefined {
   const exact: Record<string, Readonly<Record<string, string>>> = {
     '': { GET: 'list', POST: 'create' }, '/config': { GET: 'config' }, '/engineers': { GET: 'engineers' },
     '/service-profiles': { GET: 'service-profiles' },
@@ -232,16 +246,33 @@ export function createDemandProxy(options: DemandProxyOptions): {
   handle(request: IncomingMessage, response: ServerResponse, route: string, method: string): Promise<boolean>
   close(): Promise<void>
 } {
+  return createDemandTransport(options, { localBasePath: LOCAL_BASE_PATH, selectRoute, request: demandRequest,
+    query: demandQuery, response: demandResponse, remoteCodes, mapCode: code => code, contentPath: demandContentPath })
+}
+
+/**
+ * Share login-owned one-shot JSON, chunk and signed-media transport without sharing DTOs.
+ * @param options - Existing private credential-owner closures and bounded transport limits.
+ * @param protocol - The consumer's closed route family, field projections and public error codes.
+ * @returns A disposable handler; it never renews by replaying a submitted body.
+ */
+export function createDemandTransport(options: DemandProxyOptions, protocol: DemandTransportProtocol): {
+  handle(request: IncomingMessage, response: ServerResponse, route: string, method: string): Promise<boolean>
+  close(): Promise<void>
+} {
   const baseUrl = normalizeApiBaseUrl(options.baseUrl), upstream = options.upstreamBasePath ?? DEMAND_UPSTREAM_BASE_PATH
   if (!/^\/api\/[A-Za-z0-9_/-]+$/u.test(upstream) || upstream.endsWith('/') || upstream.includes('//')) throw new Error('Invalid demand API mapping')
   apiUrl(baseUrl, upstream)
   limitsOf(options.limits())
   const life = new AbortController(), operations = new Set<Promise<void>>()
   let closed: Promise<void> | undefined
+  const reply = (response: ServerResponse, value: DemandObject, status = 200): void => {
+    json(response, { ...value, ...typeof value.code === 'string' ? { code: protocol.mapCode(value.code) } : {} }, status)
+  }
 
-  const run = async (request: IncomingMessage, response: ServerResponse, route: Route): Promise<void> => {
+  const run = async (request: IncomingMessage, response: ServerResponse, route: DemandTransportRoute): Promise<void> => {
     const rejected = options.requestRejection(request)
-    if (rejected !== undefined) { json(response, { ok: false, code: 'DEMAND_HOST_AUTH_REQUIRED' }, rejected); return }
+    if (rejected !== undefined) { reply(response, { ok: false, code: 'DEMAND_HOST_AUTH_REQUIRED' }, rejected); return }
     const limits = limitsOf(options.limits()), disconnected = new AbortController()
     const disconnect = (): void => { if (!response.writableEnded) disconnected.abort() }
     const timeout = AbortSignal.timeout(route.kind === 'upload-chunk' ? limits.uploadTimeoutMs : route.kind === 'content' ? limits.downloadTimeoutMs : limits.requestTimeoutMs)
@@ -255,10 +286,10 @@ export function createDemandProxy(options: DemandProxyOptions): {
       signal.throwIfAborted()
       const account = await options.captureAccount(signal)
       captured = account
-      if (account === null) { json(response, { ok: false, code: 'DEMAND_AUTH_REQUIRED', httpStatus: 401 }); return }
+      if (account === null) { reply(response, { ok: false, code: 'DEMAND_AUTH_REQUIRED', httpStatus: 401 }); return }
       const query = new URL(request.url ?? '/', 'http://demand.invalid').searchParams
       if (!expectedOwner(request, account, route.kind === 'content' ? query : undefined) || !await account.isCurrent()) {
-        json(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return
+        reply(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return
       }
       const ownerFields = { account: { id: account.id }, accountOwner: account.owner }
       let init: RequestInit & { duplex?: 'half' } = { method: route.method, headers: { accept: 'application/json' }, signal }
@@ -278,18 +309,18 @@ export function createDemandProxy(options: DemandProxyOptions): {
           headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ disposition }), signal }))
         if (!link.ok) {
           await link.body?.cancel()
-          json(response, { ok: false, code: httpFailure(link.status), httpStatus: link.status }); return
+          reply(response, { ok: false, code: httpFailure(link.status), httpStatus: link.status }); return
         }
         const envelope = demandObject(await readResult(link, limits.maxJsonResponseBytes, signal)), data = demandObject(envelope.data)
         if (envelope.success !== true) throw new DemandProtocolError()
         const linkRoute = attachmentRoute(data, route.attachmentId ?? '', baseUrl, upstream)
-        if (!await account.isCurrent()) { json(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
+        if (!await account.isCurrent()) { reply(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
         const media = await transfer(() => options.fetchPublic(linkRoute.path, { method: route.method, signal,
           headers: { ...range === undefined ? {} : { range }, ...ifRange === undefined ? {} : { 'if-range': ifRange } } }))
-        if (!await account.isCurrent()) { await media.body?.cancel(); json(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
+        if (!await account.isCurrent()) { await media.body?.cancel(); reply(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
         if (!media.ok && media.status !== 416) {
           await media.body?.cancel()
-          json(response, { ok: false, code: httpFailure(media.status), httpStatus: media.status }); return
+          reply(response, { ok: false, code: httpFailure(media.status), httpStatus: media.status }); return
         }
         const headers: Record<string, string> = { 'cache-control': 'private, no-store', 'x-content-type-options': 'nosniff' }
         for (const key of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'etag', 'last-modified', 'content-disposition']) {
@@ -335,7 +366,7 @@ export function createDemandProxy(options: DemandProxyOptions): {
       } else if (route.method === 'POST') {
         if (query.size !== 0) throw new DemandInputError('DEMAND_INVALID_INPUT')
         let body: ReturnType<typeof demandRequest>
-        try { body = demandRequest(route.kind, await readInput(request, limits.maxJsonRequestBytes, signal)) }
+        try { body = protocol.request(route.kind, await readInput(request, limits.maxJsonRequestBytes, signal)) }
         catch (error) { throw error instanceof DemandProtocolError ? new DemandInputError('DEMAND_INVALID_INPUT') : error }
         const key = body.client_request_id ?? body.client_message_id ?? body.client_action_id ?? body.client_upload_id
         if (route.kind === 'link') linkDisposition = demandText(body.disposition, 10)
@@ -343,18 +374,23 @@ export function createDemandProxy(options: DemandProxyOptions): {
         init = { method: 'POST', signal, headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify(body) }
       } else {
         let selected: URLSearchParams
-        try { selected = demandQuery(route.kind, query) } catch (_invalidQuery: unknown) { throw new DemandInputError('DEMAND_INVALID_INPUT') }
+        try { selected = protocol.query(route.kind, query) } catch (_invalidQuery: unknown) { throw new DemandInputError('DEMAND_INVALID_INPUT') }
         if (selected.size > 0) suffix += `?${selected}`
       }
-      if (!await account.isCurrent()) { json(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
+      if (!await account.isCurrent()) { reply(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
       sent = true
       const result = await transfer(() => account.fetch(upstream + suffix, init))
-      const raw: unknown = await readResult(result, limits.maxJsonResponseBytes, signal)
-      if (!await account.isCurrent()) { json(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
+      let raw: unknown
+      try { raw = await readResult(result, limits.maxJsonResponseBytes, signal) }
+      catch (error) {
+        if (!result.ok && protocol.httpErrorFallback === true && error instanceof DemandProtocolError) raw = { success: false }
+        else throw error
+      }
+      if (!await account.isCurrent()) { reply(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
       const envelope = demandObject(raw)
       if (!result.ok || envelope.success === false) {
         const retryAfterSeconds = accountRetryAfter(result.headers)
-        json(response, { ok: false, code: typeof envelope.code === 'string' && remoteCodes.has(envelope.code) ? envelope.code : httpFailure(result.status),
+        reply(response, { ok: false, code: typeof envelope.code === 'string' && protocol.remoteCodes.has(envelope.code) ? envelope.code : httpFailure(result.status),
           ...retryAfterSeconds === undefined ? {} : { retryAfterSeconds },
           httpStatus: result.status, ...ownerFields, ...writing && result.status >= 500 ? { outcome: 'unknown', operationKey } : {} }); return
       }
@@ -362,27 +398,28 @@ export function createDemandProxy(options: DemandProxyOptions): {
         const value = demandObject(envelope.data)
         if (envelope.success !== true) throw new DemandProtocolError()
         const valid = attachmentRoute(value, route.attachmentId ?? '', baseUrl, upstream)
-        json(response, { ok: true, payload: { url: demandContentPath(route.attachmentId ?? '', account, linkDisposition),
+        reply(response, { ok: true, payload: { url: protocol.contentPath(route.attachmentId ?? '', account, linkDisposition),
           expires_at: valid.expires }, httpStatus: result.status, ...ownerFields }); return
       }
-      json(response, { ok: true, payload: demandResponse(route.kind, raw), httpStatus: result.status, ...ownerFields })
+      reply(response, { ok: true, payload: protocol.response(route.kind, raw, account, route), httpStatus: result.status, ...ownerFields })
     } catch (error) {
       if (response.headersSent) { response.destroy(); return }
       const current = captured === null || await captured.isCurrent().catch(() => false)
       const code = !current ? 'ACCOUNT_CHANGED' : error instanceof DemandInputError ? error.code : error instanceof DemandProtocolError ? 'DEMAND_PROTOCOL_INVALID'
         : timeout.aborted ? 'DEMAND_TIMEOUT' : signal.aborted ? 'DEMAND_CANCELLED'
           : error instanceof DemandTransportError ? 'DEMAND_NETWORK' : 'DEMAND_UNAVAILABLE'
-      json(response, { ok: false, code, ...writing && sent ? { outcome: 'unknown', operationKey } : {} })
+      reply(response, { ok: false, code, ...writing && sent ? { outcome: 'unknown', operationKey } : {} })
     } finally { signal.removeEventListener('abort', abortInput); response.off('close', disconnect) }
   }
 
   return {
     async handle(request, response, path, method) {
       const local = path.startsWith('/credits/') ? path.slice('/credits'.length) : path
-      if (local !== '/api/demands' && !local.startsWith('/api/demands/')) return false
-      if (life.signal.aborted) { json(response, { ok: false, code: 'DEMAND_UNAVAILABLE' }); return true }
-      const route = selectRoute(local.slice('/api/demands'.length), method)
-      if (route === undefined) { json(response, { ok: false, code: 'DEMAND_NOT_FOUND' }, 404); return true }
+      const localBase = protocol.localBasePath.slice('/credits'.length)
+      if (local !== localBase && !local.startsWith(localBase + '/')) return false
+      if (life.signal.aborted) { reply(response, { ok: false, code: 'DEMAND_UNAVAILABLE' }); return true }
+      const route = protocol.selectRoute(local.slice(localBase.length), method)
+      if (route === undefined) { reply(response, { ok: false, code: 'DEMAND_NOT_FOUND' }, 404); return true }
       const operation = run(request, response, route)
       operations.add(operation)
       try { await operation } finally { operations.delete(operation) }

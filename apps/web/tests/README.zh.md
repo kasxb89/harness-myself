@@ -22,6 +22,10 @@ pnpm --filter @deepseek-ai/dsh-web-frontend exec playwright install --with-deps 
 
 [真人工程师需求](demands.e2e.ts)始终使用无密钥的 Host 回执 fixture 验证已构建的界面和控制器，覆盖私有需求与官方服务卡片标签页、独立草稿卡片、左右分区需求卡片、独立栅格滚动、会话导航、带输入法保护的快捷键发送、草稿恢复、原提交准确重试、图片视频分片续传、媒体控件、服务目录分页及交付验收。`DSH_DEMAND_FIXTURE` 选择直接工程师的真实 Go → Host → 浏览器流程；平台分配流程同时使用 `DSH_DEMAND_DIRECTORY_FIXTURE` 和相匹配的最终 `DSH_DEMAND_DIRECTORY_READY`，验证预设服务目录、未分配访问、实际指派及媒体交付。两者均要求明确标记的本机合成身份和有效凭证，保留外部测试服务，不使用生产账号或模型生成。服务目录用例仅读取已有档案，不重新导入或编辑。
 
+[社区需求](community-demands.e2e.ts)通过 `DSH_COMMUNITY_DEMAND_FIXTURE` 及相匹配的 `DSH_COMMUNITY_DEMAND_READY` 使用明确验收的隔离 Go 服务；两项均未设置时不会启动流程。发布人、接单人各用独立 Host，验证公开同意、旧私密隔离、普通用户接单、双向图片视频聊天、原操作恢复和管理员查看。另一个明确标记为已有旧工程师档案的 User 提供竞争接单与旁观者拒绝验证，不替代没有该档案的主接单人，也不因此获得社区域的工程师权限。测试保留外部服务，不使用生产凭证、短信、模型生成或支付。
+
+[社区布局边界](community-demands-layout.e2e.ts)还要求 `DSH_COMMUNITY_LAYOUT_FIXTURE`、`DSH_COMMUNITY_LAYOUT_READY` 和原始 `DSH_COMMUNITY_LAYOUT_CORE_RECEIPT`。它打开核心流程已有的订单，上传八张新的微小合成图片但不发送消息，验证短窗口下的聊天控件、附件访问、长发布预览和两种主题的键盘焦点。测试保留原订单和消息身份，不重放核心流程。
+
 ## 完成状态观察
 
 依赖状态的用例使用 Workspace、接纳、附件和模型流屏障，区分可见中间状态与已完成操作。模型选择器的持久化断言等待默认设置保存完成，不以菜单关闭作为完成信号。详情关闭等待框架过渡结束；归档验证为 seed Session 设置显式标题，并跨重载跟踪该身份。[CI 测试可靠性工作流](../../../.agents/skills/dsh-ci-test-reliability/SKILL.md#synchronize-on-state)负责这些同步规则。

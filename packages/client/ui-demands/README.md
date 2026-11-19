@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-The Requests sidebar opens Personal requests and Official customization tabs. Personal requests contains only the signed-in customer's demands and local drafts; Official customization displays the platform's service catalog. Customers describe work, attach images or videos, and submit it for assignment to a real engineer. They can continue previous requests and accept delivery. The backend owns the catalog, assignments, permissions and processing status.
+The Requests sidebar opens Personal requests and Official customization tabs. Personal requests groups the signed-in user's published requests, public requests and accepted requests when the backend provides community orders. Official customization displays the platform's service catalog and retains its private human-engineer conversations. The backend owns publication, acceptance, assignments, permissions and processing status.
 
 ## Table of Contents
 
@@ -29,6 +29,8 @@ Compose this browser plugin with slots, locale, layout and the existing Credits 
 
 The account-owned controller publishes a stable JSON view to framework-bound injection hooks. Components own viewing controls and narrow-screen navigation. Changing the account or login epoch immediately clears the prior view and cancels its requests and uploads. Responses must match the captured account. Disposal cancels and joins all owned asynchronous operations.
 
+Community orders use an independent controller, journal and authenticated `/credits/api/community-demands` proxy. An older backend without this capability keeps the private request interface. Publication requires explicit public consent; the title, summary and selected public attachments are shown before submission. Existing private requests, messages and attachments are never published automatically. Public discovery receives only listing fields. A single server-confirmed acceptor joins the publisher's private conversation as an ordinary user, with actual sender names and identities; administrators can inspect all community orders, participant messages and media. Disabling new community requests retains existing participants' authorized conversations.
+
 Personal requests uses horizontal cards with the request title, service and update time on the left, and the original conversation action on the right. The grid has two columns on wider screens and one on compact screens. Draft actions distinguish continued editing from checking an unconfirmed publication; a scoped error remains visible when recovery needs attention. Optional budgets and expected dates remain independent per-scope data. Communicate opens the original private conversation, and returning to cards does not create or resubmit a demand. The conversation uses a compact inbox, message history and composer. Enter sends a ready message; Shift+Enter inserts a newline, and composition confirmation does not send. Optional request details and current upload rules remain expandable. Switching conversations preserves independent drafts for the controller's lifetime; only journaled pending operations and uploads survive an application restart.
 
 The compact inbox identifies service conversations by their service name and retains the original title in the preview. Search includes service names, original titles, request numbers and the latest server-confirmed message preview; a draft's body is searchable only while that draft is selected. Separate requests retain their own identifiers even when they use the same service. Draft and server-owned processing states remain explicit, and available service artwork does not imply that an engineer is online.
@@ -40,6 +42,8 @@ Requests use the authenticated local `/credits/api/demands` proxy, whose credent
 Each new demand, message, upload and acceptance has a durable, account-scoped operation identifier and frozen request body before dispatch. A lost response retains that operation for exact retry instead of creating a replacement identifier. Separate drafts remain independent. Confirmed messages and read status come from server receipts. Images and videos upload as bounded `File.slice` chunks, with offset reads after an uncertain chunk. Reselecting a file verifies its metadata and recorded slice digests before continuing. Files themselves are not copied into the JSON view or local operation journal.
 
 Direct-engineer operations retain their existing journal namespace and serialized bodies. Service-profile operations use a separate namespace that the new reader combines with the legacy journal. Returning to an older client therefore does not expose service-only records to its legacy parser.
+
+Community publication, acceptance and messages keep separate durable operation identifiers. Unknown outcomes expose a check of the original operation, and known failures retain their actual error category. A blocked operation does not block another order. Public and conversation uploads keep immutable visibility scopes, verify a bounded incremental whole-file SHA-256, and resume from verified server offsets. Community messages retain server sequence numbers; local unconfirmed messages remain separate records. Read acknowledgements require the selected, visible conversation and confirmed message sequences.
 
 ## Further Exploration
 

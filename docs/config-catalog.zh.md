@@ -914,7 +914,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:137`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:138`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -935,6 +935,10 @@ export interface Config {
   demandDownloadTimeoutMs?: number
   /** Maximum JSON request size for the demand proxy. */
   demandMaxJsonRequestBytes?: number
+  /** Complete community JSON request ceiling, including Unicode text and the whole envelope. */
+  communityMaxJsonRequestBytes?: number
+  /** Complete community response ceiling for bounded Unicode message and order pages. */
+  communityMaxJsonResponseBytes?: number
   /** Maximum decoded demand metadata response size. */
   demandMaxJsonResponseBytes?: number
   /** Local safety ceiling; actual upload slices follow the backend's smaller chunk limit. */

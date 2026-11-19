@@ -8,6 +8,7 @@ import { ServiceDirectory } from './ServiceDirectory.tsx'
 import { DemandInbox } from './DemandInbox.tsx'
 import { DemandChat } from './DemandChat.tsx'
 import { PersonalDemandCards } from './PersonalDemandCards.tsx'
+import { CommunityWorkspace } from './CommunityWorkspace.tsx'
 import css from './DemandPage.module.css'
 
 /**
@@ -18,10 +19,18 @@ import css from './DemandPage.module.css'
 export function DemandPage(props: DemandPageProps): ReactNode {
   const { useDemands, t, refresh, openLogin, startRequest, openRequest } = props
   const state = useDemands(value => value)
+  const community = props.useCommunity(value => value)
   const [view, setView] = useState<'personal' | 'official' | 'requests'>('personal')
   const [mobileChat, setMobileChat] = useState(false)
+  const [communityChat, setCommunityChat] = useState(false)
   const navigationId = useId()
   const scope = state.conversation?.scopeKey
+  const communityAvailable = community.config !== null && community.availability !== 'unavailable'
+    && community.availability !== 'login-required'
+  useEffect(() => {
+    props.setWorkspaceView(view === 'requests' ? 'legacy' : view === 'personal' && communityAvailable ? 'community' : 'other')
+    return () => { props.setWorkspaceView('other') }
+  }, [props.setWorkspaceView, view, communityAvailable])
   useEffect(() => {
     if (scope === undefined) return
     setView('requests')
@@ -36,19 +45,21 @@ export function DemandPage(props: DemandPageProps): ReactNode {
   const services = state.directoryMode === 'services'
   const findLabel = t(services ? 'findServices' : 'findEngineers')
   const tab = view === 'official' ? 'official' : 'personal'
+  const compact = view === 'requests' || view === 'personal' && communityChat
   const hasRetainedData = state.engineers.length > 0 || state.serviceProfiles.length > 0
     || state.requests.length > 0 || state.drafts.length > 0 || state.conversation !== null
+    || community.orders.all.items.length > 0 || community.conversation !== null
   const unavailable = availability === 'unconfigured' || availability === 'disabled' || availability === 'login-required'
-  const showUnavailable = availability === 'login-required' || (unavailable && !hasRetainedData)
-  return <section className={css.page} data-view={view} aria-label={t('pageTitle')}>
+  const showUnavailable = availability === 'login-required' || (unavailable && !hasRetainedData && !communityAvailable)
+  return <section className={css.page} data-view={compact ? 'requests' : view} aria-label={t('pageTitle')}>
     <div className={css.pageContent}>
       {view === 'requests' ? <div className={css.workspaceNavigation}>
         <Button size="sm" icon={<IconChevronLeftOutlineRegular size={16} />}
           onClick={() => { setView('personal'); setMobileChat(false) }}>{t('backToPersonalRequests')}</Button>
-      </div> : <header className={css.pageHeader}>
+      </div> : communityChat && view === 'personal' ? null : <header className={css.pageHeader}>
         <h1>{t('cardsPageTitle')}</h1><p>{t('cardsPageIntro')}</p>
       </header>}
-      <SegmentedTabs className={view === 'requests' ? css.conversationNavigation : css.navigation}
+      <SegmentedTabs className={compact ? css.conversationNavigation : css.navigation}
         label={t('navigation')} value={tab} onChange={(next) => {
           setView(next)
           setMobileChat(false)
@@ -65,10 +76,14 @@ export function DemandPage(props: DemandPageProps): ReactNode {
         detail={t(availability === 'login-required' ? 'loginHint' : availability === 'disabled' ? 'disabledHint' : 'unconfiguredHint')}
         actionLabel={availability === 'login-required' ? t('openLogin') : undefined}
         onAction={availability === 'login-required' ? openLogin : undefined} />
-          : availability === 'error' && !hasRetainedData ? <DemandEmpty title={t('errorTitle')} detail={state.error ?? t('errorHint')}
+          : availability === 'error' && !hasRetainedData && !communityAvailable ? <DemandEmpty title={t('errorTitle')} detail={state.error ?? t('errorHint')}
             actionLabel={t('retry')} onAction={refresh} />
-            : view === 'personal' ? <PersonalDemandCards state={state} open={open} openDraft={openDraft} create={find}
-              conversations={() => { setView('requests'); setMobileChat(false) }} refresh={refresh} loadMore={props.loadMoreRequests} t={t} />
+            : view === 'personal' ? communityAvailable
+              ? <CommunityWorkspace key={community.accountId} state={community} legacy={state} commands={props.community}
+                onLegacyOrder={open} onLegacyDraft={openDraft} onOfficial={find}
+                refreshLegacy={refresh} loadMoreLegacy={props.loadMoreRequests} onChatChange={setCommunityChat} t={t} />
+              : <PersonalDemandCards state={state} open={open} openDraft={openDraft} create={find}
+                conversations={() => { setView('requests'); setMobileChat(false) }} refresh={refresh} loadMore={props.loadMoreRequests} t={t} />
               : view === 'official' ? services
                 ? <ServiceDirectory state={state} start={startService} filter={props.setServiceFilter}
                   loadMore={props.loadMoreServices} refresh={refresh} t={t} />

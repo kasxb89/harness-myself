@@ -25,6 +25,8 @@
     "apps/web/tests/skillhub-store.e2e.ts",
     "apps/web/tests/plaza-market.e2e.ts",
     "apps/web/tests/demands.e2e.ts",
+    "apps/web/tests/community-demands.e2e.ts",
+    "apps/web/tests/community-demands-layout.e2e.ts",
     "apps/web/tests/fixtures/demands/host-fixture.ts",
     "apps/web/tests/readable-text.ts",
     "apps/web/tests/artifact-library.e2e.ts",

@@ -57,6 +57,8 @@ kind: "package-reference"
 
 上传按有界原始分片发送一次，保留 `Upload-Offset`；响应未知时保留操作标识，以便查询偏移恢复。附件内容按发起账号重新授权，只允许同一后台的精确对象地址，以流式方式透传 Range。令牌和上游签名 URL 不进入浏览器。`demandRequestTimeoutMs`、`demandUploadTimeoutMs`、`demandDownloadTimeoutMs`、`demandMaxJsonRequestBytes`、`demandMaxJsonResponseBytes` 和 `demandMaxChunkBytes` 配置本机传输保护，后台仍决定更小的媒体限制。卸载会取消并等待尚未结束的传输。
 
+独立代理 `/credits/api/community-demands` 仅向 `/api/product/community-demands` 下的版本化社区用户接口转发。它复用账号归属校验和有界单次传输，同时将公开列表、参与人订单、普通用户作者以及不可变的公开/会话附件范围与工程师需求分开。接单及参与人权限只由后台授予。请求与响应校验拒绝跨域内容链接、管理路由、未知字段和不兼容投影。社区内容签名链接仅保留在 Host，必须使用精确社区内容路由；Range 和 HEAD 继续核对当前账号与后台授权。能力不可用时，不会改为提交官方需求。独立的 `communityMaxJsonRequestBytes` 与 `communityMaxJsonResponseBytes` 默认分别为 128 KiB 和 8 MiB，用于容纳合法 Unicode 字段及有界消息页，原私密需求限制保持不变。
+
 ### 聊天模型刷新
 
 每次列出产品路由模型前，先等待当前账号的 `harnessAccount.refreshModels` 结果。Host 使用该账号的 relay key 读取 `/v1/models`，排除已声明的媒体生成模型，并在适配器读取配置前同步非空聊天结果。并发读取共享同一次操作。成功返回空列表时不展示任何聊天模型，即使旧 profile 仍保留配置；读取不可用时返回目录失败，不把旧模型显示为当前可用。其他提供方路由保留原有的列表行为。

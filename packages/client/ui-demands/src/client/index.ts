@@ -8,9 +8,11 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { createDemandController } from './controller.ts'
+import { createCommunityController } from './community-controller.ts'
 import { DemandPage } from './DemandPage.tsx'
 import { DemandPanelIcon } from './DemandPanelIcon.tsx'
 import { en, NS, zh, type DemandLocaleKey } from './locales.ts'
+import type { DemandWorkspaceFace } from './types.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -63,14 +65,27 @@ export function apply(ctx: Context, config: Config = {}): void {
     translate: t,
     openLogin: () => { ctx.layout.selectPanel('credits' as MainPanelId) },
   })
+  const { start: startCommunity, dispose: disposeCommunity, setVisible: setCommunityVisible,
+    hooks: communityHooks, ...community } = createCommunityController(ctx.creditsSession, resolved)
+  let workspaceView: 'legacy' | 'community' | 'other' = 'other'
+  const visibility = (): void => {
+    const foreground = ctx.layout.panelInfo.getSnapshot().activePanelId === PANEL_ID
+      && document.visibilityState !== 'hidden' && document.hasFocus()
+    setVisible(foreground && workspaceView === 'legacy')
+    setCommunityVisible(foreground && workspaceView === 'community')
+  }
+  const setWorkspaceView: DemandWorkspaceFace['setWorkspaceView'] = (view) => { workspaceView = view; visibility() }
   ctx.slots.inject('main', () => ctx.slots.register({
-    name: 'main', key: PANEL_ID, locale: NS, inject: () => face,
+    name: 'main', key: PANEL_ID, locale: NS,
+    inject: () => ({ ...face, hooks: { ...face.hooks, ...communityHooks }, community, setWorkspaceView }),
   }, DemandPage))
   ctx.slots.inject('sidebar.panellist', () => {
     let unregister: (() => void) | undefined
     const reconcile = (): void => {
       const state = face.hooks.demands.getSnapshot()
+      const shared = communityHooks.community.getSnapshot()
       const visible = state.availability === 'ready' || state.requests.length > 0 || state.conversation !== null
+        || shared.availability === 'ready' || shared.orders.all.items.length > 0 || shared.conversation !== null
       if (visible && unregister === undefined) {
         unregister = ctx.slots.register({
           name: 'sidebar.panellist', id: PANEL_ID, order: 35, label: () => t('panelLabel'), locale: NS,
@@ -81,15 +96,13 @@ export function apply(ctx: Context, config: Config = {}): void {
       }
     }
     const unsubscribe = face.hooks.demands.subscribe(reconcile)
+    const unsubscribeCommunity = communityHooks.community.subscribe(reconcile)
     reconcile()
-    return () => { unsubscribe(); unregister?.() }
+    return () => { unsubscribe(); unsubscribeCommunity(); unregister?.() }
   })
   ctx.effect(() => {
     const stop = start()
-    const visibility = (): void => {
-      setVisible(ctx.layout.panelInfo.getSnapshot().activePanelId === PANEL_ID
-        && document.visibilityState !== 'hidden' && document.hasFocus())
-    }
+    const stopCommunity = startCommunity()
     const unsubscribe = ctx.layout.panelInfo.subscribe(visibility)
     document.addEventListener('visibilitychange', visibility)
     window.addEventListener('focus', visibility)
@@ -101,7 +114,8 @@ export function apply(ctx: Context, config: Config = {}): void {
       window.removeEventListener('focus', visibility)
       window.removeEventListener('blur', visibility)
       stop()
-      await dispose()
+      stopCommunity()
+      await Promise.all([dispose(), disposeCommunity()])
     }
   }, 'ui-demands: account-bound message and upload lifecycle')
 }

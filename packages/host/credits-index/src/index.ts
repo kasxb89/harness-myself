@@ -61,7 +61,8 @@ import type { CreationTaskObserver } from './creation-activity.ts'
 import { readAnnouncements } from './announcements.ts'
 import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
-import { createDemandProxy } from './demand-proxy.ts'
+import { createDemandProxy, type DemandProxyOptions } from './demand-proxy.ts'
+import { createCommunityProxy } from './community-proxy.ts'
 import { ONBOARDING_SURVEY_RESPONSE_LIMIT, parseSurveyRequest, readOnboardingSurvey } from './onboarding-survey.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
@@ -151,6 +152,10 @@ export interface Config {
   demandDownloadTimeoutMs?: number
   /** Maximum JSON request size for the demand proxy. */
   demandMaxJsonRequestBytes?: number
+  /** Complete community JSON request ceiling, including Unicode text and the whole envelope. */
+  communityMaxJsonRequestBytes?: number
+  /** Complete community response ceiling for bounded Unicode message and order pages. */
+  communityMaxJsonResponseBytes?: number
   /** Maximum decoded demand metadata response size. */
   demandMaxJsonResponseBytes?: number
   /** Local safety ceiling; actual upload slices follow the backend's smaller chunk limit. */
@@ -275,6 +280,8 @@ export const Config: z<Config> = z.object({
   demandUploadTimeoutMs: z.natural().min(1).max(3_600_000).default(120_000),
   demandDownloadTimeoutMs: z.natural().min(1).max(3_600_000).default(300_000),
   demandMaxJsonRequestBytes: z.natural().min(1).max(1_048_576).default(65_536),
+  communityMaxJsonRequestBytes: z.natural().min(1).max(1_048_576).default(131_072),
+  communityMaxJsonResponseBytes: z.natural().min(1).max(16_777_216).default(8_388_608),
   demandMaxJsonResponseBytes: z.natural().min(1).max(16_777_216).default(2_097_152),
   demandMaxChunkBytes: z.natural().min(1).max(67_108_864).default(67_108_864),
   refreshRetryBaseDelayMs: z.number().step(1).min(1).max(2_147_483_647).default(1000),
@@ -2574,7 +2581,7 @@ export function apply(ctx: Context, config: Config): void {
     return await send(latest)
   }
 
-  const demandProxy = createDemandProxy({
+  const demandProxyOptions: DemandProxyOptions = {
     baseUrl: apiBaseUrl,
     requestRejection: (request) => {
       const connection = ctx.get('connection')
@@ -2587,7 +2594,7 @@ export function apply(ctx: Context, config: Config): void {
       return {
         id: session.account.id,
         owner: productOwner(session),
-        isCurrent: async () => !signal.aborted && await rechargeOwnerCurrent(session, version),
+        isCurrent: async () => await rechargeOwnerCurrent(session, version),
         fetch: async (route, init) => {
           signal.throwIfAborted()
           if (!await rechargeOwnerCurrent(session, version)) return new Response(null, { status: 401 })
@@ -2608,8 +2615,14 @@ export function apply(ctx: Context, config: Config): void {
     limits: () => ({ requestTimeoutMs: resolved.demandRequestTimeoutMs, uploadTimeoutMs: resolved.demandUploadTimeoutMs,
       downloadTimeoutMs: resolved.demandDownloadTimeoutMs, maxJsonRequestBytes: resolved.demandMaxJsonRequestBytes,
       maxJsonResponseBytes: resolved.demandMaxJsonResponseBytes, maxChunkBytes: resolved.demandMaxChunkBytes }),
+  }
+  const demandProxy = createDemandProxy(demandProxyOptions)
+  const communityProxy = createCommunityProxy({ ...demandProxyOptions,
+    limits: () => ({ ...demandProxyOptions.limits(), maxJsonRequestBytes: resolved.communityMaxJsonRequestBytes,
+      maxJsonResponseBytes: resolved.communityMaxJsonResponseBytes }),
   })
   ctx.effect(() => async () => { await demandProxy.close() }, 'credits-index: private human-engineer demand requests')
+  ctx.effect(() => async () => { await communityProxy.close() }, 'credits-index: ordinary-user community demand requests')
 
   /** All account data reads share one login-owned admission and the existing unique renewal owner. */
   const accountRequest = (session: StoredSession | null): AccountGetRequest => async (path, authenticated, signal, body) => {
@@ -3309,6 +3322,7 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (await communityProxy.handle(request, response, route, method)) return
         if (await demandProxy.handle(request, response, route, method)) return
         if (route === '/api/onboarding-survey' || route === '/api/onboarding-survey/defer') {
           const connection = ctx.get('connection')

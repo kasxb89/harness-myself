@@ -4244,6 +4244,9 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: link:../../../vendor/schemastery
         version: link:../../../vendor/schemastery
+      '@noble/hashes':
+        specifier: 2.4.0
+        version: 2.4.0
       '@types/react':
         specifier: ~18.3.1
         version: 18.3.31

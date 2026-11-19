@@ -8,6 +8,8 @@ import type {} from '../src/client/index.ts'
 import { DemandPage } from '../src/client/DemandPage.tsx'
 import { zh } from '../src/client/locales.ts'
 import type { DemandPageProps, DemandPageState } from '../src/client/types.ts'
+import { communityConfig, communityListing, communityOrder, communityState } from './community-fixtures.client.ts'
+import type { CommunityState } from '../src/client/community-types.ts'
 import { attachment, conversation, demandState, draft, draftSummary, exampleEngineers, message, request, serviceProfile } from './fixtures.client.ts'
 
 beforeEach(() => {
@@ -22,8 +24,16 @@ const translations: ReadonlyMap<string, string> = new Map(Object.entries(zh))
 
 function unusedHook(): never { throw new Error('The demand page reads only its injected service snapshot') }
 
-function page(partial: Partial<DemandPageState> = {}) {
+function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityState> = {}) {
   const store = createSnapshotStore(demandState(partial))
+  const communityStore = createSnapshotStore(communityState(shared))
+  const community: DemandPageProps['community'] = {
+    refresh: vi.fn(), setListingFilter: vi.fn(), loadMoreListings: vi.fn(), loadOrders: vi.fn(),
+    openListing: vi.fn(), acceptListing: vi.fn(), openOrder: vi.fn(), startPublication: vi.fn(), openPublication: vi.fn(),
+    updatePublication: vi.fn(), publish: vi.fn(), updateMessageDraft: vi.fn(), sendMessage: vi.fn(),
+    loadMoreMessages: vi.fn(), markRead: vi.fn(), performAction: vi.fn(), retryOperation: vi.fn(),
+    addAttachments: vi.fn(), retryUpload: vi.fn(), removeUpload: vi.fn(), contentUrl: vi.fn(() => null), downloadAttachment: vi.fn(),
+  }
   const actions = {
     refresh: vi.fn<() => void>(), openLogin: vi.fn<() => void>(), startRequest: vi.fn<(id: string) => void>(),
     startServiceRequest: vi.fn<DemandPageProps['startServiceRequest']>(),
@@ -35,18 +45,21 @@ function page(partial: Partial<DemandPageState> = {}) {
     retryMessage: vi.fn<(id: string) => void>(), loadEarlierMessages: vi.fn<() => void>(),
     loadMoreRequests: vi.fn<() => void>(),
     downloadAttachment: vi.fn<(id: string) => void>(), acceptDelivery: vi.fn<(id: string) => void>(),
+    setWorkspaceView: vi.fn<DemandPageProps['setWorkspaceView']>(),
   }
   const props: DemandPageProps = {
     ...actions,
     usePanelInfo: unusedHook, useSessions: unusedHook, useSessionStatus: unusedHook, useSessionRetainInfo: unusedHook,
     useWorkspaces: unusedHook, useResource: unusedHook, useDemands: bindSnapshotSelector(store),
+    useCommunity: bindSnapshotSelector(communityStore), community,
     t: (key, params) => (translations.get(key) ?? key).replace(/\{(\w+)\}/gu, (placeholder: string, name: string) =>
       params !== undefined && name in params ? String(params[name]) : placeholder),
   }
   render(<DemandPage {...props} />)
   return {
-    ...actions, store,
+    ...actions, store, community, communityStore,
     set: (next: Partial<DemandPageState>) => { act(() => { store.set({ ...store.getSnapshot(), ...next }) }) },
+    setCommunity: (next: Partial<CommunityState>) => { act(() => { communityStore.set({ ...communityStore.getSnapshot(), ...next }) }) },
   }
 }
 
@@ -60,6 +73,141 @@ function openOfficial() {
 }
 
 describe('human-engineer demand page', () => {
+  it('joins only authorized personal cards while public discovery never receives legacy private text', () => {
+    const publicRow = communityListing()
+    const owned = communityOrder({ id: 'own-community', title: '我的公开单', my_role: 'publisher',
+      publisher: { id: 1, display_name: '我' }, acceptor: null })
+    const shared = communityState({ availability: 'ready', config: communityConfig() })
+    const actions = page({ requests: [request({ title: '旧私密需求', preview: '旧私密聊天不应公开' })] }, {
+      ...shared, listings: { ...shared.listings, items: [publicRow] },
+      orders: { ...shared.orders, published: { ...shared.orders.published, items: [owned] } },
+    })
+    expect(screen.getByRole('heading', { name: '旧私密需求' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: owned.title })).toBeTruthy()
+    expect(screen.queryByText('旧私密聊天不应公开')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardPublic }))
+    expect(actions.community.setListingFilter).toHaveBeenCalledExactlyOnceWith('')
+    expect(screen.queryByRole('heading', { name: '旧私密需求' })).toBeNull()
+    expect(screen.getByRole('heading', { name: publicRow.title })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: `${zh.communityViewDemand}：${publicRow.title}` }))
+    expect(actions.community.openListing).toHaveBeenCalledExactlyOnceWith(publicRow.id)
+    actions.setCommunity({ selectedListing: publicRow })
+    const dialog = screen.getByRole('dialog', { name: zh.communityPublicDetails })
+    expect(within(dialog).getByText(publicRow.public_summary)).toBeTruthy()
+    expect(within(dialog).queryByText(owned.private_text)).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: zh.communityClaim }))
+    expect(actions.community.acceptListing).toHaveBeenCalledExactlyOnceWith(publicRow.id)
+    actions.setCommunity({ claimingListingIds: [publicRow.id] })
+    expect(within(dialog).getByRole('button', { name: zh.communityClaiming })).toHaveProperty('disabled', true)
+    actions.setCommunity({ claimingListingIds: [] })
+    expect(actions.community.sendMessage).not.toHaveBeenCalled()
+    expect(actions.send).not.toHaveBeenCalled()
+  })
+
+  it('keeps an uncertain acceptance on its original operation and opens ordinary-user chat only after a receipt', () => {
+    const listing = communityListing(), order = communityOrder()
+    const shared = communityState({ availability: 'ready', config: communityConfig() })
+    const actions = page({}, { ...shared, listings: { ...shared.listings, items: [listing] } })
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardPublic }))
+    fireEvent.click(screen.getByRole('button', { name: `${zh.communityViewDemand}：${listing.title}` }))
+    actions.setCommunity({ selectedListing: listing, pending: [{ operationId: 'original-acceptance', scopeKey: `accept:${listing.id}`,
+      orderId: listing.id, kind: 'accept', inflight: false,
+      error: { code: 'COMMUNITY_NETWORK', unknown: true, operationId: 'original-acceptance' } }] })
+    fireEvent.click(screen.getByRole('button', { name: zh.communityCheckClaim }))
+    expect(actions.community.retryOperation).toHaveBeenCalledExactlyOnceWith('original-acceptance')
+    expect(actions.community.acceptListing).not.toHaveBeenCalled()
+    actions.setCommunity({ selectedOrderId: order.id, pending: [], conversation: {
+      order, messages: [{ id: 'message-1', order_id: order.id, seq: 1, sender_id: 2, author_kind: 'publisher',
+        author_name: '发布人原名', kind: 'message', text: '已接单后可见的消息', attachments: [], created_at: 1795000001,
+        client_message_id: 'sender-original-key', read: false, isSelf: false }], pendingMessages: [], status: 'ready',
+      hasMore: false, loadingMore: false, draftText: '收到，我来完成', error: null,
+    } })
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(screen.getByText('已接单后可见的消息')).toBeTruthy()
+    expect(screen.getByText('发布人原名 · 发布人')).toBeTruthy()
+    expect(screen.queryByText(/工程师在线/u)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.send }))
+    expect(actions.community.sendMessage).toHaveBeenCalledExactlyOnceWith(order.id)
+    expect(actions.community.markRead).toHaveBeenCalledWith(order.id, 1)
+    expect(actions.send).not.toHaveBeenCalled()
+  })
+
+  it('requires an explicit public selection and never substitutes the official create endpoint', () => {
+    const actions = page({ directoryMode: 'services', serviceProfiles: [] }, {
+      availability: 'ready', config: communityConfig(),
+    })
+    fireEvent.click(screen.getByRole('button', { name: zh.newRequest }))
+    expect(actions.community.startPublication).toHaveBeenCalledOnce()
+    const publication = { scopeKey: 'publication:test', title: '活动页面', publicSummary: '按照品牌色排版',
+      publicBudget: '', serviceProfileId: '', privateText: '', publishToCommunity: false,
+      createdAt: 1795000000000, orderId: null, sending: false, locked: false, error: null }
+    actions.setCommunity({ activePublicationScope: publication.scopeKey, publications: [publication] })
+    expect(screen.getByRole('button', { name: zh.communityPublish })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('checkbox', { name: zh.communityPublicConsent }))
+    expect(actions.community.updatePublication).toHaveBeenCalledWith(publication.scopeKey, { publishToCommunity: true })
+    expect(actions.community.publish).not.toHaveBeenCalled()
+    actions.setCommunity({ publications: [{ ...publication, publishToCommunity: true }] })
+    fireEvent.click(screen.getByRole('button', { name: zh.communityPublish }))
+    expect(actions.community.publish).toHaveBeenCalledExactlyOnceWith(publication.scopeKey)
+    expect(actions.startServiceRequest).not.toHaveBeenCalled()
+    expect(actions.startRequest).not.toHaveBeenCalled()
+    expect(actions.send).not.toHaveBeenCalled()
+  })
+
+  it('keeps existing participant conversations available when new community publication is disabled', () => {
+    const order = communityOrder()
+    const shared = communityState({ availability: 'disabled', config: { ...communityConfig(), enabled: false } })
+    const actions = page({}, { ...shared, selectedOrderId: order.id,
+      orders: { ...shared.orders, accepted: { ...shared.orders.accepted, items: [order] } },
+      conversation: { order, messages: [], pendingMessages: [], draftText: '原订单继续沟通', status: 'ready',
+        error: null, hasMore: false, loadingMore: false } })
+    expect(screen.getByRole('button', { name: zh.newRequest })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardAccepted }))
+    fireEvent.click(screen.getByRole('button', { name: `${zh.communicate}：${order.title}` }))
+    expect(actions.community.openOrder).toHaveBeenCalledExactlyOnceWith(order.id)
+    expect(screen.getByRole('button', { name: zh.send })).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByRole('button', { name: zh.send }))
+    expect(actions.community.sendMessage).toHaveBeenCalledExactlyOnceWith(order.id)
+  })
+
+  it('checks a pending message with its original identifier and stops read acknowledgements on the board', () => {
+    const order = communityOrder(), shared = communityState({ availability: 'ready', config: communityConfig() })
+    const actions = page({}, { ...shared, selectedOrderId: order.id,
+      orders: { ...shared.orders, accepted: { ...shared.orders.accepted, items: [order] } },
+      conversation: { order, messages: [], pendingMessages: [{ operationId: 'original-send', orderId: order.id,
+        text: '结果未知的原消息', attachments: [], createdAt: 1795000001000, state: 'unknown',
+        error: { code: 'COMMUNITY_NETWORK', unknown: true, operationId: 'original-send' } }],
+      draftText: '', status: 'ready', error: null, hasMore: false, loadingMore: false },
+      pending: [{ operationId: 'original-send', scopeKey: `order:${order.id}`, orderId: order.id,
+        kind: 'message', inflight: false, error: { code: 'COMMUNITY_NETWORK', unknown: true, operationId: 'original-send' } }],
+    })
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardAccepted }))
+    fireEvent.click(screen.getByRole('button', { name: `${zh.communicate}：${order.title}` }))
+    fireEvent.click(screen.getByRole('button', { name: zh.communityCheckMessage }))
+    expect(actions.community.retryOperation).toHaveBeenCalledExactlyOnceWith('original-send')
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBackToBoard }))
+    const current = actions.communityStore.getSnapshot().conversation
+    if (current === null) throw new Error('The synthetic participant conversation is retained')
+    actions.setCommunity({ conversation: { ...current, messages: [{ id: 'later-message', order_id: order.id,
+      seq: 2, sender_id: 2, author_kind: 'publisher', author_name: '发布人', kind: 'message', text: '后台新消息',
+      attachments: [], created_at: 1795000002, client_message_id: 'later-key', read: false, isSelf: false }] } })
+    expect(actions.community.markRead).not.toHaveBeenCalled()
+    expect(screen.queryByText('后台新消息')).toBeNull()
+  })
+
+  it('shows an actual failed order read with retry rather than leaving an endless loading view', () => {
+    const order = communityOrder(), shared = communityState({ availability: 'ready', config: communityConfig() })
+    const actions = page({}, { ...shared, orders: { ...shared.orders, accepted: { ...shared.orders.accepted, items: [order] } } })
+    fireEvent.click(screen.getByRole('button', { name: zh.communityBoardAccepted }))
+    fireEvent.click(screen.getByRole('button', { name: `${zh.communicate}：${order.title}` }))
+    actions.setCommunity({ selectedOrderId: order.id, selectedOrderStatus: 'error',
+      selectedOrderError: { code: 'COMMUNITY_FORBIDDEN', unknown: false, operationId: null } })
+    expect(screen.getByRole('heading', { name: zh.errorTitle })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.retry }))
+    expect(actions.community.openOrder).toHaveBeenLastCalledWith(order.id)
+    expect(actions.community.sendMessage).not.toHaveBeenCalled()
+  })
+
   it('keeps personal cards minimal while retaining searchable request data and independent identities', () => {
     const profile = serviceProfile()
     const first = request({ id: 'private-a', number: 'PRIVATE-101', title: '六月订单对账', preview: '核对退款明细',

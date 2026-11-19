@@ -1,6 +1,7 @@
 /** JSON presentation data and event callbacks for the human-engineer demand page. */
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { CommunityFace } from './community-types.ts'
 
 /** Service state without discarding already loaded history. */
 export type DemandAvailability = 'loading' | 'ready' | 'login-required' | 'unconfigured' | 'disabled' | 'error'
@@ -189,4 +190,10 @@ export interface DemandPageFace {
   readonly acceptDelivery: (deliveryId: string) => void
 }
 /** Framework-bound main panel props and localized copy. */
-export type DemandPageProps = PropsRuntime<'main'> & PropsLocale<'demands'> & InjectFace<DemandPageFace>
+export interface DemandWorkspaceFace extends Omit<DemandPageFace, 'hooks'> {
+  readonly hooks: DemandPageFace['hooks'] & CommunityFace['hooks']
+  readonly community: Omit<CommunityFace, 'hooks'>
+  readonly setWorkspaceView: (view: 'legacy' | 'community' | 'other') => void
+}
+/** Framework-bound main panel with independent official and community models. */
+export type DemandPageProps = PropsRuntime<'main'> & PropsLocale<'demands'> & InjectFace<DemandWorkspaceFace>
