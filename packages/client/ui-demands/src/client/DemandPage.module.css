@@ -15,19 +15,48 @@
 .page[data-view='requests'] { padding: 0; }
 :global([data-platform='darwin']) .page[data-view='requests'] { padding-top: calc(var(--dsh-frame-top-clearance) + 8px); }
 .page[data-view='requests'] .pageContent { max-width: none; }
+.workspaceNavigation { display: flex; flex: none; padding: 8px 16px 0; }
 .conversationNavigation { flex: none; width: min(calc(100% - 32px), 260px); margin: 8px 16px; }
 .pageContent { display: flex; flex-direction: column; height: 100%; max-width: 1120px; min-width: 0; margin-inline: auto; }
-.pageHeader { display: flex; flex: none; align-items: center; gap: 14px; }
-.pageHeader > div { min-width: 0; }
-.pageHeader h1 { margin: 0; font-size: 24px; line-height: 32px; font-weight: 500; }
-.pageHeader p { margin: 4px 0 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
-.pageIcon { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: var(--dsw-radius-xl); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 9%, transparent); color: var(--dsw-alias-state-business-primary); }
-.navigation { flex: none; width: min(100%, 320px); margin: 22px 0 20px; }
+.pageHeader { flex: none; padding: 16px 0 0; text-align: center; }
+.pageHeader h1 { margin: 0; font: var(--dsw-font-xl-24); font-size: 40px; line-height: 48px; font-weight: 500; text-wrap: balance; }
+.pageHeader p { margin: 10px auto 0; max-width: 64ch; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xs-13); text-wrap: balance; }
+.navigation { flex: none; width: min(100%, 280px); margin: 24px auto 28px; }
 .panel { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .pageNotice, .inlineNotice { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-state-error-primary); }
 .pageNotice { margin: 0 0 12px; }
 .inlineNotice { margin: 8px 0; }
-.directory { min-width: 0; min-height: 0; overflow: auto; padding: 0 2px 24px; overscroll-behavior: contain; }
+.directory { min-width: 0; min-height: 0; overflow: auto; padding: 0 2px 24px; overscroll-behavior: contain; container: demand-cards / inline-size; }
+.cardsToolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.cardsToolbarActions { display: flex; flex: none; align-items: center; gap: 8px; margin-left: auto; }
+.cardsContext { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: 14px 0; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxs-12); }
+.cardsContext p { margin: 0; }
+.demandCardGrid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; list-style: none; margin: 18px 0 0; padding: 0; }
+.demandCard { display: flex; box-sizing: border-box; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; min-height: 176px; padding: 16px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-xl); background: var(--dsw-alias-bg-layer-1); }
+.demandCard h2 { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--dsw-alias-label-primary); font: var(--dsw-font-xs-strong-13); }
+.cardMeta { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxs-12); }
+.cardMeta > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cardMeta > span:last-child { flex: none; }
+.cardMeta .status { border: 0; padding: 0; background: transparent; font: var(--dsw-font-xxs-12); }
+.cardExcerpt { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; margin: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xs-13); }
+.cardExpectedDate { margin: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxs-12); }
+.cardFooter { display: flex; align-items: flex-end; justify-content: space-between; gap: 10px; min-width: 0; margin-top: auto; padding-top: 6px; }
+.cardFooter > button { flex: none; margin-left: auto; }
+.cardBudget { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.cardBudget > span { color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxxs-11); }
+.cardBudget strong { overflow-wrap: anywhere; color: var(--dsw-alias-state-business-primary); font: var(--dsw-font-s-strong-14); }
+.cardTime, .cardDetails { color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxxs-11); font-variant-numeric: tabular-nums; }
+.cardDetails { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px; }
+.serviceCardIdentity { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.serviceCardIdentity > div { flex: 1; min-width: 0; }
+.serviceCardIdentity h2 { margin-bottom: 0; }
+.serviceCard .cardExcerpt { font: var(--dsw-font-xxs-12); }
+.serviceCard .skills { gap: 4px; }
+.serviceCard .skills > span { padding-block: 0; }
+.serviceCard .cardFooter { padding-top: 0; }
+@container demand-cards (width <= 900px) { .demandCardGrid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@container demand-cards (width <= 680px) { .demandCardGrid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container demand-cards (width <= 440px) { .demandCardGrid { grid-template-columns: minmax(0, 1fr); } }
 .routingNote { display: flex; align-items: flex-start; gap: 8px; margin: 0 0 16px; max-width: 70ch; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 .routingNote > svg { flex: none; margin-top: 2px; }
 .serviceDirection { margin: 0; overflow-wrap: anywhere; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; }
@@ -185,10 +214,13 @@
   .optionalFields label:first-child { grid-column: 1 / -1; }
 }
 
+@media (width <= 760px) {
+  .pageHeader h1 { font-size: 32px; line-height: 40px; }
+}
+
 @media (width <= 560px) {
+  .pageHeader h1 { font-size: var(--dsw-font-xl-24-font-size); line-height: var(--dsw-font-xl-24-line-height); }
   .page { padding-inline: 18px; padding-bottom: 18px; }
-  .pageHeader { gap: 12px; }
-  .pageIcon { width: 48px; height: 48px; }
   .navigation { margin-top: 18px; }
   .searchField { max-width: none; }
   .engineerCard { padding: 16px; }

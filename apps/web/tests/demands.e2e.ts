@@ -51,13 +51,18 @@ async function navigateService(page: Page, url: string, directory: 'engineers' |
   await page.bringToFront()
   await page.getByRole('button', { name: '需求发布', exact: true }).click({ timeout: 30_000 })
   const service = page.getByRole('region', { name: '工程师服务', exact: true })
+  const personal = service.getByRole('tab', { name: '个人需求', exact: true })
+  await personal.waitFor()
+  expect(await personal.getAttribute('aria-selected')).toBe('true')
+  expect(await service.getByRole('searchbox', { name: directory === 'services' ? '搜索服务或能力' : '搜索工程师或技能', exact: true }).count()).toBe(0)
+  await service.getByRole('tab', { name: '官方定制', exact: true }).click()
   await service.getByRole('searchbox', { name: directory === 'services' ? '搜索服务或能力' : '搜索工程师或技能', exact: true }).waitFor()
   return service
 }
 async function layouts(page: Page, service: Locator, evidence: string, prefix: string): Promise<void> {
   for (const layout of [
-    { width: 1440, dark: false, name: 'wide-light' }, { width: 1440, dark: true, name: 'wide-dark' },
-    { width: 620, dark: false, name: 'compact-light' }, { width: 620, dark: true, name: 'compact-dark' },
+    { width: 1320, dark: false, name: 'wide-light' }, { width: 1320, dark: true, name: 'wide-dark' },
+    { width: 760, dark: false, name: 'compact-light' }, { width: 760, dark: true, name: 'compact-dark' },
   ]) {
     await page.setViewportSize({ width: layout.width, height: 1000 })
     await page.evaluate((dark) => { document.body.toggleAttribute('data-ds-dark-theme', dark) }, layout.dark)
@@ -74,6 +79,17 @@ async function layouts(page: Page, service: Locator, evidence: string, prefix: s
     expect(await service.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
     const input = service.locator('input:not([type="file"]):visible, textarea:visible').first()
     await assertReadableText(input, '::placeholder')
+    if (prefix === 'directory') {
+      const cards = service.getByRole('list', { name: '官方定制', exact: true }).getByRole('listitem')
+      if (layout.width === 1320 && await cards.count() >= 4) {
+        const boxes = await cards.evaluateAll(nodes => nodes.slice(0, 5).map((node) => {
+          const box = node.getBoundingClientRect(); return { x: box.x, y: box.y, width: box.width }
+        }))
+        expect(new Set(boxes.slice(0, 4).map(box => Math.round(box.y))).size).toBe(1)
+        expect(new Set(boxes.slice(0, 4).map(box => Math.round(box.x))).size).toBe(4)
+        if (boxes[4] !== undefined) expect(boxes[4].y).toBeGreaterThan(boxes[0]?.y ?? 0)
+      }
+    }
     await page.screenshot({ path: join(evidence, `${prefix}-${layout.name}.png`), animations: 'disabled' })
   }
 }
@@ -116,18 +132,47 @@ async function composeWithKeyboard(input: Locator, content: string): Promise<str
   await input.press('Enter')
   return result
 }
+async function assertPersonalCardLayouts(page: Page, service: Locator, evidence: string): Promise<void> {
+  const list = service.getByRole('list', { name: '个人需求', exact: true })
+  const cards = list.getByRole('listitem'), geometry: Json[] = []
+  for (const layout of [
+    { width: 1320, dark: false, name: 'wide-light' }, { width: 1320, dark: true, name: 'wide-dark' },
+    { width: 760, dark: false, name: 'compact-light' }, { width: 760, dark: true, name: 'compact-dark' },
+  ]) {
+    await page.setViewportSize({ width: layout.width, height: 1000 })
+    await page.evaluate(dark => document.body.toggleAttribute('data-ds-dark-theme', dark), layout.dark)
+    await list.waitFor({ state: 'visible' })
+    expect(await service.getByRole('tab', { name: '个人需求', exact: true }).getAttribute('aria-selected')).toBe('true')
+    expect(await cards.count()).toBe(5)
+    expect(await list.getByRole('button').filter({ hasText: '继续编辑' }).count()).toBe(3)
+    expect(await list.getByRole('button').filter({ hasText: '沟通' }).count()).toBe(2)
+    expect(await service.getByRole('searchbox', { name: '搜索服务或能力', exact: true }).count()).toBe(0)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+    const boxes = []
+    for (const card of await cards.all()) {
+      expect(await card.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
+      await assertReadableText(card.getByRole('heading', { level: 2 }))
+      await assertReadableText(card.getByRole('button'))
+      boxes.push(await card.boundingBox())
+    }
+    geometry.push({ layout: layout.name, viewport: page.viewportSize(),
+      devicePixelRatio: await page.evaluate(() => window.devicePixelRatio), cards: boxes })
+    await page.screenshot({ path: join(evidence, `personal-five-${layout.name}.png`), animations: 'disabled' })
+  }
+  await writeFile(join(evidence, 'personal-card-layouts.json'), JSON.stringify(geometry))
+}
 async function assertInboxLayouts(page: Page, service: Locator, evidence: string, serviceName: string): Promise<void> {
   const inbox = service.getByRole('complementary', { name: '我的需求', exact: true })
   const rows = inbox.getByRole('button').filter({ has: page.locator('strong') })
   const coordinates: Json[] = []
   for (const layout of [
-    { width: 1440, dark: false, name: 'wide-light' }, { width: 1440, dark: true, name: 'wide-dark' },
-    { width: 620, dark: false, name: 'compact-light' }, { width: 620, dark: true, name: 'compact-dark' },
+    { width: 1320, dark: false, name: 'wide-light' }, { width: 1320, dark: true, name: 'wide-dark' },
+    { width: 760, dark: false, name: 'compact-light' }, { width: 760, dark: true, name: 'compact-dark' },
   ]) {
     await page.setViewportSize({ width: layout.width, height: 1000 })
     await page.evaluate(dark => document.body.toggleAttribute('data-ds-dark-theme', dark), layout.dark)
     const back = service.getByRole('button', { name: '返回需求列表', exact: true })
-    if (layout.width === 620 && await back.isVisible()) await back.click()
+    if (layout.width === 760 && await back.isVisible()) await back.click()
     await inbox.waitFor({ state: 'visible' })
     expect(await rows.count()).toBe(5)
     expect(await inbox.locator('button[aria-current="true"]').count()).toBe(1)
@@ -152,7 +197,7 @@ async function assertInboxLayouts(page: Page, service: Locator, evidence: string
 async function exerciseIndependentServiceInbox(
   page: Page, service: Locator, fixture: DemandFixture, evidence: string, serviceName: string,
 ): Promise<void> {
-  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.setViewportSize({ width: 1320, height: 1000 })
   let chat = service.getByRole('region', { name: '与测试工程师林沟通', exact: true })
   const start = async (): Promise<Locator> => {
     await chat.getByRole('button', { name: '新需求', exact: true }).click()
@@ -182,6 +227,26 @@ async function exerciseIndependentServiceInbox(
     await titleDraft(chat, item.title)
     await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).fill(item.body)
   }
+  await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
+  const personal = service.getByRole('list', { name: '个人需求', exact: true })
+  await expect.poll(() => personal.getByRole('listitem').count()).toBe(5)
+  const submittedCards = fixture.createBodies.length
+  for (const item of drafts) {
+    const card = personal.getByRole('listitem').filter({ has: page.getByRole('heading', { name: item.title, exact: true }) })
+    expect(await card.getByRole('button').textContent()).toBe('继续编辑')
+    await card.getByRole('button').click()
+    expect(await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).inputValue()).toBe(item.body)
+    await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
+  }
+  const published = personal.getByRole('listitem').filter({ has: page.getByRole('heading', { name: '第二笔独立交付乙', exact: true }) })
+  expect(await published.getByRole('button').textContent()).toBe('沟通')
+  await published.getByRole('button').click()
+  await chat.getByRole('log').getByText('同一服务的第二个独立请求', { exact: true }).waitFor()
+  expect(fixture.createBodies).toHaveLength(submittedCards)
+  await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
+  await assertPersonalCardLayouts(page, service, evidence)
+  await page.setViewportSize({ width: 1320, height: 1000 })
+  await service.getByRole('button', { name: '会话列表', exact: true }).click()
   const inbox = service.getByRole('complementary', { name: '我的需求', exact: true })
   const rows = inbox.getByRole('button').filter({ has: page.locator('strong') })
   const search = inbox.getByRole('searchbox', { name: '搜索需求', exact: true })
@@ -280,7 +345,7 @@ it('keeps independent drafts, original unknown-submit keys, uploads and responsi
   const evidence = await artifactDirectory('keyless'), overlay = await overlayDirectory()
   const scaffold = await launchWebScaffold({ extraOverlayPath: overlay }); onTestFinished(() => scaffold.close())
   const browser = await chromium.launch(); onTestFinished(() => browser.close())
-  const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1440, height: 1000 } })
+  const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1320, height: 1000 } })
   const diagnostics = watchConsole(page), fixture = await installDemandFixture(page)
   const removeMedia = scaffold.ctx.webServer.register({ kind: 'prefix', path: '/credits/api/demands/attachments', handler: (request, response) => { fixture.serveMedia(request, response) } })
   onTestFinished(removeMedia)
@@ -291,7 +356,7 @@ it('keeps independent drafts, original unknown-submit keys, uploads and responsi
     expect(await service.getByRole('button', { name: '向测试工程师陈发起需求', exact: true }).isDisabled()).toBe(true)
     expect(await service.getByRole('button', { name: '向测试工程师周发起需求', exact: true }).isDisabled()).toBe(true)
     await layouts(page, service, evidence, 'directory')
-    await page.setViewportSize({ width: 1440, height: 1000 })
+    await page.setViewportSize({ width: 1320, height: 1000 })
     await service.getByRole('button', { name: '向测试工程师林发起需求', exact: true }).click()
     let chat = service.getByRole('region', { name: '与测试工程师林沟通', exact: true })
     await assertCompactComposer(chat)
@@ -314,7 +379,12 @@ it('keeps independent drafts, original unknown-submit keys, uploads and responsi
     expect(fixture.records.size).toBe(2)
     const retainedText = '独立第二个需求的暂存后续消息'
     await chat.getByRole('textbox', { name: '输入消息', exact: true }).fill(retainedText)
-    await service.getByRole('group', { name: '草稿', exact: true }).getByRole('button').filter({ hasText: '首个待确认需求' }).click()
+    await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
+    const personal = service.getByRole('list', { name: '个人需求', exact: true })
+    const pending = personal.getByRole('listitem').filter({ has: page.getByRole('heading', { name: '首个待确认需求', exact: true }) })
+    expect(await pending.getByRole('button').textContent()).toBe('核对发布结果')
+    await pending.getByRole('button').click()
+    expect(fixture.createBodies).toHaveLength(2)
     const originalDraft = chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true })
     expect(await originalDraft.inputValue()).toBe(firstText)
     expect(await originalDraft.isDisabled()).toBe(true)
@@ -325,8 +395,9 @@ it('keeps independent drafts, original unknown-submit keys, uploads and responsi
     expect(object(JSON.parse(fixture.createBodies[2] ?? '{}') as unknown).client_request_id).toBe(original.client_request_id)
     expect(fixture.createBodies[1]).not.toBe(fixture.createBodies[0])
     expect(fixture.records.size).toBe(2)
-    const inbox = service.getByRole('complementary', { name: '我的需求', exact: true })
-    await inbox.getByRole('button').filter({ hasText: '独立第二个需求' }).click()
+    await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
+    await personal.getByRole('listitem').filter({ has: page.getByRole('heading', { name: '独立第二个需求', exact: true }) })
+      .getByRole('button').click()
     expect(await chat.getByRole('textbox', { name: '输入消息', exact: true }).inputValue()).toBe(retainedText)
     await chat.getByRole('textbox', { name: '输入消息', exact: true }).fill('')
 
@@ -351,10 +422,10 @@ it('keeps independent drafts, original unknown-submit keys, uploads and responsi
     await assertMessageAuthor(chat, '测试交付：已完成，请验收。', '测试工程师林')
     await assertSingleMessageScroll(page, chat.getByRole('log'))
     await layouts(page, service, evidence, 'chat')
-    await chat.getByRole('button', { name: '返回需求列表', exact: true }).click()
-    await inbox.waitFor({ state: 'visible' })
+    await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
+    await personal.waitFor({ state: 'visible' })
     expect(await chat.isVisible()).toBe(false)
-    await inbox.getByRole('button').filter({ hasText: '测试交付：已完成，请验收。' }).click()
+    await personal.getByRole('listitem').filter({ hasText: '测试交付：已完成，请验收。' }).getByRole('button').click()
     await chat.waitFor({ state: 'visible' })
     await assertMedia(page, chat, '需求截图.png', '需求演示.mp4')
     const downloadReady = page.waitForEvent('download')
@@ -378,7 +449,7 @@ it('pages 100 platform services, filters on the server and keeps the original in
   const evidence = await artifactDirectory('service-directory'), overlay = await overlayDirectory()
   const scaffold = await launchWebScaffold({ extraOverlayPath: overlay }); onTestFinished(() => scaffold.close())
   const browser = await chromium.launch(); onTestFinished(() => browser.close())
-  const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1440, height: 1000 } })
+  const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1320, height: 1000 } })
   const diagnostics = watchConsole(page), fixture = await installDemandFixture(page, { serviceProfiles: true })
   try {
     const service = await navigateService(page, scaffold.authenticatedUrl, 'services')
@@ -394,7 +465,7 @@ it('pages 100 platform services, filters on the server and keeps the original in
     for (const label of ['在线', '忙碌中', '离线']) expect(await service.getByText(label, { exact: true }).count()).toBe(0)
     await search.scrollIntoViewIfNeeded()
     await layouts(page, service, evidence, 'directory')
-    await page.setViewportSize({ width: 1440, height: 1000 })
+    await page.setViewportSize({ width: 1320, height: 1000 })
     await search.fill('057')
     await service.getByText('1 项服务', { exact: true }).waitFor()
     await expect.poll(() => cards.count()).toBe(1)
@@ -565,7 +636,7 @@ it.skipIf(process.env.DSH_DEMAND_FIXTURE === undefined)(
     await writeFile(join(evidence, 'session-preflight.json'), JSON.stringify(sessionDiagnostic))
     expect(sessionDiagnostic, 'Synthetic session must be verified before the private service can appear').toMatchObject({ ok: true, signedIn: true, liveness: 'verified' })
     const browser = await chromium.launch(); onTestFinished(() => browser.close())
-    const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1440, height: 1000 } })
+    const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1320, height: 1000 } })
     const diagnostics = watchConsole(page)
     try {
       const directory = await success('customerA', '/api/product/demands/engineers')
@@ -660,7 +731,7 @@ it.skipIf(process.env.DSH_DEMAND_DIRECTORY_FIXTURE === undefined)(
     const account = object(await (await scaffold.hostFetch('/credits/api/session')).json() as unknown)
     expect(account, 'The new directory fixture must pass the existing product login checks').toMatchObject({ ok: true, signedIn: true, liveness: 'verified' })
     const browser = await chromium.launch(); onTestFinished(() => browser.close())
-    const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1440, height: 1000 } })
+    const page = await browser.newPage({ locale: ZH_BROWSER_LOCALE, viewport: { width: 1320, height: 1000 } })
     const diagnostics = watchConsole(page), privateReads: string[] = []
     page.on('request', (request) => {
       const path = new URL(request.url()).pathname

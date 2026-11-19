@@ -51,14 +51,84 @@ function page(partial: Partial<DemandPageState> = {}) {
 }
 
 function openRequests() {
-  fireEvent.click(screen.getByRole('tab', { name: zh.myRequests }))
+  if (screen.queryByRole('complementary', { name: zh.myRequests }) !== null) return
+  fireEvent.click(screen.getByRole('button', { name: zh.viewConversations }))
+}
+
+function openOfficial() {
+  fireEvent.click(screen.getByRole('tab', { name: zh.officialCustomization }))
 }
 
 describe('human-engineer demand page', () => {
+  it('defaults to private personal cards and keeps raw budgets and independent request identities', () => {
+    const profile = serviceProfile()
+    const first = request({ id: 'private-a', number: 'PRIVATE-101', title: '六月订单对账', preview: '核对退款明细',
+      serviceProfileId: profile.id, serviceProfileName: profile.displayName, budget: '按里程碑协商，不超过 2k',
+      expectedDate: '2026-12-01' })
+    const second = request({ id: 'private-b', number: 'PRIVATE-102', title: '七月订单对账', preview: '导出季度报表',
+      serviceProfileId: profile.id, serviceProfileName: profile.displayName, budget: '   ', unreadCount: 0 })
+    const actions = page({ directoryMode: 'services', serviceProfiles: [profile], servicesTotal: 1,
+      requests: [first, second], requestsHaveMore: true })
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
+    expect(screen.getByRole('tab', { name: zh.personalRequests }).getAttribute('aria-selected')).toBe('true')
+    const cards = screen.getByRole('list', { name: zh.personalRequests })
+    expect(within(cards).getAllByRole('listitem')).toHaveLength(2)
+    const firstCard = within(cards).getByRole('heading', { name: first.title }).closest('li')
+    const secondCard = within(cards).getByRole('heading', { name: second.title }).closest('li')
+    if (firstCard === null || secondCard === null) throw new Error('Each private request has its own card')
+    expect(firstCard.querySelector('strong')?.textContent).toBe(first.budget)
+    expect(within(firstCard).getByText('期望交付：2026-12-01')).toBeTruthy()
+    expect(within(secondCard).queryByText(zh.budgetLabel)).toBeNull()
+    expect(cards.textContent).not.toContain('¥')
+    expect(screen.queryByRole('list', { name: zh.officialCustomization })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.loadMoreRequests }))
+    expect(actions.loadMoreRequests).toHaveBeenCalledOnce()
+    actions.set({ loadingMoreRequests: true })
+    expect(screen.getByRole('button', { name: zh.loadingMoreRequests })).toHaveProperty('disabled', true)
+    const search = screen.getByRole('searchbox', { name: zh.searchRequests })
+    fireEvent.change(search, { target: { value: '里程碑' } })
+    expect(screen.getByRole('heading', { name: first.title })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: second.title })).toBeNull()
+    fireEvent.change(search, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: '沟通：六月订单对账，需求 PRIVATE-101' }))
+    expect(actions.openRequest).toHaveBeenCalledExactlyOnceWith(first.id)
+    expect(screen.getByRole('complementary', { name: zh.myRequests })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.backToPersonalRequests }))
+    fireEvent.click(screen.getByRole('button', { name: '沟通：七月订单对账，需求 PRIVATE-102' }))
+    expect(actions.openRequest).toHaveBeenNthCalledWith(2, second.id)
+    fireEvent.click(screen.getByRole('button', { name: zh.backToPersonalRequests }))
+    openOfficial()
+    expect(screen.getByRole('list', { name: zh.officialCustomization })).toBeTruthy()
+    expect(screen.queryByRole('list', { name: zh.personalRequests })).toBeNull()
+    expect(actions.startServiceRequest).not.toHaveBeenCalled()
+    expect(actions.send).not.toHaveBeenCalled()
+  })
+
+  it('reopens independent local draft cards without submitting or changing an unresolved operation', () => {
+    const first = draftSummary({ scopeKey: 'private-draft-a', title: '整理订单资料', serviceProfileName: '订单服务',
+      budget: '时间与范围确认后商议' })
+    const second = draftSummary({ scopeKey: 'private-draft-b', title: '核对原发布结果', serviceProfileName: '订单服务',
+      pending: true, error: zh.resultUnknown })
+    const actions = page({ drafts: [first, second] })
+    const cards = screen.getByRole('list', { name: zh.personalRequests })
+    expect(within(cards).getByText(first.budget ?? '')).toBeTruthy()
+    expect(within(cards).getByText(zh.pendingPublish)).toBeTruthy()
+    fireEvent.click(within(cards).getByRole('button', { name: '继续编辑：整理订单资料' }))
+    expect(actions.openDraft).toHaveBeenCalledExactlyOnceWith(first.scopeKey)
+    fireEvent.click(screen.getByRole('button', { name: zh.backToPersonalRequests }))
+    fireEvent.click(screen.getByRole('button', { name: '核对发布结果：核对原发布结果' }))
+    expect(actions.openDraft).toHaveBeenNthCalledWith(2, second.scopeKey)
+    expect(actions.send).not.toHaveBeenCalled()
+    expect(actions.startRequest).not.toHaveBeenCalled()
+    expect(actions.startServiceRequest).not.toHaveBeenCalled()
+    expect(actions.updateDraft).not.toHaveBeenCalled()
+  })
+
   it('shows actual service profiles and server totals without presenting them as live engineers', () => {
     const actions = page({ directoryMode: 'services', serviceProfiles: [serviceProfile({ avatarUrl: 'https://example.invalid/service.png' })],
       servicesTotal: 100 })
-    expect(screen.getByRole('tab', { name: zh.findServices })).toBeTruthy()
+    openOfficial()
+    expect(screen.getByRole('tab', { name: zh.officialCustomization })).toBeTruthy()
     expect(screen.getByText('100 项服务')).toBeTruthy()
     expect(screen.getByText(zh.platformRoutingHint)).toBeTruthy()
     expect(screen.getByRole('heading', { name: '示例订单管理服务' })).toBeTruthy()
@@ -74,6 +144,7 @@ describe('human-engineer demand page', () => {
 
   it('delegates service search and pagination to the server-owned commands', () => {
     const actions = page({ directoryMode: 'services', serviceProfiles: [serviceProfile()], servicesTotal: 47, servicesHaveMore: true })
+    openOfficial()
     const search = screen.getByRole('searchbox', { name: zh.searchServices })
     fireEvent.change(search, { target: { value: '排版' } })
     expect(actions.setServiceFilter).toHaveBeenCalledExactlyOnceWith('排版', '')
@@ -98,6 +169,7 @@ describe('human-engineer demand page', () => {
 
   it('keeps service read failures actionable and distinguishes an empty catalog from no search matches', () => {
     const actions = page({ directoryMode: 'services', serviceProfiles: [], servicesTotal: 0 })
+    openOfficial()
     expect(screen.getByRole('heading', { name: zh.noServices })).toBeTruthy()
     expect(screen.queryByRole('button', { name: /为.+发布需求/u })).toBeNull()
     actions.set({ serviceQuery: '未发布方向' })
@@ -177,6 +249,7 @@ describe('human-engineer demand page', () => {
 
   it('filters the supplied directory by category and skill and clears the search', () => {
     page()
+    openOfficial()
     expect(screen.getByText('3 位工程师')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '示例业务自动化' }))
     expect(screen.getByRole('button', { name: '向示例工程师陈发起需求' })).toBeTruthy()
@@ -195,6 +268,7 @@ describe('human-engineer demand page', () => {
 
   it('honors admission separately from presence and starts only the chosen engineer request', () => {
     const actions = page()
+    openOfficial()
     const unavailable = screen.getByRole('button', { name: '向示例工程师周发起需求' })
     expect(unavailable).toHaveProperty('disabled', true)
     fireEvent.click(unavailable)
@@ -202,7 +276,7 @@ describe('human-engineer demand page', () => {
     expect(screen.getByText(zh.presenceOffline)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '向示例工程师陈发起需求' }))
     expect(actions.startRequest).toHaveBeenCalledExactlyOnceWith('example-engineer-chen')
-    expect(screen.getByRole('tab', { name: zh.myRequests }).getAttribute('aria-selected')).toBe('true')
+    expect(screen.getByRole('tab', { name: zh.personalRequests }).getAttribute('aria-selected')).toBe('true')
   })
 
   it('opens the exact saved request and displays the server status and unread count', () => {

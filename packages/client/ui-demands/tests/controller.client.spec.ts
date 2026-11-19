@@ -75,6 +75,27 @@ function harness(options: {
 }
 
 describe('demand controller', () => {
+  it('projects each demand and draft budget verbatim without borrowing the selected scope values', async () => {
+    const h = harness({ rows: [rawDemand({ budget: 'USD 800–1,200, negotiable', expected_date: '2026-12-01' }),
+      rawDemand({ id: 'example-other', budget: '', expected_date: '' })] })
+    await h.ready()
+    expect(h.snapshot().requests.map(({ id, budget, expectedDate }) => ({ id, budget, expectedDate }))).toEqual([
+      { id: 'example-demand', budget: 'USD 800–1,200, negotiable', expectedDate: '2026-12-01' },
+      { id: 'example-other', budget: '', expectedDate: '' },
+    ])
+    h.control.startRequest(engineer.id)
+    const firstScope = h.snapshot().conversation?.scopeKey
+    h.control.updateDraft({ text: 'First private draft', budget: '面议，分期', expectedDate: '2026-12-02' })
+    h.control.startRequest(engineer.id)
+    const secondScope = h.snapshot().conversation?.scopeKey
+    h.control.updateDraft({ text: 'Second private draft', budget: 'RM 500', expectedDate: '' })
+    expect(h.snapshot().drafts.find(item => item.scopeKey === firstScope)).toMatchObject({ budget: '面议，分期', expectedDate: '2026-12-02' })
+    expect(h.snapshot().drafts.find(item => item.scopeKey === secondScope)).toMatchObject({ budget: 'RM 500', expectedDate: '' })
+    h.control.openDraft(firstScope ?? '')
+    expect(h.snapshot().draft?.budget).toBe('面议，分期')
+    expect(h.request.mock.calls.some(([, input]) => input.method === 'POST' && input.path === '')).toBe(false)
+  })
+
   it('reads the dynamic disabled config and history without inventing people or clearing saved requests', async () => {
     const h = harness({ intercept: (_owner, input) => input.path === '/config' ? ok({ ...configuration,
       config: { ...configuration.config, enabled: false } }) : undefined })

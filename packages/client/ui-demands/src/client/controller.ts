@@ -203,6 +203,7 @@ export function createDemandController(accountSource: Context['creditsSession'],
           part => part.segment).slice(0, 80).join('')
         return { ...routing(undefined, item), scopeKey: item.key, title: item.draft.title.trim() || preview || t('newRequest'),
           engineer: engineer === undefined ? null : profile(engineer),
+          budget: item.draft.budget, expectedDate: item.draft.expectedDate,
           updatedAt: new Date(updatedAt).toISOString(), pending: firstSend !== undefined,
           error: item.error ?? item.draft.error ?? (firstSend !== undefined && !inflight.has(firstSend.operationId) ? t('resultUnknown') : null) }
       }).sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
@@ -213,6 +214,7 @@ export function createDemandController(accountSource: Context['creditsSession'],
         const item = records.get(key)
         return item === undefined ? [] : [{ ...routing(item), id: item.id, number: item.number, title: item.title,
           engineer: item.assigned ? profile(item.engineer) : null, status: item.status,
+          budget: item.budget, expectedDate: item.expected_date,
           updatedAt: iso(item.updated_at), preview: item.preview, unreadCount: item.unread_count }]
       }), requestsStatus, requestsHaveMore: haveMore, loadingMoreRequests: loadingMore, conversation, draft,
       uploadRules: rules === undefined ? emptyState(availability).uploadRules : { maxFiles: rules.max_attachments,

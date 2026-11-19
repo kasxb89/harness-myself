@@ -9,7 +9,7 @@ English | [中文](README.zh.md)
 
 ## Summary
 
-The Requests sidebar opens the platform's service catalog and the signed-in customer's private demands. Customers describe work, attach images or videos, and submit it for assignment to a real engineer. They can continue previous requests and accept delivery. The backend owns the catalog, assignments, permissions and processing status.
+The Requests sidebar opens Personal requests and Official customization tabs. Personal requests contains only the signed-in customer's demands and local drafts; Official customization displays the platform's service catalog. Customers describe work, attach images or videos, and submit it for assignment to a real engineer. They can continue previous requests and accept delivery. The backend owns the catalog, assignments, permissions and processing status.
 
 ## Table of Contents
 
@@ -29,7 +29,7 @@ Compose this browser plugin with slots, locale, layout and the existing Credits 
 
 The account-owned controller publishes a stable JSON view to framework-bound injection hooks. Components own viewing controls and narrow-screen navigation. Changing the account or login epoch immediately clears the prior view and cancels its requests and uploads. Responses must match the captured account. Disposal cancels and joins all owned asynchronous operations.
 
-My requests uses a conversation list, message history and compact composer. Enter sends a ready message; Shift+Enter inserts a newline, and composition confirmation does not send. Optional request details and current upload rules remain expandable. Switching conversations preserves independent drafts for the controller's lifetime; only journaled pending operations and uploads survive an application restart.
+Personal requests opens as a responsive card grid. Cards show the original title, service, processing state and update time; optional budgets remain customer-entered text without inferred currency or numeric sorting. Each draft reads its own optional budget and expected date. Communicate opens the original private conversation, and returning to cards does not create or resubmit a demand. The conversation uses a compact inbox, message history and composer. Enter sends a ready message; Shift+Enter inserts a newline, and composition confirmation does not send. Optional request details and current upload rules remain expandable. Switching conversations preserves independent drafts for the controller's lifetime; only journaled pending operations and uploads survive an application restart.
 
 The compact inbox identifies service conversations by their service name and retains the original title in the preview. Search includes service names, original titles, request numbers and the latest server-confirmed message preview; a draft's body is searchable only while that draft is selected. Separate requests retain their own identifiers even when they use the same service. Draft and server-owned processing states remain explicit, and available service artwork does not imply that an engineer is online.
 

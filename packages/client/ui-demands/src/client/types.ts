@@ -53,6 +53,9 @@ export interface DemandSummary extends DemandRouting {
   readonly updatedAt: string
   readonly preview: string
   readonly unreadCount: number
+  /** Customer-entered text; no currency or numeric amount is inferred. */
+  readonly budget?: string
+  readonly expectedDate?: string
 }
 /** Upload state or an authorized attachment returned with a confirmed message. */
 export interface DemandAttachment {
@@ -127,6 +130,9 @@ export interface DemandDraftSummary extends DemandRouting {
   readonly updatedAt: string
   readonly pending: boolean
   readonly error: string | null
+  /** Values from this draft's own scope, independent of the selected draft. */
+  readonly budget?: string
+  readonly expectedDate?: string
 }
 /** Deployment-controlled file chooser and upload constraints. */
 export interface DemandUploadRules {

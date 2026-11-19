@@ -1,5 +1,6 @@
 /** Backend-paged service capabilities enter the platform's central reception queue. */
 import { useEffect, useRef, type ReactNode } from 'react'
+import clsx from 'clsx'
 import { Button, Input, Pill, IconSearchOutlineRegular, IconChecklistOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DemandPageFace, DemandPageState } from './types.ts'
 import { DemandEmpty, DemandSkeleton, ServiceProfileAvatar, type DemandTranslate } from './DemandUI.tsx'
@@ -45,21 +46,21 @@ export function ServiceDirectory(props: {
       <span>{t('serviceLoadFailed')}</span><Button size="sm" onClick={refresh}>{t('retry')}</Button>
     </div>}
     {initialLoading ? <DemandSkeleton label={t('loading')} /> : null}
-    {state.serviceProfiles.length === 0 ? null : <ul className={css.engineerGrid}>
+    {state.serviceProfiles.length === 0 ? null : <ul className={css.demandCardGrid} aria-label={t('officialCustomization')}>
       {state.serviceProfiles.map((profile) => {
         const name = profile.displayName.trim() || profile.code
         const categories = state.categories.filter(row => profile.categoryIds.includes(row.id))
-        return <li key={profile.id} className={css.engineerCard}>
-          <div className={css.engineerIdentity}><ServiceProfileAvatar profile={profile} />
+        return <li key={profile.id} className={clsx(css.demandCard, css.serviceCard)}>
+          <div className={css.serviceCardIdentity}><ServiceProfileAvatar profile={profile} small />
             <div><h2>{name}</h2><p className={css.serviceDirection}>{profile.serviceDirection}</p></div>
           </div>
-          {profile.introduction.trim() === '' ? null : <p className={css.engineerIntro}>{profile.introduction}</p>}
+          {profile.introduction.trim() === '' ? null : <p className={css.cardExcerpt}>{profile.introduction}</p>}
           {categories.length === 0 ? null : <div className={css.skills}>
             {categories.map(row => <span key={row.id}>{row.label}</span>)}
           </div>}
-          <div className={css.engineerAction}>
-            <Button variant="outline" disabled={!profile.canStart} aria-label={t('startServiceRequestNamed', { name })}
-              onClick={() => { start(profile.id) }}>{t(profile.canStart ? 'startServiceRequest' : 'notAccepting')}</Button>
+          <div className={css.cardFooter}>
+            <Button size="sm" variant="primary" disabled={!profile.canStart} aria-label={t('startServiceRequestNamed', { name })}
+              onClick={() => { start(profile.id) }}>{t(profile.canStart ? 'communicate' : 'notAccepting')}</Button>
           </div>
         </li>
       })}
