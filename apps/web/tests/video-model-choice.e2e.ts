@@ -1,4 +1,4 @@
-/** A real model-price card gates chat video generation through the shipped Web CLI Session. */
+/** Preserve explicit replay tiers and gate alternate video models through the shipped Web CLI Session. */
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -19,11 +19,14 @@ import { expect, it } from 'vitest'
 import h3Quote from './fixtures/video-model-choice/websession-baseline-h3.json' with { type: 'json' }
 import targetQuote from './fixtures/video-model-choice/websession-target-sd25.json' with { type: 'json' }
 import h3Contract from '../../../packages/host/credits-index/tests/fixtures/h3-response-contract-v2.json' with { type: 'json' }
+import disabledBannerFeed from '../../../packages/host/credits-index/tests/fixtures/announcement-banner-api/feed-banner-disabled.json' with { type: 'json' }
+import notEligibleSurvey from '../../../packages/host/credits-index/tests/fixtures/onboarding-survey-api-v2/not-eligible.json' with { type: 'json' }
 import {
   assertFinalWorkspaceSnapshot, captureStableAria, compareOrRefreshGolden, fixtureUserPrompts,
   normalizeWebSessionVolatiles, watchConsole, webSnapshotMode,
 } from './scaffold.ts'
 import { newEnglishPage, REPO_ROOT, writeComposerDraft } from './support.ts'
+import { collectVideoWorkIdentities } from './video-work-identities.ts'
 
 const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/video-model-choice', import.meta.url))
 const FIXTURE = join(SNAPSHOT_DIR, 'session.v4.jsonl')
@@ -133,9 +136,11 @@ function toolResults(raw: string): { name: string; text: string; message: JsonRo
 /** Only typed creation IDs actually returned by successful tools are volatile. */
 function tokenizeCreationIdentities(raw: string): string {
   const identities = new Map<string, string>()
+  const results: JsonRow[] = []
   for (const result of toolResults(raw)) {
     if (result.message.isError === true) continue
     const value = record(JSON.parse(result.text))
+    results.push(value)
     for (const [key, prefix] of [['plan_id', 'cp_'], ['operation_id', 'op_']] as const) {
       const id = value[key]
       if (id === undefined) continue
@@ -143,6 +148,7 @@ function tokenizeCreationIdentities(raw: string): string {
       if (!identities.has(id)) identities.set(id, `{{id:${String(1001 + identities.size)}}}`)
     }
   }
+  for (const [value, token] of collectVideoWorkIdentities(results)) identities.set(value, token)
   for (const [value, token] of identities) raw = raw.split(value).join(token)
   return raw
 }
@@ -176,7 +182,7 @@ const TOOLS = new Map<number, { id: string; name: string; args: object }>([
   } }],
 ])
 
-it('records default H3 768P and a real price-informed model choice, cancellation and explicit new request', async (test) => {
+it('preserves the replay’s explicit H3 2K tier and quoted alternative choices, cancellation and an explicit new request', async (test) => {
   const mode = webSnapshotMode()
   if (mode === 'record') throw new Error('This authored scenario captures only its loopback fixture in refresh mode')
   const firstRecording = !existsSync(FIXTURE)
@@ -206,6 +212,8 @@ it('records default H3 768P and a real price-informed model choice, cancellation
   const posts: { path: string; body: JsonRow }[] = [], queries: string[] = [], quotes: unknown[] = []
   const clientReports: unknown[] = []
   const modelRequests: unknown[] = [], errors: string[] = []
+  const uploadRules = { max_image_bytes: 20_971_520, max_video_bytes: 536_870_912, max_attachments: 8,
+    chunk_bytes: 4_194_304, allowed_mime_types: ['image/png', 'video/mp4'], upload_ttl_seconds: 86400 }
   const server = createServer((request, response) => {
     void (async () => {
       const chunks: Buffer[] = []
@@ -215,6 +223,35 @@ it('records default H3 768P and a real price-informed model choice, cancellation
       response.setHeader('content-type', 'application/json')
       const answer = (data: object | null): void => { response.end(JSON.stringify({ success: true, data })) }
       if (path === '/harness/api/status') { answer({ quota_per_unit: 500_000, usd_exchange_rate: 7.3 }); return }
+      if (path === '/harness/api/client-announcements' && request.method === 'GET') {
+        response.end(JSON.stringify(disabledBannerFeed)); return
+      }
+      if (path === '/harness/api/user/onboarding-survey' && request.method === 'GET') {
+        response.end(JSON.stringify(notEligibleSurvey)); return
+      }
+      if (path === '/harness/api/product/demands/config' && request.method === 'GET') {
+        answer({ config: { enabled: false, categories: [], upload_rules: uploadRules }, server_time: 1_795_000_000,
+          capabilities: { resumable_upload: true, polling: true, service_profiles: true, engineer_pagination: true } }); return
+      }
+      if (path === '/harness/api/product/demands/service-profiles' && request.method === 'GET') {
+        answer({ items: [], has_more: false, next_after_id: '', total: 0, server_time: 1_795_000_000 }); return
+      }
+      if (path === '/harness/api/product/demands' && request.method === 'GET') {
+        answer({ items: [], has_more: false, next_before_id: '' }); return
+      }
+      if (path === '/harness/api/product/community-demands/config' && request.method === 'GET') {
+        answer({ schema_version: 1, enabled: false, capabilities: { community_orders_v1: true, explicit_publication: true,
+          single_acceptor: true, resumable_upload: true, private_participant_messages: true }, upload_rules: uploadRules }); return
+      }
+      if (path === '/harness/api/product/community-demands/orders' && request.method === 'GET') {
+        answer({ items: [], has_more: false, next_cursor: '' }); return
+      }
+      if (path === '/harness/api/product/forum/config' && request.method === 'GET') {
+        answer({ revision: 1, enabled: false, capabilities: { immediate_publish: true, likes: true, comments: true } }); return
+      }
+      if (path === '/harness/api/product/forum/posts' && request.method === 'GET') {
+        answer({ items: [], has_more: false, next_cursor: '' }); return
+      }
       if (path === '/harness/api/user/phone/challenge') {
         answer({ challenge_id: 'model-choice-challenge', delivery_status: 'accepted',
           expires_at: Math.floor(Date.now() / 1000) + 300, resend_after_seconds: 60, expires_in_minutes: 5 }); return
@@ -275,8 +312,7 @@ it('records default H3 768P and a real price-informed model choice, cancellation
         posts.push({ path, body: value })
         expect(posts).toHaveLength(1)
         expect(value).toMatchObject({ model: 'MiniMax-H3', seconds: 15, duration: 15,
-          resolution: '768P', size: '768P', metadata: { resolution: '768P' } })
-        expect(JSON.stringify(value)).not.toContain('2K')
+          resolution: '2K', size: '2K', metadata: { resolution: '2K' } })
         response.writeHead(h3Contract.capacity.http_status); response.end(JSON.stringify(h3Contract.capacity.body)); return
       }
       if (path === '/harness/v1/videos' && request.method === 'POST') {
@@ -398,8 +434,9 @@ it('records default H3 768P and a real price-informed model choice, cancellation
     await route.abort('blockedbyclient')
   })
   await page.goto(host.webUrl, { waitUntil: 'load' })
-  await page.getByRole('button', { name: 'Continue', exact: true }).click()
   await page.locator('[data-composer-input][contenteditable="true"]').last().waitFor({ timeout: 15_000 })
+  expect(await page.getByRole('dialog').count()).toBe(0)
+  expect(await page.getByRole('button', { name: 'Continue', exact: true }).count()).toBe(0)
   if (!firstRecording) expect(fixtureUserPrompts(await readFile(FIXTURE, 'utf8'))).toEqual(PROMPTS)
   let sessionId: string | undefined, firstCard: string | undefined
   const expectedPosts = [1, 1, 2]
@@ -460,7 +497,7 @@ it('records default H3 768P and a real price-informed model choice, cancellation
   expect(values).toMatchObject([
     { status: 'failed', model: 'MiniMax-H3', code: 'H3_ACCOUNT_CAPACITY_EXHAUSTED' },
     { status: 'failed', code: 'USER_CANCELLED' },
-    { status: 'failed', code: 'USER_CANCELLED' },
+    { status: 'cancelled' },
     { status: 'failed', model: TARGET, code: 'TASK_FAILED', task_id: 'model-choice-original-target' },
   ])
   expect(posts).toHaveLength(2)
@@ -470,7 +507,7 @@ it('records default H3 768P and a real price-informed model choice, cancellation
   expect(modelRequests).toHaveLength(firstRecording ? 7 : 0)
   if (firstRecording) {
     expect(modelToolResult(modelRequests[4], 'choice-cancel')).toContain('USER_CANCELLED')
-    expect(modelToolResult(modelRequests[4], 'choice-cancelled-fallback')).toContain('USER_CANCELLED')
+    expect(modelToolResult(modelRequests[4], 'choice-cancelled-fallback')).toContain('"cancelled"')
   }
   expect(errors).toEqual([])
   expect(tripwire.pageErrors).toEqual([])
@@ -495,7 +532,7 @@ it('records default H3 768P and a real price-informed model choice, cancellation
     writeFile(join(CURRENT_HEADER_CAPTURE, 'system-prompt.expected.md'), promptSidecar),
     writeFile(join(CURRENT_HEADER_CAPTURE, 'tool-schemas.expected.json'), schemaSidecar),
   ])
-  if (firstRecording) {
+  if (firstRecording || mode === 'refresh') {
     await writeFile(FIXTURE, redactSessionSnapshotIds([scrubSessionSnapshot(tokenizeSessionFixtureCwd(normalizedRaw))])[0]!)
   }
   const expected = await readFile(FIXTURE, 'utf8')

@@ -49,6 +49,8 @@
     "apps/web/tests/creation-plan-h3-receipts.e2e.ts",
     "apps/web/tests/video-generation-intent.e2e.ts",
     "apps/web/tests/video-model-choice.e2e.ts",
+    "apps/web/tests/video-work-identities.ts",
+    "apps/web/tests/video-work-identities.spec.ts",
     "apps/web/product-isolation.ts",
     "apps/web/tests/connection-recovery.e2e.ts",
     "apps/web/tests/server-restart.e2e.ts",

@@ -18,6 +18,7 @@ import { expect, it } from 'vitest'
 import h3ResponseContract from '../../../packages/host/credits-index/tests/fixtures/h3-response-contract-v2.json' with { type: 'json' }
 import { fixtureUserPrompts, normalizeWebSessionVolatiles, webSnapshotMode } from './scaffold.ts'
 import { REPO_ROOT } from './support.ts'
+import { collectVideoWorkIdentities } from './video-work-identities.ts'
 
 const SNAPSHOT_DIR = fileURLToPath(new URL('../../../snapshots/web/h3-submission-outcomes', import.meta.url))
 const FIXTURE = join(SNAPSHOT_DIR, 'session.v4.jsonl')
@@ -105,13 +106,15 @@ async function startWeb(root: string, workspace: string, overlay: string) {
 /** Only creation identities declared by the real generate_video result are volatile. */
 function tokenizeCreationIdentities(raw: string): string {
   const identities = new Map<string, string>()
-  for (const result of toolResults(raw)) {
+  const results = toolResults(raw)
+  for (const result of results) {
     for (const key of ['plan_id', 'operation_id'] as const) {
       const value = result[key]
       if (typeof value !== 'string' || !/^(?:cp|op)_[a-f0-9-]{36}$/u.test(value)) throw new Error(`Missing typed ${key}`)
       if (!identities.has(value)) identities.set(value, `{{id:${1001 + identities.size}}}`)
     }
   }
+  for (const [value, token] of collectVideoWorkIdentities(results)) identities.set(value, token)
   for (const [value, token] of identities) raw = raw.split(value).join(token)
   return raw
 }
@@ -284,7 +287,7 @@ it('records two explicit H3 attempts with confirmed capacity and refunded-auth f
   const schemas = normalizedToolSchemas(normalizedRaw, context)
   const promptSidecar = formatSystemPromptSnapshot(prompts[0]!, prompts.slice(1))
   const schemaSidecar = formatToolSchemasSnapshot(schemas[0]!, schemas.slice(1))
-  if (firstRecording) {
+  if (firstRecording || mode === 'refresh') {
     await writeFile(FIXTURE, redactSessionSnapshotIds([scrubSessionSnapshot(tokenizeSessionFixtureCwd(normalizedRaw))])[0]!)
   }
   if (mode === 'refresh') await Promise.all([

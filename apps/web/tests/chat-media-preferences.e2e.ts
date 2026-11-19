@@ -26,6 +26,11 @@ it('saves personal image and video defaults, restores them after reload and mark
   const requests: { method: string; path: string; authenticated: boolean }[] = [], forbidden: string[] = []
   let hidden = '', chatCalls = 0
   const imageCalls: Record<string, unknown>[] = []
+  // The shared price fixture predates the current YCAPI image receipt capability.
+  const gatewayPricing = { ...pricing, data: pricing.data.map(row => row.model_name === 'ycapi-gemini-nano-banana-2.1-image'
+    ? { ...row, parameters: { ...row.parameters,
+      'x-image-receipt-recovery': { schema_version: 1, submit_model_metadata: true, original_task_artifacts: true },
+    } } : row) }
   const firstImage = models.data.find(model => model.kind === 'image')?.id
   const firstVideo = models.data.find(model => model.kind === 'video')?.id
   const chatModel = models.data.find(model => model.kind === 'text')?.id
@@ -40,7 +45,7 @@ it('saves personal image and video defaults, restores them after reload and mark
       const answer = (data: unknown): void => { response.end(JSON.stringify({ success: true, data })) }
       if (request.method !== 'GET' && !path.endsWith('/client-activity/heartbeat')
         && path !== '/harness/v1/chat/completions' && path !== '/harness/v1/images/generations') forbidden.push(path)
-      if (path === '/harness/api/pricing') { response.end(JSON.stringify(pricing)); return }
+      if (path === '/harness/api/pricing') { response.end(JSON.stringify(gatewayPricing)); return }
       if (path === '/harness/v1/models') {
         if (request.headers.authorization !== 'Bearer sk-synthetic-media-preferences-relay') { response.statusCode = 403; response.end('{}'); return }
         response.end(JSON.stringify({ ...models, data: models.data.filter(model => model.id !== hidden) })); return
@@ -177,9 +182,10 @@ it('saves personal image and video defaults, restores them after reload and mark
   await composer.fill('生成一张蓝色圆形的图片，使用我保存的默认参数')
   await composer.press('Enter')
   const sessionId = await settled
+  const recorded = await readPersistedEvents(scaffold, sessionId)
+  await writeFile(join(evidence, 'generation-events.private.json'), JSON.stringify(recorded, null, 2) + '\n', { mode: 0o600 })
   await expect.poll(() => imageCalls.length, { timeout: 15_000 }).toBe(1)
   expect(imageCalls[0]?.model).toBe(saved.payload.image!.model)
-  const recorded = await readPersistedEvents(scaffold, sessionId)
   const selection = recorded.find(row => row.type === 'media/request-selection')?.data
   const human = recorded.find(row => row.type === 'user/message')?.data
   const sourceRpcId = human?.source.kind === 'user' && 'rpcId' in human.source ? human.source.rpcId : undefined
@@ -228,7 +234,7 @@ it('saves personal image and video defaults, restores them after reload and mark
   expect(forbidden).toEqual([]); expect(tripwire.pageErrors).toEqual([])
   expect(requests.filter(request => request.path.endsWith('/v1/models')).every(request => request.authenticated)).toBe(true)
   await writeFile(join(evidence, 'evidence.json'), JSON.stringify({ actualBuiltHostAndClient: true,
-    fixture: 'Existing actual API pricing/models fixtures; loopback account and model disable are synthetic',
+    fixture: 'Existing actual API pricing/models fixtures with the retained current YCAPI receipt declaration; loopback account and model disable are synthetic',
     requests, forbidden, geometry, saved: saved.payload, reset: reset.payload, chatCalls, imageCalls, priceWitnesses,
     admittedSelection: selection, sourceRpcId, pageErrors: tripwire.pageErrors }, null, 2) + '\n')
 }, 120_000)

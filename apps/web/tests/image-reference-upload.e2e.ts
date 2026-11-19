@@ -100,6 +100,9 @@ describe('web e2e: mixed reference image uploads', () => {
           const json = async (payload: object): Promise<void> => route.fulfill({ status: 200, json: { ok: true, payload } })
           if (url.pathname === '/credits/api/session' && request.method() === 'GET') {
             await json({ signedIn: true, creditsPerYuan: 1000, account: { id: 'image-upload-qa' } })
+          } else if (url.pathname === '/credits/api/announcement-banner' && request.method() === 'GET') {
+            await json({ enabled: false, scope: '0'.repeat(64),
+              revision: createHash('sha256').update('[]').digest('hex'), announcements: [] })
           } else if (url.pathname === '/credits/api/summary') {
             await json({ balance_points: 10000, as_of: new Date().toISOString() })
           } else if (url.pathname === '/credits/api/media/catalog') {
@@ -209,13 +212,15 @@ describe('web e2e: mixed reference image uploads', () => {
           const prompt = '为妈妈和孩子制作绘本展示图'
           await panel.getByRole('textbox', { name: zh ? '画面描述' : 'Prompt', exact: true }).fill(prompt)
           await panel.getByRole('button', { name: zh ? '生成图片' : 'Generate image', exact: true }).click()
-          const busy = zh ? '服务器繁忙，请稍后重试' : 'The server is busy. Please try again later.'
-          await panel.getByRole('alert').filter({ hasText: busy }).waitFor()
+          const invalidInput = zh ? '输入或参数不符合要求，请检查后重试' : 'Check the inputs and parameters, then try again.'
+          await panel.getByRole('alert').filter({ hasText: invalidInput }).waitFor()
           const visible = await panel.innerText()
           for (const diagnostic of ['reasoning_content', 'INVALID_REQUEST', 'private-request-id', 'C:/private', '400']) {
             expect(visible).not.toContain(diagnostic)
           }
           expect(generationAttempts).toHaveLength(1)
+          expect(JSON.parse(generationAttempts[0]!)).toMatchObject({ generation_mode: 'image-to-image',
+            references: uploads.slice(start).map(upload => upload.assetId) })
           expect(await panel.getByRole('textbox', { name: zh ? '画面描述' : 'Prompt', exact: true }).inputValue()).toBe(prompt)
           expect((await decodedReferences(panel)).map(image => image.name)).toEqual(['同名图片.jpg', '同名图片.jpg', '同名图片.jpg'])
           expect(paidRequests).toEqual([])
