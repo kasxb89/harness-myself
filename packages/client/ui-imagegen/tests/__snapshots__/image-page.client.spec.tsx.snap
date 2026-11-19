@@ -10,6 +10,7 @@ exports[`image creation workspace > selects complete image specifications withou
   "submitted": {
     "account_id": "account-a",
     "count": 1,
+    "generation_mode": "text-to-image",
     "model": "ycapi-image",
     "prompt": "A complete specification",
     "quality": "max",

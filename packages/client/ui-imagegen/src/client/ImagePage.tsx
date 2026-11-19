@@ -56,6 +56,7 @@ interface ImageSpecification {
 interface ImageModel {
   readonly id: string
   readonly displayName: string
+  readonly route?: string
   readonly params: {
     readonly specifications?: readonly ImageSpecification[]
     readonly editSpecifications?: readonly ImageSpecification[]
@@ -73,8 +74,21 @@ interface ImageModel {
 interface Catalog { readonly image: readonly ImageModel[]; readonly audio?: readonly { readonly id: string }[] }
 
 function generationSpecifications(params: ImageModel['params'], referenceCount: number): readonly ImageSpecification[] | undefined {
-  return referenceCount > 0 && params.maxEdits > 0 && params.editSpecifications !== undefined
-    ? params.editSpecifications : params.specifications
+  if (referenceCount === 0 || params.maxEdits === 0 || params.editSpecifications === undefined) return params.specifications
+  if (params.specifications === undefined) return params.editSpecifications
+  const fields = ['size', 'ratio', 'resolution', 'quality'] as const
+  const edits = params.editSpecifications.map(edit => ({ ...edit, ...Object.fromEntries(fields.flatMap((field) => {
+    const requested = edit[field]
+    if (requested === undefined || params.specifications?.some(row => row[field] === requested)) return []
+    const equivalent = [...new Set(params.specifications?.flatMap((row) => {
+      const value = row[field]
+      return value !== undefined && value.toLowerCase() === requested.toLowerCase() ? [value] : []
+    }) ?? [])]
+    const [value] = equivalent
+    return equivalent.length === 1 && value !== undefined ? [[field, value]] : []
+  })) }))
+  return params.specifications.filter(row => edits.some(edit => fields.every(field =>
+    edit[field] === undefined || row[field] === edit[field])))
 }
 interface ArtifactLocation {
   readonly path: string
@@ -226,10 +240,12 @@ export function ImagePage(props: ImagePageProps): ReactNode {
 
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
-  const specifications = params === null ? undefined : generationSpecifications(params, references.length)
+  const specifications = useMemo(() => params === null ? undefined : generationSpecifications(params, references.length),
+    [params, references.length])
   const specificationIndex = specifications?.findIndex(item => (item.size ?? item.ratio ?? '') === size
     && (item.resolution ?? '') === resolution && (item.quality ?? '') === quality) ?? -1
-  const settingsInvalid = specifications !== undefined && specifications.length === 0
+  const referenceRequired = model?.route === '/v1/images/edits' && references.length === 0
+  const settingsInvalid = referenceRequired || specifications !== undefined && specifications.length === 0
   const specificationLabel = (item: ImageSpecification): string => [item.size ?? item.ratio, item.resolution, item.quality]
     .filter(value => value !== undefined && value !== '').join(' · ')
   const maxEdits = params?.maxEdits ?? 0
@@ -567,6 +583,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     if (selected === undefined) return
     const accepted = selected.params
     if (current.prompt.trim() === '') { setFailure(t('promptRequired')); promptField.current?.focus(); return }
+    if (selected.route === '/v1/images/edits' && current.references.length === 0) { setFailure(t('referenceRequired')); return }
     const acceptedSpecifications = generationSpecifications(accepted, current.references.length)
     const specification = acceptedSpecifications?.find(item => (item.size ?? item.ratio ?? '') === current.size
       && (item.resolution ?? '') === current.resolution && (item.quality ?? '') === current.quality)
@@ -601,6 +618,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       const answer = await post<{ path: string; paths?: readonly string[] }>('/credits/api/image/generate', {
         session_id: sessionId, account_id: accountIdentity,
         prompt: current.prompt.trim(), model: selected.id, count: Math.max(1, Math.min(current.count, accepted.maxCount)),
+        generation_mode: current.references.length > 0 && accepted.maxEdits > 0 ? 'image-to-image' : 'text-to-image',
         ...(specification !== undefined ? current.size !== '' : accepted.sizes.includes(current.size)) ? { size: current.size } : {},
         ...(specification !== undefined ? current.resolution !== '' : accepted.resolutions?.includes(current.resolution) === true) ? { resolution: current.resolution } : {},
         ...(specification !== undefined ? current.quality !== '' : accepted.qualities.includes(current.quality)) ? { quality: current.quality } : {},
@@ -751,7 +769,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
                 {models.map(entry => <option key={entry.id} value={entry.id}>{entry.displayName}</option>)}
               </select>
             </label>
-            <span className={css.mode}>{maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
+            <span className={css.mode}>{referenceRequired ? t('modeEditRequired')
+              : maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
             <Tooltip label={originalSubmission !== null ? t('originalLocked') : running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
                 disabled={submissionLocked || model === null || !isSignedIn || sessionId === undefined || prompt.trim() === '' || settingsInvalid}
@@ -770,7 +789,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
                 }}>
                 {specifications.map((item, index) => <option key={index} value={index}>{specificationLabel(item)}</option>)}
               </select></label>}
-            {settingsInvalid && <p className={css.parameterHint} role="alert">{t('settingsUnavailable')}</p>}
+            {settingsInvalid && <p className={css.parameterHint} role="alert">{t(referenceRequired ? 'referenceRequired' : 'settingsUnavailable')}</p>}
             {specifications === undefined && (params.resolutions?.length ?? 0) > 0 && <label className={css.field}><span>{t('resolution')}</span><select className={css.select} aria-label={t('resolution')} value={resolution} disabled={locked}
               onChange={(event) => { actions.patch({ resolution: event.target.value }) }}>
               {params.resolutions?.map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}

@@ -1,5 +1,5 @@
 /** Resolve one complete published media specification before quoting or submitting. @module */
-import { videoDurations, type MediaSpecification, type VideoParams } from './media.ts'
+import { videoDurations, type ImageParams, type MediaSpecification, type VideoParams } from './media.ts'
 
 /** Fields with shared spelling in the public catalog and prepared native request. */
 const specificationFields = ['size', 'resolution', 'seconds', 'ratio', 'quality', 'mode'] as const
@@ -51,6 +51,22 @@ export function resolveMediaSpecification(
   if (candidates.length !== 1) return { ok: false, code: 'SPECIFICATION_REQUIRED',
     message: '当前参数对应多个规格，请明确选择完整规格和质量档位；尚未提交生成。' }
   return { ok: true, specification: candidate }
+}
+
+/**
+ * Narrow image output choices to the editing combinations when reference images are used.
+ * @param params - Published generation and optional editing capabilities for one image model.
+ * @param editing - Whether the current request carries reference images.
+ * @returns The applicable menu; editing never adds a combination excluded by generation capabilities.
+ */
+export function imageSpecifications(
+  params: ImageParams, editing: boolean,
+): readonly MediaSpecification[] | undefined {
+  if (!editing || params.editSpecifications === undefined) return params.specifications
+  if (params.specifications === undefined) return params.editSpecifications
+  const edits = params.editSpecifications.map(value => canonicalMediaSpecification(params.specifications, value))
+  return params.specifications.filter(specification => edits.some(edit => specificationFields.every(field =>
+    edit[field] === undefined || edit[field] === specification[field])))
 }
 
 /**

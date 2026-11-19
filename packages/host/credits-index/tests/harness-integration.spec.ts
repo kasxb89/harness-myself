@@ -1954,6 +1954,53 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(await readdir(join(stateDir, 'creative-projects'))).toHaveLength(1)
   })
 
+  it.each([
+    ['explicit mode', '生成一张图片', { generation_mode: 'image-to-image' }],
+    ['current human mode', '使用图生图生成一张图片', {}],
+    ['bare human directive', '图生图，改背景', {}],
+    ['human mode cannot be bypassed', '请帮我这次用图生图修改背景', { generation_mode: 'text-to-image' }],
+    ['conflicting text mode', '生成一张图片', { generation_mode: 'text-to-image', reference_images: ['ma_unread'] }],
+  ] as const)('rejects missing or contradictory image references before reserving an invocation: %s', async (_label, text, args) => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+    const agent = videoAgent(stateDir)
+    humanVideoRequest(agent, text)
+    const result = await executeGenerationFixture({ agent, name: 'generate_image', arguments: {
+      model: 'gpt-image-2', prompt: 'Keep the person and change the scene', ...args,
+    }, callId: ToolCallId('missing-image-reference'), signal: new AbortController().signal }, false)
+    expect(result.value).toMatchObject({ status: 'failed', code: 'reference_images' in args
+      ? 'IMAGE_GENERATION_MODE_CONFLICT' : 'IMAGE_REFERENCE_REQUIRED' })
+    expect(await readdir(stateDir)).not.toContain('image-invocations')
+    expect(await readdir(stateDir)).not.toContain('creative-projects')
+    expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path.endsWith('/images/generations')
+      || call.path === '/harness/v1/images/edits')).toEqual([])
+  })
+
+  it.each([
+    ['不要图生图，生成一张图片', {}],
+    ['生成一张图片，画面文字写“图生图”', {}],
+    ['画一张介绍图生图功能的海报', {}],
+    ['分析图生图效果后文生图画一张海报', {}],
+    ['先文生图再图生图', { generation_mode: 'text-to-image' }],
+    ['先图生图修改背景再文生图生成海报', { generation_mode: 'text-to-image' }],
+  ] as const)(
+    'keeps quoted, negated, descriptive or staged image modes out of global editing requirements: %s', async (text, args) => {
+      const { base, stateDir } = await boot()
+      await signIn(base)
+      pricingRows = [{ model_name: 'gpt-image-2', supported_endpoint_types: ['image-generation'] }]
+      const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAACXBIWXMAAAPoAAAD6AG1e1JrAAAADElEQVQImWNgZGIGAAAOAAeCcsnOAAAAAElFTkSuQmCC', 'base64')
+      imageResponse = { data: [{ b64_json: png.toString('base64') }] }
+      const agent = videoAgent(stateDir)
+      humanVideoRequest(agent, text)
+      const result = await executeGenerationFixture({ agent, name: 'generate_image', arguments: {
+        model: 'gpt-image-2', prompt: '图生图 are words inside the generated artwork', ...args,
+      }, callId: ToolCallId('text-image-mode'), signal: new AbortController().signal }, false)
+      expect(result.value).toMatchObject({ status: 'succeeded' })
+      expect(calls.filter(call => call.path === '/harness/v1/images/generations')).toHaveLength(1)
+      expect(calls.filter(call => call.path === '/harness/v1/images/edits')).toEqual([])
+    })
+
   it('edits current-chat uploaded images and workspace images through the documented multipart endpoint', async () => {
     const { base, stateDir } = await boot()
     await signIn(base)
@@ -1977,6 +2024,7 @@ describe('deployed Harness API through the real product Loader', () => {
     for (const [index, reference] of inputs.entries()) {
       const result = object((await requestImage({ name: 'generate_image', arguments: {
         model: 'gpt-image-2', prompt: '保持人物身份，改成夜晚', reference_images: [reference],
+        ...index === 0 ? { generation_mode: 'image-to-image' } : {},
       }, agent, callId: ToolCallId(`chat-image-${String(index)}`), signal: new AbortController().signal })).value)
       expect(result, JSON.stringify(result)).toMatchObject({ status: 'succeeded', paths: [expect.any(String)] })
       expect(await readFile(String(result.path))).toEqual(png)
@@ -4000,6 +4048,36 @@ describe('deployed Harness API through the real product Loader', () => {
       expect(calls.filter(call => call.path === '/harness/api/client-errors')).toHaveLength(1)
       expect(calls.filter(call => ['/harness/v1/videos', '/harness/v1/video/generations'].includes(call.path))).toHaveLength(0)
     } finally { held.resolve(undefined) }
+  })
+
+  it('lists image generation modes and reference controls consistent with known standard and custom routes', async () => {
+    const { base, stateDir } = await boot()
+    await signIn(base)
+    const parameters = { type: 'object', additionalProperties: false,
+      properties: { n: { enum: [1] }, reference_images: { maxItems: 2 } },
+      oneOf: [{ properties: { size: { enum: ['1:1'] } } }],
+      'x-task-plugin': { key: 'ycapi', version: '1.0.0', api_version: 1 },
+      'x-image-receipt-recovery': { schema_version: 1, submit_model_metadata: true, original_task_artifacts: true },
+      'x-image-edit': { schema_version: 1, max_reference_bytes: 5 * 1024 * 1024,
+        specifications: [{ properties: { size: { enum: ['1:1'] } } }] },
+    }
+    pricingRows = [['both-inputs', '/v1/images/generations'], ['edits-only', '/v1/images/edits'], ['unknown-protocol', '/custom/images']]
+      .map(([model_name, route]) => ({ model_name, kind: 'image', route, parameters }))
+    relayModels.push(...pricingRows.map(row => ({ id: String(object(row).model_name), object: 'model', supported_endpoint_types: ['image-generation'] })))
+    const listed = await context!.tools.execute({ name: 'list_image_models', arguments: {}, agent: videoAgent(stateDir),
+      callId: ToolCallId('image-input-modes'), signal: new AbortController().signal })
+    const models = object(listed.value).models
+    if (!Array.isArray(models)) throw new Error('Expected image modes')
+    expect(models).toMatchObject([
+      { id: 'both-inputs', generation_modes: ['text-to-image', 'image-to-image'], max_reference_images: 2,
+        edit_specifications: [{ size: '1:1' }] },
+      { id: 'edits-only', generation_modes: ['image-to-image'], max_reference_images: 2,
+        edit_specifications: [{ size: '1:1' }] },
+      { id: 'unknown-protocol', generation_modes: ['text-to-image'], max_reference_images: 0 },
+    ])
+    expect(models[2]).not.toHaveProperty('edit_specifications')
+    expect(models[2]).not.toHaveProperty('max_reference_bytes')
+    expect(calls.filter(call => /\/(?:images|video)\/(?:generations|edits)|\/v1\/uploads/u.test(call.path))).toEqual([])
   })
 
   it('exposes account-filtered image controls with exact live sizes and separate resolution tiers', async () => {

@@ -1,0 +1,16 @@
+# Bilingual-pair consistency record for guide.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write docs/upgrade-guide/v0.2.1-alpha.2/image-generation-input-mode/guide.md
+/:
+  en: d7bfdc884ebd144d
+  zh: 9109bfac24810438
+/declare-the-input-mode-for-image-generation:
+  en: 527b3ed9e362cad8
+  zh: 3b7b698d2d5829dd
+/declare-the-input-mode-for-image-generation/change:
+  en: 54b3eef09e790afe
+  zh: 096648deed1c572c
+/declare-the-input-mode-for-image-generation/migration:
+  en: a63a7f611281fdb9
+  zh: e3fa9ddf5e2136dd

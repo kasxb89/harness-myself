@@ -655,6 +655,83 @@ describe('retained image recovery through the shipped Host HTTP and file IO', ()
 })
 
 describe('reference image edits through the shipped Host Loader', () => {
+  it('uses an explicit standard edits route only with real references and sends multipart image bytes', async () => {
+    const model = 'gpt-image-2'
+    const row = { model_name: model, kind: 'image', route: '/v1/images/edits', parameters: {
+      properties: { reference_images: { maxItems: 1 }, n: { enum: [1] }, size: { enum: ['1:1'] } },
+      'x-image-edit': { schema_version: 1, max_reference_bytes: 5 * 1024 * 1024,
+        specifications: [{ properties: { size: { enum: ['1:1'] } } }] },
+    } }
+    const base = await boot([model], true, [row])
+    const input = { model, prompt: 'Preserve the reference and change its color' }
+    for (const extra of [{}, { generation_mode: 'text-to-image' }]) {
+      expect(await post(base, '/api/image/generate', { ...input, ...extra }))
+        .toMatchObject({ ok: false, model, code: 'IMAGE_REFERENCE_REQUIRED', submission_state: 'not-submitted' })
+    }
+    expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path === '/harness/v1/images/edits'
+      || call.path.endsWith('/images/generations'))).toEqual([])
+    if (directory === undefined) throw new Error('Expected isolated Host directory')
+    const refs = join(directory, 'credits', 'refs')
+    await mkdir(refs, { recursive: true })
+    const bytes = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#dd2211' } }).png().toBuffer()
+    await writeFile(join(refs, 'ma_edit.png'), bytes)
+    await writeFile(join(refs, 'ma_edit.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '7' }))
+    const result = await post(base, '/api/image/generate', { ...input, references: ['ma_edit'], generation_mode: 'image-to-image' })
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true, mode: 'edit' })
+    expect(calls.filter(call => call.path === '/harness/v1/images/edits')).toEqual([
+      { path: '/harness/v1/images/edits', body: { ...input, n: '1', size: '1:1',
+        'image[]': { type: 'image/png', size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') } } },
+    ])
+    expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path.endsWith('/images/generations'))).toEqual([])
+  })
+
+  it('selects the unique reference-compatible specification before resolving omitted output controls', async () => {
+    const model = 'ycapi-gemini-3.1-flash-image'
+    const row = { model_name: model, kind: 'image', parameters: { properties: { reference_images: { maxItems: 1 }, n: { enum: [1] } },
+      'x-task-plugin': { key: 'ycapi', version: '1.0.0', api_version: 1 },
+      'x-image-receipt-recovery': { schema_version: 1, submit_model_metadata: true, original_task_artifacts: true },
+      oneOf: [{ properties: { size: { enum: ['1:1'] }, resolution: { enum: ['0.5K', '1K'] } } }],
+      'x-image-edit': { schema_version: 1, max_reference_bytes: 5 * 1024 * 1024,
+        reference_upload: { path: '/v1/uploads/images', origin: 'https://assets.token6688.com' },
+        specifications: [{ properties: { size: { enum: ['1:1'] }, resolution: { enum: ['1K'] } } }] } } }
+    const base = await boot([model], true, [row])
+    if (directory === undefined) throw new Error('Expected isolated Host directory')
+    const refs = join(directory, 'credits', 'refs')
+    await mkdir(refs, { recursive: true })
+    const bytes = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#aa22bb' } }).png().toBuffer()
+    await writeFile(join(refs, 'ma_edit.png'), bytes)
+    await writeFile(join(refs, 'ma_edit.png.json'), JSON.stringify({ mediaType: 'image/png', accountId: '7' }))
+    const input = { model, prompt: 'Edit this reference', size: '1:1' }
+    expect(await post(base, '/api/image/generate', { ...input, references: ['ma_edit'] })).toMatchObject({ ok: true })
+    expect(calls.filter(call => call.path === '/harness/v1/images/edits')).toEqual([
+      { path: '/harness/v1/images/edits', body: { model, prompt: input.prompt, n: 1, size: '1:1', resolution: '1K',
+        image: ['https://assets.token6688.com/sha256/ab/' + 'c'.repeat(62) + '.png'] } },
+    ])
+    expect(await post(base, '/api/image/generate', input))
+      .toMatchObject({ ok: false, code: 'SPECIFICATION_REQUIRED', submission_state: 'not-submitted' })
+    expect(await post(base, '/api/image/generate', { ...input, resolution: '0.5K', references: ['ma_edit'] }))
+      .toMatchObject({ ok: false, code: 'SPECIFICATION_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    expect(calls.filter(call => call.path === '/harness/v1/uploads/images')).toHaveLength(1)
+    expect(calls.filter(call => call.path.endsWith('/images/generations'))).toEqual([])
+  })
+
+  it('rejects references for an undeclared custom image protocol before upload or generation', async () => {
+    const model = 'custom-edit-model', route = '/custom/images/generations'
+    const row = { model_name: model, kind: 'image', route, parameters: {
+      properties: { reference_images: { maxItems: 1 }, n: { enum: [1] } },
+      oneOf: [{ properties: { size: { enum: ['1:1'] } } }],
+      'x-image-edit': { schema_version: 1, max_reference_bytes: 5 * 1024 * 1024,
+        reference_upload: { path: '/v1/uploads/images', origin: 'https://assets.token6688.com' },
+        specifications: [{ properties: { size: { enum: ['1:1'] } } }] },
+    } }
+    const base = await boot([model], true, [row])
+    const result = await post(base, '/api/image/generate', { model, prompt: 'Preserve the supplied image', references: ['ma_edit'] })
+    expect(result).toMatchObject({ ok: false, model, code: 'IMAGE_REFERENCE_PROTOCOL_NOT_SUPPORTED', submission_state: 'not-submitted' })
+    expect(calls.filter(call => call.path === '/harness/v1/uploads/images' || call.path === `/harness${route}`
+      || call.path === '/harness/v1/images/edits' || call.path === '/harness/v1/images/generations')).toEqual([])
+    expect(await publishedImageFiles()).toEqual([])
+  })
+
   it.each(['ycapi', 'codebloom-image'] as const)('saves the original %s edit after a truncated response and submits only once', async (plugin) => {
     const model = plugin === 'ycapi' ? 'ycapi-flux-kontext' : 'ys-gpt-image-2k'
     const size = plugin === 'ycapi' ? '1:1' : '1024x1024'
@@ -729,7 +806,7 @@ const observedEditManifest = process.env.DSH_IMAGE_EDIT_GATEWAY_REPORT
 const observedEditFixtures: Record<string, unknown>[] = observedEditManifest === undefined ? []
   : (JSON.parse(readFileSync(observedEditManifest, 'utf8')) as unknown[]).map(object)
 
-describe('actual gateway image-edit declarations and original paid image bytes through the client', () => {
+describe.skipIf(observedEditFixtures.length === 0)('actual gateway image-edit declarations and original paid image bytes through the client', () => {
   it.for(observedEditFixtures)('$label saves and exposes the original image without another submission', async (fixture) => {
     const model = fixture.model_name, label = fixture.label, imagePath = fixture.image_path, referencePath = fixture.reference_path
     if (typeof model !== 'string' || typeof label !== 'string' || typeof imagePath !== 'string' || typeof referencePath !== 'string') throw new Error('Invalid source-bound image fixture')

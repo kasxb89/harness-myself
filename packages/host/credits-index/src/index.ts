@@ -88,12 +88,13 @@ import { captureChatVideoBalanceStop } from './chat-video-balance-stop.ts'
 import type { VideoBalanceRejection } from './video-balance-retry.ts'
 import { artifactOriginOf, captureMediaOutput, type CapturedMediaOutput } from './media-output.ts'
 import { mediaFilename, type MediaFilenameOptions } from './media-filename.ts'
-import { resolveMediaSpecification, videoSpecificationDurations } from './media-request-specification.ts'
+import { imageSpecifications, resolveMediaSpecification, videoSpecificationDurations } from './media-request-specification.ts'
 import { parseAudioQuote, readAudioTask, submitAudio, validateAudioRequest,
   type AudioExecutionResult, type AudioQuote, type AudioRequest, type AudioReceipt } from './audio-generation.ts'
 import { AudioSubmissions, type AudioOwner, type AudioSubmission } from './audio-submissions.ts'
 import { executeImageTask } from './image-task.ts'
 import { ImageInvocationStore } from './image-invocation.ts'
+import { imageGenerationMode, imageGenerationModes } from './image-generation-mode.ts'
 import { ImageResultStore, type ImageResultRef } from './image-result-store.ts'
 import { ImageJobs } from './image-jobs.ts'
 import { GenerationPerformance } from './generation-performance.ts'
@@ -2050,6 +2051,12 @@ export function apply(ctx: Context, config: Config): void {
       signal.throwIfAborted()
       const prompt = readString(body, 'prompt')
       if (prompt === null) return { ok: false, submissionState: 'not-submitted', code: 'INVALID_REQUEST', message: 'prompt 必填' }
+      const references = referenceIds(body.references)
+      if (body.references !== undefined && (!Array.isArray(body.references)
+        || references.length !== body.references.length)) {
+        return { ok: false, submissionState: 'not-submitted', code: 'IMAGE_REFERENCE_INVALID', message: '参考图编号无效，请重新添加图片；尚未提交生成。' }
+      }
+      const editing = imageGenerationMode(body.generation_mode, references.length) === 'image-to-image'
       progress?.('catalog')
       const capability = await capabilityFor('image', readString(body, 'model'), signal)
       if (!capability.ok) {
@@ -2068,6 +2075,15 @@ export function apply(ctx: Context, config: Config): void {
       ...capability.model.modelConfigVersion === undefined ? {} : { modelConfigVersion: capability.model.modelConfigVersion } }
       serverResultRecovery = capability.serverResultRecovery === true
       const internalImage = model === 'yunshu-internal-gpt-image-2'
+      const standardImageRoute = capability.model.route === '/v1/images/generations' || capability.model.route === '/v1/images/edits'
+      if (capability.model.route === '/v1/images/edits' && !editing) {
+        return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_REQUIRED',
+          message: `${model} 的当前接口仅支持图生图，请补充真实参考图；尚未提交生成。` }
+      }
+      if (editing && !standardImageRoute && !internalImage) {
+        return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_PROTOCOL_NOT_SUPPORTED',
+          message: `${model} 的当前接口尚未声明可用的参考图提交协议，尚未上传参考图或提交生成；请核对模型接口配置。` }
+      }
       if (internalImage) {
         const unsupported = ['quality', 'background', 'format', 'compression', 'moderation', 'seed', 'output_format', 'output_compression', 'aspect_ratio']
           .find(field => body[field] !== undefined)
@@ -2080,7 +2096,7 @@ export function apply(ctx: Context, config: Config): void {
             message: `${field} 需要是有效的模型参数；尚未提交生成。` }
         }
       }
-      const complete = resolveMediaSpecification(params.specifications, {
+      const complete = resolveMediaSpecification(imageSpecifications(params, editing), {
         ...typeof body.size !== 'string' ? {} : { size: body.size },
         ...typeof body.resolution !== 'string' ? {} : { resolution: internalImage ? body.resolution.toLowerCase() : body.resolution },
         ...typeof body.quality !== 'string' ? {} : { quality: body.quality },
@@ -2131,11 +2147,6 @@ export function apply(ctx: Context, config: Config): void {
       if (count < 1 || count > params.maxCount) {
         return { ok: false, submissionState: 'not-submitted', code: 'COUNT_NOT_SUPPORTED', message: `${model} 一次可出 1–${String(params.maxCount)} 张` }
       }
-      const references = referenceIds(body.references)
-      if (body.references !== undefined && (!Array.isArray(body.references)
-        || references.length !== body.references.length)) {
-        return { ok: false, submissionState: 'not-submitted', model, code: 'IMAGE_REFERENCE_INVALID', message: '参考图编号无效，请重新添加图片；尚未提交生成。' }
-      }
       if (references.length > params.maxEdits) {
         return {
           ok: false, submissionState: 'not-submitted',
@@ -2144,10 +2155,6 @@ export function apply(ctx: Context, config: Config): void {
             ? `${model} 只支持文生图，不能带参考图`
             : `${model} 最多接受 ${String(params.maxEdits)} 张参考图`,
         }
-      }
-      if (references.length > 0 && params.editSpecifications !== undefined) {
-        const edit = resolveMediaSpecification(params.editSpecifications, complete.specification)
-        if (!edit.ok) return { ...edit, submissionState: 'not-submitted', model }
       }
       const headers = { 'content-type': 'application/json', accept: 'application/json',
         ...modelConfigVersionHeaders(capability.model.modelConfigVersion),
@@ -2250,7 +2257,7 @@ export function apply(ctx: Context, config: Config): void {
       }
 
       const editForm = new FormData()
-      if (capability.model.route === '/v1/images/generations' && references.length > 0 && params.referenceUpload !== 'ycapi') {
+      if (standardImageRoute && references.length > 0 && params.referenceUpload !== 'ycapi') {
         const form = editForm
         form.set('model', model)
         form.set('prompt', prompt)
@@ -2263,7 +2270,7 @@ export function apply(ctx: Context, config: Config): void {
         signal.throwIfAborted()
       }
       const submit = async (requestSignal: AbortSignal): Promise<Response> => {
-        if (capability.model.route !== '/v1/images/generations') {
+        if (!standardImageRoute) {
           return apiFetch(capability.model.route, {
             method: 'POST', headers: { ...headers, authorization: `Bearer ${submitKey}` },
             body: JSON.stringify(internalImage
@@ -5498,7 +5505,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'list_image_models',
-    description: 'Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Before asking about an image model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. Listing does not reserve capacity, estimate prices or authorize a generation.',
+    description: 'Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. generation_modes identifies executable text-to-image and image-to-image inputs. For image-to-image, use edit_specifications when present and supply real reference_images; an edits-only model cannot generate without references. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Before asking about an image model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. Listing does not reserve capacity, estimate prices or authorize a generation.',
     parameters: {},
     isConcurrencySafe: () => true,
     output: { schema: { type: 'object', properties: {
@@ -5511,6 +5518,7 @@ export function apply(ctx: Context, config: Config): void {
         sizes: { type: 'array', items: { type: 'string' } },
         resolutions: { type: 'array', items: { type: 'string' } },
         max_count: { type: 'number' }, max_reference_images: { type: 'number' },
+        generation_modes: { type: 'array', items: { type: 'string' } },
         max_reference_bytes: { type: 'number' },
         edit_specifications: { type: 'array', items: { type: 'object', properties: {
           size: { type: 'string' }, resolution: { type: 'string' }, quality: { type: 'string' },
@@ -5548,13 +5556,17 @@ export function apply(ctx: Context, config: Config): void {
         const allowed = new Set(visible.image)
         const models = catalog.models.filter(model => model.kind === 'image' && allowed.has(model.id)).map((model) => {
           const params = model.params as ImageParams
+          const generationModes = imageGenerationModes(model)
+          const editing = generationModes.includes('image-to-image')
+          const editSpecifications = params.editSpecifications === undefined ? undefined : imageSpecifications(params, true)
           return { id: model.id, display_name: model.displayName, parameters_verified: model.verified,
             sizes: model.verified || model.notes.includes('sizes') || model.notes.includes('specifications') ? [...params.sizes] : [],
             ...params.resolutions === undefined ? {} : { resolutions: [...params.resolutions] },
-            max_count: params.maxCount, max_reference_images: params.maxEdits,
-            ...params.referenceMaxBytes === undefined ? {} : { max_reference_bytes: params.referenceMaxBytes },
-            ...params.editSpecifications === undefined ? {}
-              : { edit_specifications: params.editSpecifications.map(value => ({ ...value })) },
+            max_count: params.maxCount, max_reference_images: editing ? params.maxEdits : 0,
+            generation_modes: [...generationModes],
+            ...!editing || params.referenceMaxBytes === undefined ? {} : { max_reference_bytes: params.referenceMaxBytes },
+            ...!editing || editSpecifications === undefined ? {}
+              : { edit_specifications: editSpecifications.map(value => ({ ...value })) },
             qualities: model.verified || model.notes.includes('qualities') ? [...params.qualities] : [],
             backgrounds: model.verified || model.notes.includes('backgrounds') ? [...params.backgrounds] : [],
             formats: model.verified || model.notes.includes('formats') ? [...params.formats] : [],
@@ -5595,6 +5607,7 @@ export function apply(ctx: Context, config: Config): void {
       asset_id: { type: 'string', description: 'Exact image asset id in plan_id, including a video plan. Mutually exclusive with shot_id. Creates or reconstructs this source asset, not a finished shot.' },
       prompt: { type: 'string', required: true, description: 'What the image should show.' },
       model: { type: 'string', description: 'Optional image model id such as gpt-image-2. The current human request overrides the frozen personal image preference, then the backend-configured image default for this account; an older or unset configuration retains the account’s first available image model.' },
+      generation_mode: { type: 'string', enum: ['text-to-image', 'image-to-image'], description: 'Optional image input mode from generation_modes in list_image_models. Image-to-image requires real reference_images; text-to-image cannot carry references. When omitted, actual references select image-to-image, otherwise text-to-image. This field does not select a provider quality mode.' },
       size: { type: 'string', description: 'Optional output size from the selected model’s published menu. yunshu-internal-gpt-image-2 accepts aspect-ratio strings only when its live catalog declares them, never pixel dimensions; use resolution for its independent 1k, 2k or 4k tier. An undeclared value is refused before generation.' },
       resolution: { type: 'string', description: 'Optional named output tier, only when declared by the chosen model. yunshu-internal-gpt-image-2 accepts 1k, 2k or 4k and defaults to 1k; this is independent from pixel size.' },
       count: { type: 'number', description: 'How many images to render, within max_count returned by list_image_models; do not infer a model’s batch limit.' },
@@ -5636,6 +5649,7 @@ export function apply(ctx: Context, config: Config): void {
           throw new CreativeError('CREATIVE_IMAGE_INTENT_UNAVAILABLE', 409,
             '本轮没有可确认的用户请求，尚未提交图片生成；会话消息或任务通知不能自动发起付费生成。')
         }
+        const editing = imageGenerationMode(args.generation_mode, args.reference_images?.length ?? 0, exec) === 'image-to-image'
         const binding = await bindCurrentVideoAccount()
         const owner = creativeOwner(exec, binding.identity)
         const source = videoGenerationIntentOf(exec)?.grant
@@ -5652,7 +5666,7 @@ export function apply(ctx: Context, config: Config): void {
             : '本次提交已有原任务，尚未重复生成；请用原 plan_id 和 operation_id 查询或恢复。' }
         const planKind = args.plan_id === undefined ? undefined : (await creative.plan(owner, args.plan_id)).kind
         args = await resolveChatMediaSelection(exec, 'image', args,
-          planKind === undefined ? undefined : { auxiliaryImage: planKind === 'video' })
+          { imageEditing: editing, ...planKind === undefined ? {} : { auxiliaryImage: planKind === 'video' } })
         const references: string[] = []
         const referenceCache = new Map<string, string>()
         for (const value of args.reference_images ?? []) {
@@ -5680,6 +5694,7 @@ export function apply(ctx: Context, config: Config): void {
             try {
               const outcome = await runImageGeneration(await binding.key(), {
                 prompt: args.prompt,
+                ...args.generation_mode === undefined ? {} : { generation_mode: args.generation_mode },
                 ...args.model === undefined ? {} : { model: args.model },
                 ...args.size === undefined ? {} : { size: args.size },
                 ...args.resolution === undefined ? {} : { resolution: args.resolution },

@@ -1,13 +1,38 @@
 import { describe, expect, it } from 'vitest'
-import { canonicalMediaSpecification, resolveMediaSpecification, videoSpecificationDurations } from '../src/media-request-specification.ts'
+import { canonicalMediaSpecification, imageSpecifications, resolveMediaSpecification, videoSpecificationDurations } from '../src/media-request-specification.ts'
 
-import { catalogFromPricing, type VideoParams } from '../src/media.ts'
+import { catalogFromPricing, type ImageParams, type VideoParams } from '../src/media.ts'
 
 const menu = [
   { resolution: '720p', seconds: 5, ratio: '16:9', quality: 'mini' },
   { resolution: '720p', seconds: 5, ratio: '16:9', quality: 'fast' },
   { resolution: '1080p', seconds: 10, ratio: '16:9', quality: 'standard' },
 ]
+
+describe('image editing output specifications', () => {
+  const generation = [{ size: '1:1', resolution: '0.5K' }, { size: '1:1', resolution: '1K' }]
+  const params: ImageParams = { sizes: ['1:1'], resolutions: ['0.5K', '1K'], maxCount: 1, maxEdits: 1,
+    qualities: [], backgrounds: [], formats: [], moderations: [], seed: false,
+    specifications: generation, editSpecifications: [{ size: '1:1', resolution: '1k' }] }
+
+  it('fills the unique editing tier without requiring a text-generation tier choice', () => {
+    expect(resolveMediaSpecification(imageSpecifications(params, true), { size: '1:1' }))
+      .toEqual({ ok: true, specification: generation[1] })
+    expect(resolveMediaSpecification(imageSpecifications(params, false), { size: '1:1' }))
+      .toMatchObject({ ok: false, code: 'SPECIFICATION_REQUIRED' })
+  })
+  it('does not add an editing combination missing from the published generation menu', () => {
+    expect(imageSpecifications({ ...params, editSpecifications: [{ size: '9:16', resolution: '4K' }] }, true)).toEqual([])
+    expect(resolveMediaSpecification(imageSpecifications(params, true), { resolution: '0.5K' }))
+      .toMatchObject({ ok: false, code: 'SPECIFICATION_NOT_SUPPORTED' })
+  })
+  it('preserves legacy menus and an explicit editing menu when no general menu is declared', () => {
+    const { editSpecifications: _edit, ...legacy } = params
+    const { specifications: _generation, ...editing } = params
+    expect(imageSpecifications(legacy, true)).toEqual(generation)
+    expect(imageSpecifications(editing, true)).toEqual(params.editSpecifications)
+  })
+})
 
 describe('complete public media specifications', () => {
   it('requires a quality choice when the same resolution and duration have distinct paid offers', () => {

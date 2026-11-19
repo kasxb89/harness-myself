@@ -15,7 +15,7 @@ const UNKNOWN_OUTCOME_CODES = new Set([
 ])
 
 type MediaParameterFailure = 'model-parameters' | 'specification-unsupported' | 'specification-required'
-  | 'media-parameters-invalid' | 'media-model-mismatch'
+  | 'media-parameters-invalid' | 'media-model-mismatch' | 'image-reference-required'
 
 type MediaFailure = ProductFailureKind | MediaParameterFailure
   | 'balance-unknown-outcome' | 'unknown-outcome' | 'accepted-pending' | 'accepted-queued'
@@ -26,10 +26,12 @@ const PARAMETER_FAILURES = new Set([
   'DURATION_NOT_SUPPORTED', 'SHOT_DURATION_UNSUPPORTED', 'SHOT_DURATION_MISMATCH', 'SHOT_COUNT_MISMATCH',
   'AUDIO_NOT_SUPPORTED', 'RESOLUTION_NOT_SUPPORTED', 'RATIO_NOT_SUPPORTED', 'PARAMETER_NOT_SUPPORTED',
   'REFERENCES_NOT_SUPPORTED', 'MIX_NOT_SUPPORTED', 'MODE_NOT_SUPPORTED', 'SEED_NOT_SUPPORTED',
+  'IMAGE_GENERATION_MODE_CONFLICT', 'IMAGE_GENERATION_MODE_NOT_SUPPORTED', 'IMAGE_REFERENCE_PROTOCOL_NOT_SUPPORTED',
 ])
 
 function parameterFailure(code: unknown): MediaParameterFailure | null {
   switch (code) {
+    case 'IMAGE_REFERENCE_REQUIRED': return 'image-reference-required'
     case 'SPECIFICATION_NOT_SUPPORTED': return 'specification-unsupported'
     case 'SPECIFICATION_REQUIRED': return 'specification-required'
     case 'MEDIA_PARAMETERS_INVALID': return 'media-parameters-invalid'

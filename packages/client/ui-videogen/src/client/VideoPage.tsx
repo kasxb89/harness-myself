@@ -69,6 +69,16 @@ interface SessionInfo {
 interface ArtifactLocation { readonly path: string; readonly workspaceId?: string }
 interface ArtifactItem extends ArtifactLocation { readonly name: string; readonly kind: string; readonly mtimeMs?: number }
 
+/** Only explicit input-mode names constrain references; vendor quality modes remain opaque. */
+function videoInputMode(mode: string | undefined): 'text' | 'image' | 'video' | 'reference' | null {
+  const normalized = mode?.toLowerCase().replaceAll('_', '-')
+  if (['text-to-video', 't2v', 'text2video'].includes(normalized ?? '')) return 'text'
+  if (['image-to-video', 'i2v', 'image2video'].includes(normalized ?? '')) return 'image'
+  if (['video-to-video', 'v2v', 'video2video'].includes(normalized ?? '')) return 'video'
+  if (['reference-to-video', 'r2v', 'ref2v', 'reference2video'].includes(normalized ?? '')) return 'reference'
+  return null
+}
+
 /** Admit the artifact fields consumed by clip history from the JSON listing. */
 function isArtifactItem(value: unknown): value is ArtifactItem {
   return value !== null && typeof value === 'object'
@@ -198,10 +208,33 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   if (params !== null && params.maxReferenceImages + params.maxReferenceVideos + params.maxReferenceAudios > 0) workflows.push('reference')
   const workflow = workflows.includes(draft.workflow) ? draft.workflow
     : draft.workflow === 'image' && workflows.includes('reference') ? 'reference' : 'text'
-  const specifications = params?.specifications
-  const selectedSpecification = specifications?.find(item => (item.resolution ?? '') === resolution
+  const frameImages = workflow === 'frames' ? [firstFrame, lastFrame]
+    : workflow === 'image' && (params?.frameSlots ?? 0) > 0 ? [firstFrame] : []
+  const referenceImages = params?.strictReferences === true && params.maxReferenceImages === 0 ? []
+    : workflow === 'reference' || workflow === 'image' && params?.frameSlots === 0 ? slots.image : []
+  const referenceVideos = workflow === 'reference' ? slots.video : []
+  const referenceAudios = workflow === 'reference' ? slots.audio : []
+  const compatibleMode = (value: string | undefined): boolean => {
+    const input = videoInputMode(value)
+    if (input === null) return true
+    if (input === 'text') return workflow === 'text'
+    if (workflow === 'text') return false
+    if (input === 'reference') return workflow === 'reference'
+    if (workflow === 'image' || workflow === 'frames') return input === 'image'
+    if (referenceVideos.length > 0) return input === 'video'
+    if (referenceImages.length > 0) return input === 'image'
+    if (referenceAudios.length > 0) return false
+    return input === 'image' ? (params?.maxReferenceImages ?? 0) > 0 : (params?.maxReferenceVideos ?? 0) > 0
+  }
+  const specifications = params?.specifications?.filter(item => compatibleMode(item.mode))
+  const sameSpecificationSettings = (item: VideoSpecification): boolean => (item.resolution ?? '') === resolution
     && (item.size ?? '') === size && (item.quality ?? '') === quality && (item.ratio ?? '') === ratio
-    && (item.mode ?? '') === mode && (item.seconds ?? 0) === draft.duration) ?? specifications?.[0]
+    && (item.seconds ?? 0) === draft.duration
+  const matchingSpecifications = specifications?.filter(sameSpecificationSettings)
+  const unselectedSettings = resolution === '' && size === '' && quality === '' && ratio === '' && draft.duration === 0
+  const selectedSpecification = matchingSpecifications?.find(item => (item.mode ?? '') === mode)
+    ?? (matchingSpecifications?.length === 1 ? matchingSpecifications[0] : undefined)
+    ?? (unselectedSettings || specifications?.length === 1 ? specifications?.[0] : undefined)
   const selectedResolution = specifications !== undefined ? selectedSpecification?.resolution ?? ''
     : params?.resolutions.includes(resolution) === true ? resolution : params?.resolutions[0] ?? ''
   const durations = params?.durationByResolution === undefined ? params?.durations ?? []
@@ -210,12 +243,6 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const duration = specifications !== undefined ? selectedSpecification?.seconds ?? 0
     : durations.includes(draft.duration) ? draft.duration
       : preferredDuration !== undefined && durations.includes(preferredDuration) ? preferredDuration : durations[0] ?? 0
-  const frameImages = workflow === 'frames' ? [firstFrame, lastFrame]
-    : workflow === 'image' && (params?.frameSlots ?? 0) > 0 ? [firstFrame] : []
-  const referenceImages = params?.strictReferences === true && params.maxReferenceImages === 0 ? []
-    : workflow === 'reference' || workflow === 'image' && params?.frameSlots === 0 ? slots.image : []
-  const referenceVideos = workflow === 'reference' ? slots.video : []
-  const referenceAudios = workflow === 'reference' ? slots.audio : []
   const hasVisualMedia = frameImages.some(item => item !== null)
     || ((params?.maxReferenceImages ?? 0) > 0 && referenceImages.length > 0)
     || ((params?.maxReferenceVideos ?? 0) > 0 && referenceVideos.length > 0)
@@ -227,8 +254,9 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const allowedRatios = ratioMenu.filter(value => value !== 'adaptive' || hasVisualMedia || frameWorkflow && params?.frameRatios !== undefined)
   const selectedRatio = specifications !== undefined ? selectedSpecification?.ratio ?? ''
     : allowedRatios.includes(ratio) ? ratio : allowedRatios[0] ?? ''
+  const modes = params?.modes.filter(compatibleMode) ?? []
   const selectedMode = specifications !== undefined ? selectedSpecification?.mode ?? ''
-    : params?.modes.includes(mode) === true ? mode : params?.modes[0] ?? ''
+    : modes.includes(mode) ? mode : modes[0] ?? ''
   const selectedQuality = specifications !== undefined ? selectedSpecification?.quality ?? ''
     : params?.qualities?.includes(quality) === true ? quality : params?.qualities?.[0] ?? ''
   const selectedSize = specifications !== undefined ? selectedSpecification?.size ?? '' : ''
@@ -248,7 +276,8 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     || referenceAudios.length > (params?.maxReferenceAudios ?? 0)
   const settingsInvalid = params !== null && (specifications !== undefined ? selectedSpecification === undefined
     || duration === 0 || frameWorkflow && !allowedRatios.includes(selectedRatio)
-    : frameRatiosUnavailable || durations.length === 0 || params.ratios.length > 0 && selectedRatio === '')
+    : frameRatiosUnavailable || durations.length === 0 || params.ratios.length > 0 && selectedRatio === ''
+      || params.modes.length > 0 && modes.length === 0)
   const requestReferenceBytes = [...new Map([...frameImages, ...referenceImages, ...referenceVideos, ...referenceAudios]
     .filter((item): item is Reference => item !== null).map(item => [item.assetId, item])).values()]
     .reduce((total, item) => total + item.bytes, 0)
@@ -256,6 +285,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
 
   useEffect(() => {
     if (params === null || locked) return
+    if (specifications !== undefined && selectedSpecification === undefined) return
     const current = readDraft()
     const updates: Partial<VideoDraft> = {}
     if (current.duration !== duration) updates.duration = duration
@@ -271,7 +301,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
       resolution: selectedResolution, duration: String(duration),
     }) } : settingsInvalid ? { message: null } : {}) })
   }, [actions, duration, locked, mode, params, readDraft, selectedMode, selectedQuality, selectedSize,
-    selectedRatio, selectedResolution, settingsInvalid, t])
+    selectedRatio, selectedResolution, selectedSpecification, settingsInvalid, specifications, t])
 
   useEffect(() => {
     if (locked || signedIn !== true || params === null || accountIdentity === null) return
@@ -910,7 +940,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
                   {params.audioToggle && <Switch checked={audio} onChange={(value) => { actions.patch({ audio: value }) }} label={t('audio')} disabled={locked} className={css.audioSwitch} />}
                 </div></div>}
                 {specifications === undefined && params !== null && params.modes.length > 0 && <fieldset className={css.settingsGroup}><legend>{t('mode')}</legend>
-                  <div className={css.optionGrid}>{params.modes.map(value => <button key={value} type="button" aria-pressed={selectedMode === value}
+                  <div className={css.optionGrid}>{modes.map(value => <button key={value} type="button" aria-pressed={selectedMode === value}
                     className={css.parameterOption} onClick={() => { actions.patch({ mode: value }) }}>{value}</button>)}</div></fieldset>}
                 {specifications === undefined && (params?.qualities?.length ?? 0) > 0 && <fieldset className={css.settingsGroup}><legend>{t('quality')}</legend>
                   <div className={css.optionGrid}>{params?.qualities?.map(value => <button key={value} type="button"

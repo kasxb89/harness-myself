@@ -46,7 +46,7 @@ export function imageServerResultRecovery(rows: readonly unknown[], model: strin
   const supportedPlugin = plugin !== undefined && Object.keys(plugin).length === 3 && plugin.api_version === 1
     && plugin.version === '1.0.0' && (plugin.key === 'codebloom-image' || plugin.key === 'ycapi')
   return kind === 'image' && (parameters?.['x-model-kind'] === undefined || parameters['x-model-kind'] === 'image')
-    && (row?.route === undefined || row.route === '/v1/images/generations')
+    && (row?.route === undefined || row.route === '/v1/images/generations' || row.route === '/v1/images/edits')
     && supportedPlugin && (plugin.key !== 'ycapi' || ycapiReady)
 }
 

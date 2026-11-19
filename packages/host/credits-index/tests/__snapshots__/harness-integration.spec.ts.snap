@@ -22,6 +22,14 @@ exports[`deployed Harness API through the real product Loader > edits current-ch
         "description": "Published output container format.",
         "type": "string",
       },
+      "generation_mode": {
+        "description": "Optional image input mode from generation_modes in list_image_models. Image-to-image requires real reference_images; text-to-image cannot carry references. When omitted, actual references select image-to-image, otherwise text-to-image. This field does not select a provider quality mode.",
+        "enum": [
+          "text-to-image",
+          "image-to-image",
+        ],
+        "type": "string",
+      },
       "model": {
         "description": "Optional image model id such as gpt-image-2. The current human request overrides the frozen personal image preference, then the backend-configured image default for this account; an older or unset configuration retains the account’s first available image model.",
         "type": "string",
@@ -94,6 +102,10 @@ exports[`deployed Harness API through the real product Loader > exposes account-
         "jpeg",
         "webp",
       ],
+      "generation_modes": [
+        "text-to-image",
+        "image-to-image",
+      ],
       "id": "gpt-image-2",
       "max_count": 4,
       "max_reference_images": 16,
@@ -117,6 +129,10 @@ exports[`deployed Harness API through the real product Loader > exposes account-
       "backgrounds": [],
       "display_name": "精确图片型号",
       "formats": [],
+      "generation_modes": [
+        "text-to-image",
+        "image-to-image",
+      ],
       "id": "yunshu-internal-gpt-image-2",
       "max_count": 1,
       "max_reference_images": 6,
@@ -141,7 +157,7 @@ exports[`deployed Harness API through the real product Loader > exposes account-
 exports[`deployed Harness API through the real product Loader > exposes account-filtered image controls with exact live sizes and separate resolution tiers > image controls model result 1`] = `
 [
   {
-    "text": "{"status":"listed","models":[{"id":"gpt-image-2","display_name":"gpt-image-2","parameters_verified":true,"sizes":["1536x1024"],"max_count":4,"max_reference_images":16,"qualities":["auto","low","medium","high"],"backgrounds":["auto","transparent","opaque"],"formats":["png","jpeg","webp"],"moderations":["auto","low"],"seed":false},{"id":"yunshu-internal-gpt-image-2","display_name":"精确图片型号","parameters_verified":true,"sizes":["16:9","9:16"],"resolutions":["2k","4k"],"max_count":1,"max_reference_images":6,"qualities":[],"backgrounds":[],"formats":[],"moderations":[],"seed":false}],"default_model_id":"gpt-image-2","default_configured":false,"default_available":true,"default_source":"legacy","message":"按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。"}",
+    "text": "{"status":"listed","models":[{"id":"gpt-image-2","display_name":"gpt-image-2","parameters_verified":true,"sizes":["1536x1024"],"max_count":4,"max_reference_images":16,"generation_modes":["text-to-image","image-to-image"],"qualities":["auto","low","medium","high"],"backgrounds":["auto","transparent","opaque"],"formats":["png","jpeg","webp"],"moderations":["auto","low"],"seed":false},{"id":"yunshu-internal-gpt-image-2","display_name":"精确图片型号","parameters_verified":true,"sizes":["16:9","9:16"],"resolutions":["2k","4k"],"max_count":1,"max_reference_images":6,"generation_modes":["text-to-image","image-to-image"],"qualities":[],"backgrounds":[],"formats":[],"moderations":[],"seed":false}],"default_model_id":"gpt-image-2","default_configured":false,"default_available":true,"default_source":"legacy","message":"按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。"}",
     "type": "text",
   },
 ]
@@ -163,6 +179,10 @@ exports[`deployed Harness API through the real product Loader > leaves unsupport
       "backgrounds": [],
       "display_name": "yunshu-internal-gpt-image-2",
       "formats": [],
+      "generation_modes": [
+        "text-to-image",
+        "image-to-image",
+      ],
       "id": "yunshu-internal-gpt-image-2",
       "max_count": 1,
       "max_reference_images": 6,
@@ -181,6 +201,9 @@ exports[`deployed Harness API through the real product Loader > leaves unsupport
       "backgrounds": [],
       "display_name": "unknown-renderer",
       "formats": [],
+      "generation_modes": [
+        "text-to-image",
+      ],
       "id": "unknown-renderer",
       "max_count": 1,
       "max_reference_images": 0,
@@ -409,7 +432,31 @@ exports[`deployed Harness API through the real product Loader > requires login f
           "display_name": {
             "type": "string",
           },
+          "edit_specifications": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "quality": {
+                  "type": "string",
+                },
+                "resolution": {
+                  "type": "string",
+                },
+                "size": {
+                  "type": "string",
+                },
+              },
+              "type": "object",
+            },
+            "type": "array",
+          },
           "formats": {
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "generation_modes": {
             "items": {
               "type": "string",
             },
@@ -419,6 +466,9 @@ exports[`deployed Harness API through the real product Loader > requires login f
             "type": "string",
           },
           "max_count": {
+            "type": "number",
+          },
+          "max_reference_bytes": {
             "type": "number",
           },
           "max_reference_images": {
@@ -491,7 +541,7 @@ exports[`deployed Harness API through the real product Loader > requires login f
 
 exports[`deployed Harness API through the real product Loader > requires login for image model discovery and unregisters its visible schema when unloaded > image catalog tool schema 1`] = `
 {
-  "description": "Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Before asking about an image model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. Listing does not reserve capacity, estimate prices or authorize a generation.",
+  "description": "Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. generation_modes identifies executable text-to-image and image-to-image inputs. For image-to-image, use edit_specifications when present and supply real reference_images; an edits-only model cannot generate without references. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Before asking about an image model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. Listing does not reserve capacity, estimate prices or authorize a generation.",
   "name": "list_image_models",
   "parameters": {
     "properties": {},

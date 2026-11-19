@@ -38,6 +38,7 @@ const MEDIA_FAILURE_KEYS = {
   'specification-required': 'error.mediaSpecificationRequired',
   'media-parameters-invalid': 'error.mediaParametersInvalid',
   'media-model-mismatch': 'error.mediaModelMismatch',
+  'image-reference-required': 'error.imageReferenceRequired',
   'plan-parameters': 'error.creationPlanParameters',
   'video-count-limit': 'error.videoCountLimit',
   'video-intent-unavailable': 'error.videoIntentUnavailable',

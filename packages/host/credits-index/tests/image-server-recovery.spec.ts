@@ -44,6 +44,13 @@ describe('exact retained image declarations', () => {
     expect(imageServerSubmissionRequiresUpdate([row()], model)).toBe(false)
     expect(imageServerSubmissionRequiresUpdate([ycapiRow(recovery), row(ycapiPlugin)], model)).toBe(true)
   })
+  it('retains the same reviewed recovery protocol on an explicitly declared standard edit route', () => {
+    expect(imageServerResultRecovery([{ ...row(), route: '/v1/images/edits' }], model)).toBe(true)
+    expect(imageServerResultRecovery([{ ...ycapiRow(recovery), route: '/v1/images/edits' }], model)).toBe(true)
+    expect(imageServerSubmissionRequiresUpdate([{ ...ycapiRow(recovery), route: '/v1/images/edits' }], model)).toBe(false)
+    expect(imageServerSubmissionRequiresUpdate([{ ...row(ycapiPlugin), route: '/v1/images/edits' }], model)).toBe(true)
+    expect(imageServerResultRecovery([{ ...ycapiRow(recovery), route: '/custom/images/edits' }], model)).toBe(false)
+  })
   it.for([undefined, null, {}, { ...recovery, schema_version: 2 }, { ...recovery, submit_model_metadata: false },
     { ...recovery, original_task_artifacts: false }, { ...recovery, unreviewed: true }])(
     'does not submit through an absent or invalid YCAPI receipt declaration %#', (support) => {

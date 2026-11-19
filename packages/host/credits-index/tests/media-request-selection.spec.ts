@@ -162,6 +162,88 @@ describe('per-RPC personal media snapshots through native and nested execution',
     expect(f.selections[1]).toMatchObject({ model: 'MiniMax-H3', resolution: '768P' })
   })
 
+  it.each([
+    { kind: 'image' as const, human: '使用image-a处理这张参考图并生成16:9图片，2k',
+      expected: { model: 'image-a', size: '16:9', resolution: '2k' } },
+    { kind: 'video' as const, human: '使用video-b根据参考视频制作16:9视频，1080P',
+      expected: { model: 'video-b', ratio: '16:9', resolution: '1080P' } },
+  ])('preserves an explicit $kind model and output controls in a reference-editing instruction', async ({ kind, human, expected }) => {
+    const f = await fixture()
+    await f.save({ model: 'image-b', parameters: {} }, { model: 'MiniMax-H3', parameters: {} })
+    f.session.append('user/message', await f.admit('reference-editing-choice', human), { surfaceOp: 'append' })
+    const result = await f.execute(kind)
+    expect(result.isError).not.toBe(true)
+    expect(f.selections).toEqual([expected])
+    expect(f.choices[0]?.source).toBe('human')
+  })
+
+  it.each([
+    '参考图来自使用image-a生成的16:9和2k素材，生成图片',
+    '这张参考图使用image-a生成16:9的2k图片，生成图片',
+    '参考图片：使用image-a生成16:9的2k图片，生成图片',
+    '参考图尺寸为16:9且分辨率2k，生成图片',
+    '不要使用image-a将参考图改为16:9和2k，生成图片',
+    '说明文字是“使用image-a处理参考图并生成16:9的2k图片”，生成图片',
+  ])('keeps reference metadata, negation and quoted choices out of the output selection: %s', async (human) => {
+    const f = await fixture()
+    await f.save({ model: 'image-b', parameters: {} }, null)
+    f.session.append('user/message', await f.admit('reference-description', human), { surfaceOp: 'append' })
+    const result = await f.execute('image')
+    expect(result.isError).not.toBe(true)
+    expect(f.selections).toEqual([{ model: 'image-b' }])
+    expect(f.choices).toEqual([{ model: 'image-b', parameters: {}, source: 'personal' }])
+  })
+
+  it.each(['模式image-to-image', 'mode: image_to_image', '模式为图生图'])('does not save image input mode as an output parameter: %s', async (inputMode) => {
+    const f = await fixture()
+    await f.save({ model: 'image-b', parameters: {} }, null)
+    f.session.append('user/message', await f.admit('image-input-mode', `使用image-a生成1:1图片，1k，${inputMode}`),
+      { surfaceOp: 'append' })
+    const result = await f.execute('image')
+    expect(result.isError).not.toBe(true)
+    expect(f.selections).toEqual([{ model: 'image-a', size: '1:1', resolution: '1k' }])
+    expect(f.choices[0]?.parameters).not.toHaveProperty('mode')
+  })
+
+  it('resolves saved image defaults against the reference-compatible output subset', async () => {
+    const f = await fixture()
+    await f.save({ model: 'image-a', parameters: { size: '16:9', resolution: '2k' } }, null)
+    f.setModels(preferenceModels.map(model => model.id !== 'image-a' ? model : { ...model,
+      params: { ...model.params, editSpecifications: [{ size: '1:1', resolution: '1k' }] } }))
+    f.setProject({ imageEditing: true })
+    f.setCallerFields({ reference_images: ['fixture-reference'] })
+    f.session.append('user/message', await f.admit('saved-edit-defaults', '修改这张参考图的颜色'), { surfaceOp: 'append' })
+    const result = await f.execute('image')
+    expect(result.isError).not.toBe(true)
+    expect(f.selections).toEqual([{ model: 'image-a', size: '1:1', resolution: '1k', reference_images: ['fixture-reference'] }])
+  })
+
+  it('fills the selected edit specification when the human changes the image model', async () => {
+    const f = await fixture()
+    await f.save({ model: 'image-b', parameters: {} }, null)
+    f.setModels(preferenceModels.map(model => model.id !== 'image-a' ? model : { ...model,
+      params: { ...model.params, editSpecifications: [{ size: '1:1', resolution: '1k' }] } }))
+    f.setProject({ imageEditing: true })
+    f.session.append('user/message', await f.admit('explicit-edit-model', '使用image-a修改这张参考图'), { surfaceOp: 'append' })
+    const result = await f.execute('image')
+    expect(result.isError).not.toBe(true)
+    expect(f.selections).toEqual([{ model: 'image-a', size: '1:1', resolution: '1k' }])
+  })
+
+  it('rejects an explicit image output that is unavailable for editing', async () => {
+    const f = await fixture()
+    await f.save({ model: 'image-a', parameters: { size: '16:9', resolution: '2k' } }, null)
+    f.setModels(preferenceModels.map(model => model.id !== 'image-a' ? model : { ...model,
+      params: { ...model.params, editSpecifications: [{ size: '1:1', resolution: '1k' }] } }))
+    f.setProject({ imageEditing: true })
+    f.session.append('user/message', await f.admit('unsupported-explicit-edit', '使用image-a修改参考图并输出16:9图片，2k'),
+      { surfaceOp: 'append' })
+    const result = await f.execute('image')
+    expect(result.isError).toBe(true)
+    expect(f.failures[0]?.code).toBe('SPECIFICATION_NOT_SUPPORTED')
+    expect(f.selections).toEqual([])
+  })
+
   it('keeps the saved square image specification when only the agent supplies another ratio and resolution', async () => {
     const f = await fixture()
     await f.save({ model: 'image-a', parameters: { size: '1:1', resolution: '1k' } }, null)

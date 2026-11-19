@@ -832,6 +832,58 @@ describe('GenericToolCard', () => {
     expect(view.container.textContent).not.toContain(code)
   })
 
+  it.each(['zh', 'en'] as const)('distinguishes missing image references from incompatible parameters without revealing diagnostics (%s)', async (language) => {
+    const dictionary = language === 'en' ? en : zh
+    const cases = [
+      ['IMAGE_REFERENCE_REQUIRED', 'error.imageReferenceRequired'],
+      ['IMAGE_GENERATION_MODE_CONFLICT', 'error.mediaParameters'],
+      ['IMAGE_GENERATION_MODE_NOT_SUPPORTED', 'error.mediaParameters'],
+      ['IMAGE_REFERENCE_PROTOCOL_NOT_SUPPORTED', 'error.mediaParameters'],
+    ] as const
+    const recorded: string[] = []
+    for (const [code, key] of cases) {
+      for (const thrown of [false, true]) {
+        const diagnostic = 'private provider detail https://private.invalid/?key=secret C:/private/image.png'
+        const content = [{ type: 'text' as const, text: thrown ? diagnostic : JSON.stringify({
+          status: 'failed', submission_state: 'not-submitted', code, message: diagnostic,
+        }) }]
+        const block = result({ call: { name: 'generate_image', argsRaw: '{"prompt":"private prompt"}' }, content,
+          isError: thrown, ...thrown ? { error: { name: 'CreativeError', code } } : {} })
+        const inspect = vi.fn()
+        const view = render(<GenericToolCard {...props('generate_image', block)} inspect={inspect} t={makeTranslate(dictionary, commonZh)} />)
+        expect(view.getByText(dictionary[key])).toBeTruthy()
+        expect(view.queryByText(dictionary['error.operationFailed'])).toBeNull()
+        fireEvent.click(view.getByRole('button'))
+        expect(view.getAllByText(dictionary[key])).toHaveLength(2)
+        expect(view.getAllByRole('button')).toHaveLength(1)
+        expect(view.container.textContent).not.toMatch(/private|secret|C:\/|IMAGE_/u)
+        expect(inspect).not.toHaveBeenCalled()
+        expect(block.content).toBe(content)
+        expect(block.isError).toBe(thrown)
+        if (!thrown) recorded.push(view.container.textContent ?? '')
+        cleanup()
+      }
+    }
+    await expect(`${recorded.join('\n')}\n`).toMatchFileSnapshot(language === 'en'
+      ? './expected/image-parameter-failures-en.txt' : './expected/image-parameter-failures-zh.txt')
+  })
+
+  it.each(['IMAGE_REFERENCE_REQUIRED', 'IMAGE_GENERATION_MODE_CONFLICT', 'IMAGE_GENERATION_MODE_NOT_SUPPORTED',
+    'IMAGE_REFERENCE_PROTOCOL_NOT_SUPPORTED'])('keeps original image task protection ahead of %s guidance', (code) => {
+    for (const submissionState of ['pending', 'unknown'] as const) {
+      const content = [{ type: 'text' as const, text: JSON.stringify({ status: submissionState, submission_state: submissionState,
+        task_id: 'original-task', code, message: 'private parameter diagnostic' }) }]
+      const block = result({ call: { name: 'generate_image', argsRaw: '{}' }, content })
+      const view = render(<GenericToolCard {...props('generate_image', block)} />)
+      expect(view.getByText(zh[submissionState === 'pending' ? 'error.mediaTaskPending' : 'error.mediaOutcomeUnknown'])).toBeTruthy()
+      expect(view.queryByText(zh['error.imageReferenceRequired'])).toBeNull()
+      expect(view.queryByText(zh['error.mediaParameters'])).toBeNull()
+      expect(view.container.textContent).not.toContain('private parameter diagnostic')
+      expect(block.content).toBe(content)
+      cleanup()
+    }
+  })
+
   it.each(['zh', 'en'] as const)('distinguishes specification and model-selection failures without revealing diagnostics (%s)', async (language) => {
     const dictionary = language === 'en' ? en : zh
     const cases = [

@@ -181,6 +181,45 @@ describe('image creation workspace', () => {
     expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
   })
 
+  it('requires an image for an edit-only route and submits its explicit editing mode', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ ...models[0], route: '/v1/images/edits' }] } })
+      : await original(input, init))
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'Edit the supplied image' } })
+    expect(screen.getByText(zh.modeEditRequired)).toBeTruthy()
+    expect(screen.getByRole('alert').textContent).toBe(zh.referenceRequired)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+    act(() => { store.actions.appendReference({ assetId: 'ma_edit_only', name: 'source.png', url: 'blob:source', bytes: 1 }) })
+    await waitFor(() => { expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', false) })
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await screen.findByText(zh.done)
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate'))).toMatchObject({
+      generation_mode: 'image-to-image', references: ['ma_edit_only'],
+    })
+  })
+
+  it('does not offer an edit specification excluded by the model output menu', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => input === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ ...models[0], params: { ...models[0]!.params,
+        specifications: [{ size: '1:1', resolution: '1K' }],
+        editSpecifications: [{ size: '9:16', resolution: '4K' }] } }] } })
+      : await original(input, init))
+    const { props, store } = makeProps()
+    render(<ImagePage {...props} />)
+    await ready()
+    act(() => { store.actions.appendReference({ assetId: 'ma_edit_unavailable', name: 'source.png', url: 'blob:source', bytes: 1 }) })
+    fireEvent.change(screen.getByRole('textbox', { name: zh.prompt }), { target: { value: 'Keep the actual supported edit dimensions' } })
+    expect(screen.getByRole('alert').textContent).toBe(zh.settingsUnavailable)
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(fetchMock.mock.calls.some(([url]) => url === '/credits/api/image/generate')).toBe(false)
+  })
+
   it.each(['text', 'reference'] as const)('shows every live image ratio independently of its tier and submits both in %s mode', async (mode) => {
     const sizes = ['1:1', '3:2', '2:3', '4:3', '3:4', '5:4', '4:5', '16:9', '9:16', '2:1', '1:2', '21:9', '9:21']
     const original = fetchMock.getMockImplementation()!
@@ -1084,7 +1123,7 @@ describe('image creation workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: '生成图片' }))
     await screen.findByText(zh.done)
     const request = fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')
-    expect(requestBody(request)).toEqual({ session_id: 'session-a', account_id: 'account-a', prompt: 'Product photo', model: 'text-model', count: 1, size: '768x768', references: [] })
+    expect(requestBody(request)).toEqual({ session_id: 'session-a', account_id: 'account-a', prompt: 'Product photo', model: 'text-model', count: 1, size: '768x768', generation_mode: 'text-to-image', references: [] })
     expect(view.container.textContent).not.toContain('plugin:')
   })
 

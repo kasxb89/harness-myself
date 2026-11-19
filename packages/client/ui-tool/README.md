@@ -67,6 +67,8 @@ Confirmed queued video receipts show accepted queue waiting rather than a generi
 
 Complete-specification failures distinguish an unsupported combination from an incomplete selection. Invalid media parameters and a submitted model that differs from the model selected for the request have separate localized correction guidance. These cards use stable error codes, not diagnostic messages; inputs, raw response details and Inspect remain hidden. An unknown submission outcome takes priority over parameter guidance.
 
+Image editing without a required reference asks the user to add the original image. Conflicting or unsupported image input modes and unsupported reference protocols show model-parameter guidance. These preflight messages explicitly say that no generation request was submitted; accepted or unknown original tasks keep their recovery guidance and never trigger another submission.
+
 Video generation count limits and unavailable request intent have dedicated copy for `generate_video` and `generate_video_project`. The card explains that extra generation needs an explicit user request and can incur another charge; it does not treat the restriction as a server failure or retry automatically.
 
 Unavailable or changed video estimates and incomplete model selection show separate recovery copy for generation and project resumption. This copy says that no new generation request was submitted; an unknown earlier submission retains priority and still requires checking its original task. The owning [credits host](../../host/credits-index/README.md) supplies the estimate and human selection before switching video models.

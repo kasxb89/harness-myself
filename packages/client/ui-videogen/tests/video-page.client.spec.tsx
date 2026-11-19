@@ -172,6 +172,178 @@ describe('video composer', () => {
     expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ quality: 'pro' })
   })
 
+  it('submits the image input mode after uploading a frame and restores text mode without sending the retained frame', async () => {
+    const { mount, store, task } = setup({ modes: ['text-to-video', 'image-to-video'],
+      maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0 })
+    mount()
+    await ready()
+    expect(store.getSnapshot().mode).toBe('text-to-video')
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
+    const modeControls = screen.getByRole('group', { name: zh.mode })
+    expect(within(modeControls).queryByRole('button', { name: 'text-to-video' })).toBeNull()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['image'], 'first.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_image') })
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledTimes(1) })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ mode: 'image-to-video', frameImages: ['ma_image'] })
+    await waitFor(() => { expect(store.getSnapshot().phase).toBe('idle') })
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.text'] }))
+    expect(within(screen.getByRole('group', { name: zh.mode })).queryByRole('button', { name: 'image-to-video' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledTimes(2) })
+    const submissions = task.mock.calls.map(([init]) => requestBody(init))
+    expect(submissions[1]).toMatchObject({ mode: 'text-to-video', frameImages: [], referenceImages: [] })
+    expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_image')
+    expect(submissions).toMatchSnapshot()
+  })
+
+  it('filters complete specifications by input workflow while preserving the chosen resolution, duration and quality', async () => {
+    const specifications = ['text-to-video', 'image-to-video'].flatMap(mode => [
+      { resolution: '720p', seconds: 5, ratio: '16:9', quality: 'std', mode },
+      { resolution: '1080p', seconds: 10, ratio: '16:9', quality: 'pro', mode },
+    ])
+    const { mount, store, task } = setup({ specifications, modes: ['text-to-video', 'image-to-video'],
+      maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0 })
+    mount()
+    await ready()
+    const offers = (): HTMLElement => screen.getByRole('group', { name: zh.specification })
+    expect(within(offers()).getAllByRole('button')).toHaveLength(2)
+    expect(offers().textContent).not.toContain('image-to-video')
+    fireEvent.click(within(offers()).getByRole('button', { name: '16:9 · 1080p · 10 秒 · pro · text-to-video' }))
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
+    expect(offers().textContent).not.toContain('text-to-video')
+    expect(store.getSnapshot()).toMatchObject({ resolution: '1080p', duration: 10, quality: 'pro', mode: 'image-to-video' })
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['image'], 'first.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_image') })
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ resolution: '1080p', durationSeconds: 10,
+      quality: 'pro', mode: 'image-to-video', frameImages: ['ma_image'] })
+    await waitFor(() => { expect(store.getSnapshot().phase).toBe('idle') })
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.text'] }))
+    expect(store.getSnapshot()).toMatchObject({ resolution: '1080p', duration: 10, quality: 'pro', mode: 'text-to-video' })
+    expect({ offers: within(offers()).getAllByRole('button').map(item => item.textContent),
+      submitted: requestBody(task.mock.calls[0]?.[0]) }).toMatchSnapshot()
+  })
+
+  it('requires an explicit whole specification when switching inputs would choose among different price tiers', async () => {
+    const specifications = [
+      { resolution: '720p', seconds: 5, ratio: '16:9', quality: 'std', mode: 'text-to-video' },
+      { resolution: '1080p', seconds: 5, ratio: '16:9', quality: 'std', mode: 'image-to-video' },
+      { resolution: '1080p', seconds: 10, ratio: '16:9', quality: 'pro', mode: 'image-to-video' },
+    ]
+    const { mount, store, task } = setup({ specifications, maxReferenceImages: 0,
+      maxReferenceVideos: 0, maxReferenceAudios: 0 })
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
+    expect(store.getSnapshot()).toMatchObject({ resolution: '720p', duration: 5, quality: 'std', mode: 'text-to-video' })
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('alert').textContent).toBe(zh.settingsUnavailableForModel)
+    const offers = screen.getByRole('group', { name: zh.specification })
+    expect(within(offers).getAllByRole('button')).toHaveLength(2)
+    fireEvent.click(within(offers).getByRole('button', { name: '16:9 · 1080p · 5 秒 · std · image-to-video' }))
+    expect(store.getSnapshot()).toMatchObject({ resolution: '1080p', duration: 5, quality: 'std', mode: 'image-to-video' })
+    expect(screen.queryByText(zh.settingsUnavailableForModel)).toBeNull()
+    expect(task).not.toHaveBeenCalled()
+  })
+
+  it('adopts the sole compatible whole specification when its input mode has only one available tier', async () => {
+    const { mount, store } = setup({ specifications: [
+      { resolution: '720p', seconds: 5, ratio: '16:9', quality: 'std', mode: 'text-to-video' },
+      { resolution: '1080p', seconds: 10, ratio: '16:9', quality: 'pro', mode: 'image-to-video' },
+    ], maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0 })
+    mount()
+    await ready()
+    expect(store.getSnapshot()).toMatchObject({ resolution: '720p', duration: 5, quality: 'std', mode: 'text-to-video' })
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
+    expect(store.getSnapshot()).toMatchObject({ resolution: '1080p', duration: 10, quality: 'pro', mode: 'image-to-video' })
+    const offers = screen.getByRole('group', { name: zh.specification })
+    expect(within(offers).getAllByRole('button')).toHaveLength(1)
+    expect(within(offers).getByRole('button').getAttribute('aria-pressed')).toBe('true')
+    expect(screen.queryByText(zh.settingsUnavailableForModel)).toBeNull()
+  })
+
+  it.each([
+    { complete: false, mode: 'text-to-video' }, { complete: true, mode: 'text-to-video' },
+    { complete: false, mode: 'reference-to-video' }, { complete: true, mode: 'reference-to-video' },
+  ])('blocks image workflow when only $mode is declared (complete specifications: $complete)', async ({ complete, mode }) => {
+    const { mount, store, task } = setup({ modes: [mode],
+      ...(complete ? { specifications: [{ resolution: '720p', seconds: 5, ratio: '16:9', mode }] } : {}),
+      maxReferenceImages: 0, maxReferenceVideos: 0, maxReferenceAudios: 0 })
+    mount()
+    await ready()
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['image'], 'first.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().firstFrame?.assetId).toBe('ma_image') })
+    writePrompt()
+    expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('alert').textContent).toBe(zh.settingsUnavailableForModel)
+    expect(task).not.toHaveBeenCalled()
+  })
+
+  it.each(['std', 'pro'])('retains the opaque vendor mode %s across workflow changes', async (mode) => {
+    const { mount, store, task } = setup({ modes: ['std', 'pro'], maxReferenceImages: 0,
+      maxReferenceVideos: 0, maxReferenceAudios: 0 })
+    mount()
+    await ready()
+    fireEvent.click(within(screen.getByRole('group', { name: zh.mode })).getByRole('button', { name: mode }))
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.image'] }))
+    expect(store.getSnapshot().mode).toBe(mode)
+    fireEvent.click(screen.getByRole('button', { name: zh['workflow.text'] }))
+    expect(store.getSnapshot().mode).toBe(mode)
+    writePrompt()
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ mode, frameImages: [] })
+  })
+
+  it.each([false, true])('filters reference input modes using the actual media with complete specifications %s', async (complete) => {
+    const modes = ['text_to_video', 'image_to_video', 'video_to_video', 'reference_to_video']
+    const { mount, store, task, asset } = setup({ modes, frameSlots: 0,
+      ...(complete ? { specifications: modes.map(mode => ({ resolution: '720p', seconds: 5, ratio: '16:9', mode })) } : {}),
+      maxReferenceImages: 1, maxReferenceVideos: 1, maxReferenceAudios: 1 })
+    asset.mockResolvedValueOnce(json({ ok: true, asset: { assetId: 'ma_image' } }))
+      .mockResolvedValueOnce(json({ ok: true, asset: { assetId: 'ma_video' } }))
+    mount()
+    await ready()
+    writePrompt()
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['image'], 'reference.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(1) })
+    const choices = (): HTMLElement => screen.getByRole('group', { name: complete ? zh.specification : zh.mode })
+    expect(choices().textContent).toContain('image_to_video')
+    expect(choices().textContent).toContain('reference_to_video')
+    expect(choices().textContent).not.toContain('text_to_video')
+    expect(choices().textContent).not.toContain('video_to_video')
+    fireEvent.click(within(choices()).getByRole('button', { name: complete ? '16:9 · 720p · 5 秒 · image_to_video' : 'image_to_video' }))
+    fireEvent.change(screen.getByLabelText(zh.addMedia), {
+      target: { files: [new File(['video'], 'reference.mp4', { type: 'video/mp4' })] },
+    })
+    await waitFor(() => { expect(store.getSnapshot().uploading).toBeNull(); expect(asset).toHaveBeenCalledTimes(2) })
+    expect(choices().textContent).not.toContain('image_to_video')
+    expect(choices().textContent).toContain('video_to_video')
+    expect(choices().textContent).toContain('reference_to_video')
+    if (complete) {
+      expect(screen.getByRole('button', { name: zh.submit })).toHaveProperty('disabled', true)
+    }
+    fireEvent.click(within(choices()).getByRole('button', { name: complete ? '16:9 · 720p · 5 秒 · reference_to_video' : 'reference_to_video' }))
+    fireEvent.click(screen.getByRole('button', { name: zh.submit }))
+    await waitFor(() => { expect(task).toHaveBeenCalledOnce() })
+    expect(requestBody(task.mock.calls[0]?.[0])).toMatchObject({ mode: 'reference_to_video',
+      frameImages: [], referenceImages: ['ma_image'], referenceVideos: ['ma_video'], referenceAudios: [] })
+  })
+
   it('clears unsupported video, audio and frame references while retaining image materials for AI writing', async () => {
     const { mount, task, props, store } = setup({ strictReferences: true, frameSlots: 0, maxReferenceImages: 0,
       maxReferenceVideos: 0, maxReferenceAudios: 0 })

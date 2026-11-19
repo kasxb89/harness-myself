@@ -6,7 +6,7 @@ import type { ProjectionDefinition } from '@deepseek-ai/dsh-session-projection'
 import { z } from 'zod'
 import { CreativeError } from './creative-store.ts'
 import type { ImageParams, MediaSpecification, ModelCapability, VideoParams } from './media.ts'
-import { canonicalMediaSpecification, resolveMediaSpecification } from './media-request-specification.ts'
+import { canonicalMediaSpecification, imageSpecifications, resolveMediaSpecification } from './media-request-specification.ts'
 import { validateMediaPreference, type MediaPreferencesStore } from './media-preferences.ts'
 import type { MediaRequestSelection } from './media-preferences-types.ts'
 import { humanVideoDurationSeconds, videoGenerationIntentOf } from './video-generation-intent.ts'
@@ -100,7 +100,8 @@ export function registerMediaRequestSelection(
 
 function unquoted(text: string): string {
   return text.normalize('NFKC').replaceAll(/"[^"\n]*"|'[^'\n]*'|“[^”\n]*”|‘[^’\n]*’|「[^」\n]*」|『[^』\n]*』|《[^》\n]*》|`[^`\n]*`/gu, '')
-    .split(/[，,。；;\n]/u).filter(clause => !/不要|不需|无需|不用|而非|不是|参考(?:图|视频|素材)/u.test(clause)).join('，')
+    .split(/[，,。；;\n]/u).filter(clause => !/不要|不需|无需|不用|而非|不是/u.test(clause)
+      && !/^\s*(?:这(?:张|幅|段|份|个)?|该)?参考(?:图片?|视频|素材)(?:的)?\s*[:：]?\s*(?:来自|来源|由|是|为|使用|采用|用|尺寸|分辨率|比例|质量|品质|模式)/u.test(clause)).join('，')
 }
 
 function humanFields(
@@ -135,6 +136,7 @@ function humanFields(
   }
   for (const [field, label] of [['quality', '(?:质量|品质|quality)'], ['mode', '(?:模式|mode)'], ['background', '(?:背景模式|background)'],
     ['format', '(?:输出格式|format)'], ['moderation', '(?:审核等级|moderation)']] as const) {
+    if (kind === 'image' && field === 'mode') continue
     const matches = [...value.matchAll(new RegExp(`${label}\\s*(?:为|是|[:：=])?\\s*([a-z0-9_-]+)`, 'giu'))].map(match => match[1])
     if (new Set(matches).size === 1 && matches[0] !== undefined) parameters[field] = matches[0]
   }
@@ -202,6 +204,8 @@ export async function needsMediaRequestSelectionCatalog(
 /** Host-resolved workflow facts; model arguments cannot declare an auxiliary role or rewrite clip timing. */
 export interface MediaRequestSelectionContext {
   readonly auxiliaryImage?: boolean
+  /** Whether this image request carries editing references, independently from output quality. */
+  readonly imageEditing?: boolean
   readonly videoProject?: boolean
   readonly plannedDurations?: readonly number[]
 }
@@ -326,6 +330,9 @@ export function resolveMediaRequestSelection<T extends Readonly<Record<string, u
   const { snapshot, human, revision, explicitModel } = inputs
   const choice = modelChoiceOf(inputs, kind, scope)
   const selectedCapability = models.find(model => model.kind === kind && model.id === (choice?.model ?? namedArgs.model))
+  const specifications = selectedCapability === undefined ? undefined : kind === 'image'
+    ? imageSpecifications(selectedCapability.params as ImageParams, context?.imageEditing === true)
+    : (selectedCapability.params as VideoParams).specifications
   if (choice !== undefined && selectedCapability !== undefined && typeof namedArgs.model === 'string' && namedArgs.model !== choice.model) {
     throw new CreativeError('MEDIA_MODEL_MISMATCH', 409,
       `当前请求选择的模型为 ${selectedCapability.id}，与工具指定的模型不一致。请读取当前模型选择，并使用该模型的规格重新提交；本次尚未提交生成。`)
@@ -379,9 +386,19 @@ export function resolveMediaRequestSelection<T extends Readonly<Record<string, u
   const preference = snapshot.state === 'selected' ? snapshot[kind] : null
   if (preference === null || explicitModel !== undefined && explicitModel !== preference.model) {
     if (explicitModel !== undefined) validateMediaPreference(kind, { model: explicitModel, parameters: explicit }, models)
-    return {
+    const selected: Record<string, unknown> = {
       ...requestArgs, ...explicitModel === undefined ? {} : { model: explicitModel }, ...explicit,
-    } as T & { readonly model?: string }
+    }
+    if (kind === 'image' && context?.imageEditing === true) {
+      const complete = resolveMediaSpecification(specifications, {
+        ...typeof selected.size === 'string' ? { size: selected.size } : {},
+        ...typeof selected.resolution === 'string' ? { resolution: selected.resolution } : {},
+        ...typeof selected.quality === 'string' ? { quality: selected.quality } : {},
+      })
+      if (!complete.ok) throw new CreativeError(complete.code, 409, complete.message)
+      return { ...selected, ...complete.specification } as T & { readonly model?: string }
+    }
+    return selected as T & { readonly model?: string }
   }
   let normalized = canonicalMediaRequestParameters(
     selectedCapability, { ...preference.parameters, ...explicit },
@@ -391,8 +408,6 @@ export function resolveMediaRequestSelection<T extends Readonly<Record<string, u
   if (plannedVideo) delete normalized.seconds
   if (auxiliaryImage || imageTotal !== undefined && explicit.count === undefined) delete normalized.count
   const model = explicitModel ?? preference.model
-  const capability = models.find(value => value.kind === kind && value.id === model)
-  const specifications = (capability?.params as ImageParams | VideoParams | undefined)?.specifications
   let effectiveArgs: Record<string, unknown> = requestArgs
   if (specifications !== undefined) {
     const fields = ['size', 'resolution', 'seconds', 'ratio', 'quality', 'mode'] as const
