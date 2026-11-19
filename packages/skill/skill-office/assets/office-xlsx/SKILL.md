@@ -1,15 +1,15 @@
 ---
 name: office-xlsx
-description: Read, create, and modify Excel workbooks (.xlsx), including data, formulas, formatting, and pandas analysis. Use for Excel inputs or deliverables. Load before running Office commands. Data and formula tasks skip visual inspection; inspect only for formatting or layout needs. Use only bundled LibreOffice unless the user explicitly opts out; without that opt-out, do not search for another LibreOffice executable.
+description: Read, create, and modify Excel workbooks (.xlsx), including data, formulas, formatting, and pandas analysis. Use workbook_create directly for ordinary new files when available. Load this skill for custom workbooks or existing-file edits. Data and formula tasks skip visual inspection; inspect only for formatting or layout needs. Use only bundled LibreOffice unless the user explicitly opts out; do not search for another executable.
 ---
 
 # Excel workbooks
 
-Follow an explicit user or applicable AGENTS.md requirement for an environment or library. Otherwise call `load_workspace_dependencies` and run its Python executable with bundled `openpyxl` and `pandas`. Do not install packages or search for a system Python for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.
+For an ordinary new editable workbook, use `workbook_create` directly when available, unless the user or applicable AGENTS.md selects another authoring environment or library. Supply the complete workbook once; the tool locates its runtime, checks structure, and recalculates explicit formulas. Do not call `load_workspace_dependencies`, write an authoring script, or repeat those checks for this path. Follow the visual-check rules below and present the file when applicable checks pass. Custom workbooks, charts, templates, unsupported features, and large local datasets use the programmable workflow.
+
+For the programmable workflow, follow an explicit user or applicable AGENTS.md requirement for an environment or library. Otherwise call `load_workspace_dependencies` once and reuse its Python executable with bundled `openpyxl` and `pandas` throughout the task. Do not install packages or search for a system Python for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.
 
 Keep scripts, working files, and outputs in the task workspace. The runtime and skill directory are shared read-only resources. Save to a new workbook unless the user requests an in-place edit.
-
-When `workbook_create` is available and covers a new ordinary file, prefer it to writing an authoring script. Supply content once; it locates the bundled runtime and performs structural checks. Follow the remaining visual or formula checks indicated by its result, then present the final file. Custom layouts, existing-file edits, templates, unsupported features, and large local datasets keep the programmable workflow below; do not reject those requests merely because the structured tool does not cover them.
 
 For supported existing-file edits, use `office_inspect` then `office_patch` with its exact `source_sha256`. It preserves unrelated package parts and publishes a new file. A compatibility warning or unsupported operation means continue the programmable workflow below rather than refuse the user’s request. A changed source requires a fresh inspection; do not overwrite or blindly retry against stale indices.
 
@@ -45,7 +45,7 @@ Do not rename `.xls`, `.xlsb`, encrypted files, or macro-enabled files to `.xlsx
 
 ## Check and deliver
 
-Run the shared checker with the selected Python executable; `<skill-directory>` is this loaded skill's resource base:
+For a file created or changed by a custom script, run the shared checker with the selected Python executable; `<skill-directory>` is this loaded skill's resource base. `workbook_create` and `office_patch` already perform this check:
 
 ```text
 <python> <skill-directory>/../scripts/check_office.py <workbook.xlsx> --out <checks.json>

@@ -1,0 +1,39 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`bundled Office skills > routes ordinary office-docx creation before programmable setup and duplicate checks 1`] = `
+{
+  "assets": [],
+  "description": "Create, read, edit, and check Word documents (.docx), including reports, letters, and tables. Use word_create directly for ordinary new files when available. Load this skill for custom authoring, existing-file edits, or layout checks. Use only bundled LibreOffice unless the user explicitly opts out; do not search for another LibreOffice executable.",
+  "ordinary": "For an ordinary new editable document, use \`word_create\` directly when available, unless the user or applicable AGENTS.md selects another authoring environment or library. Supply the complete content once; the tool locates its runtime and performs structural checks. Do not call \`load_workspace_dependencies\`, write an authoring script, or run another structural checker for this path. Complete the applicable layout checks below, then present the file. Custom layouts, templates, unsupported features, and large local datasets use the programmable workflow.",
+  "pdf": [
+    "Only for a user-requested PDF deliverable, run \`"<node>" "<cli>" convert --input report.docx --output report.pdf\`. Visual inspection alone does not require PDF conversion.",
+  ],
+  "programmable": "For the programmable workflow, use \`python-docx\` for DOCX creation and ordinary edits. Follow an explicit user or applicable AGENTS.md requirement for a project environment or another library. Otherwise call \`load_workspace_dependencies\` once and reuse its Python executable and bundled libraries throughout the task. Do not install packages or discover a system Python for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.",
+}
+`;
+
+exports[`bundled Office skills > routes ordinary office-pptx creation before programmable setup and duplicate checks 1`] = `
+{
+  "assets": [
+    "Reuse local images supplied for this task first. Prefer editable text, tables, charts, and shapes for information that does not need a photograph. Gather the needed assets together before authoring instead of interrupting each slide for another search or generation. Source photographs through available tools only when the brief needs them, save them locally, and retain their returned source information. Create AI illustrations only when the user requests them or the brief requires them; an ordinary deck does not need a generated image for every slide.",
+  ],
+  "description": "Create, read, edit, and check PowerPoint presentations (.pptx), including text, tables, images, and charts. Use slides_create directly for ordinary new decks when available. Load this skill for custom layouts, existing-deck edits, or visual checks. Use only bundled LibreOffice unless the user explicitly opts out; do not search for another LibreOffice executable.",
+  "ordinary": "For an ordinary new editable deck, use \`slides_create\` directly when available, unless the user or applicable AGENTS.md selects another authoring environment or library. Supply the complete deck once; the tool locates its runtime and performs structural checks. Do not call \`load_workspace_dependencies\`, write an authoring script, or run another structural checker for this path. Complete the visual checks below, then present the file. Custom layouts, templates, unsupported features, and large local datasets use the programmable workflow.",
+  "pdf": [
+    "Only for a user-requested PDF deliverable, run \`"<node>" "<cli>" convert --input report.pptx --output report.pdf\`. Visual inspection alone does not require PDF conversion.",
+  ],
+  "programmable": "For the programmable workflow, follow an explicit user or applicable AGENTS.md requirement for an environment or library. Otherwise call \`load_workspace_dependencies\` once and reuse its Python executable and bundled presentation libraries throughout the task. Do not install npm or pip packages or locate a system interpreter for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.",
+}
+`;
+
+exports[`bundled Office skills > routes ordinary office-xlsx creation before programmable setup and duplicate checks 1`] = `
+{
+  "assets": [],
+  "description": "Read, create, and modify Excel workbooks (.xlsx), including data, formulas, formatting, and pandas analysis. Use workbook_create directly for ordinary new files when available. Load this skill for custom workbooks or existing-file edits. Data and formula tasks skip visual inspection; inspect only for formatting or layout needs. Use only bundled LibreOffice unless the user explicitly opts out; do not search for another executable.",
+  "ordinary": "For an ordinary new editable workbook, use \`workbook_create\` directly when available, unless the user or applicable AGENTS.md selects another authoring environment or library. Supply the complete workbook once; the tool locates its runtime, checks structure, and recalculates explicit formulas. Do not call \`load_workspace_dependencies\`, write an authoring script, or repeat those checks for this path. Follow the visual-check rules below and present the file when applicable checks pass. Custom workbooks, charts, templates, unsupported features, and large local datasets use the programmable workflow.",
+  "pdf": [
+    "For a user-requested PDF export, use \`"<node>" "<cli>" convert --input report.xlsx --output report.pdf\`. PDF conversion is not a fallback for failed visual QA.",
+  ],
+  "programmable": "For the programmable workflow, follow an explicit user or applicable AGENTS.md requirement for an environment or library. Otherwise call \`load_workspace_dependencies\` once and reuse its Python executable with bundled \`openpyxl\` and \`pandas\` throughout the task. Do not install packages or search for a system Python for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.",
+}
+`;

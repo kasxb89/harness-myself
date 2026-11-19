@@ -41,6 +41,35 @@ describe('bundled Office skills', () => {
     }
   })
 
+  it.each([
+    ['office-docx', 'word_create'], ['office-pptx', 'slides_create'], ['office-xlsx', 'workbook_create'],
+  ])('routes ordinary %s creation before programmable setup and duplicate checks', async (name, tool) => {
+    const ctx = new Context()
+    try {
+      await ctx.plugin(SkillRegistry)
+      await ctx.plugin(SkillOffice, { cli: false })
+      const skill = await ctx.skills.get(name)
+      expect(skill).toBeDefined()
+      const paragraphs = skill!.content.split('\n\n')
+      const ordinary = paragraphs[1]
+      expect(ordinary).toContain(`use \`${tool}\` directly`)
+      expect(ordinary).toContain('Do not call `load_workspace_dependencies`')
+      expect(paragraphs[2]).toContain('call `load_workspace_dependencies` once and reuse')
+      expect(skill!.content).toContain(`\`${tool}\` and \`office_patch\` already perform this check`)
+      const pdf = skill!.content.split('\n').filter(line => line.includes('user-requested PDF'))
+      if (name !== 'office-xlsx') {
+        expect(pdf).toHaveLength(1)
+        expect(pdf[0]).toContain('Visual inspection alone does not require PDF conversion.')
+        expect(skill!.content).not.toMatch(/^"<node>" "<cli>" convert /mu)
+      }
+      const assets = skill!.content.split('\n').filter(line => line.startsWith('Reuse local images supplied for this task first.'))
+      expect(assets).toHaveLength(name === 'office-pptx' ? 1 : 0)
+      expect({ description: skill!.description, ordinary, programmable: paragraphs[2], pdf, assets }).toMatchSnapshot()
+    } finally {
+      await ctx.fiber.dispose()
+    }
+  })
+
   it('loads relocated resources through a real cordis.yml composition', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-office-skills-'))
     const ctx = new Context()

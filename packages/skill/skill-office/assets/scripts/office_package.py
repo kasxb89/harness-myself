@@ -45,6 +45,8 @@ class Package:
         self.parts = {}
         self.infos = []
         self.changed = {}
+        self.trees = {}
+        self.pending = set()
         self.comment = b""
         self.formula_errors = []
         self.formula_error_count = 0
@@ -68,12 +70,20 @@ class Package:
                             raise ValueError("Office source exceeds its configured cell budget; use the programmable workflow for large workbooks")
 
     def xml(self, part):
+        """Return the command-owned tree; save_xml marks edits for the next write."""
         if part not in self.parts:
             raise ValueError("Office source is missing a referenced XML part")
-        return ET.fromstring(self.changed.get(part, self.parts[part]), ET.XMLParser(resolve_entities=False, no_network=True))
+        if part not in self.trees:
+            self.trees[part] = ET.fromstring(self.changed.get(part, self.parts[part]), ET.XMLParser(resolve_entities=False, no_network=True))
+        return self.trees[part]
 
     def save_xml(self, part, tree):
-        self.changed[part] = ET.tostring(tree, encoding="UTF-8", xml_declaration=True)
+        """Serialize a changed part only once at the next package write."""
+        self.trees[part] = tree
+        self.pending.add(part)
+
+    def changed_parts(self):
+        return self.changed.keys() | self.pending
 
     def relationships(self, part):
         name = posixpath.join(posixpath.dirname(part), "_rels", posixpath.basename(part) + ".rels")
@@ -110,6 +120,9 @@ class Package:
         return list(dict.fromkeys(warnings))
 
     def write(self, path):
+        for part in self.pending:
+            self.changed[part] = ET.tostring(self.trees[part], encoding="UTF-8", xml_declaration=True)
+        self.pending.clear()
         with zipfile.ZipFile(path, "x") as archive:
             archive.comment = self.comment
             for info in self.infos:
@@ -287,21 +300,30 @@ def range_cells(reference, maximum):
     return {f"{get_column_letter(column)}{row}" for row in range(top, bottom+1) for column in range(left, right+1)}
 
 
-def edit_cell(package, tree, operation):
+def worksheet_edit_index(tree):
+    from openpyxl.utils.cell import range_boundaries
+    cells = {node.get("r"): node for node in tree.findall("s:sheetData/s:row/s:c", NS)}
+    # Cell operations cannot change array extents or merged ranges.
+    arrays = [range_boundaries(formula.get("ref", cell.get("r"))) for cell in cells.values()
+              if (formula := cell.find("s:f", NS)) is not None and formula.get("t") == "array"]
+    merged = [range_boundaries(node.get("ref")) for node in tree.findall("s:mergeCells/s:mergeCell", NS)]
+    return {"cells": cells, "arrays": arrays, "merged": merged}
+
+
+def edit_cell(package, tree, operation, index):
     from openpyxl.utils.cell import range_boundaries
     coordinate, col_number, row_number = cell_coordinates(operation["cell"])
-    for merged in tree.findall("s:mergeCells/s:mergeCell", NS):
-        left, top, right, bottom = range_boundaries(merged.get("ref"))
+    for left, top, right, bottom in index["merged"]:
         if left <= col_number <= right and top <= row_number <= bottom and (col_number, row_number) != (left, top):
             raise ValueError("a merged cell must be edited through its top-left cell")
     if any(key in operation for key in ("value", "formula")):
-        for anchor in tree.findall("s:sheetData/s:row/s:c", NS):
-            formula = anchor.find("s:f", NS)
-            if formula is not None and formula.get("t") == "array":
-                left, top, right, bottom = range_boundaries(formula.get("ref", anchor.get("r")))
-                if left <= col_number <= right and top <= row_number <= bottom:
-                    raise ValueError("this cell belongs to an array result; edit its inputs or use the programmable workflow to replace the whole formula group")
-    cell = worksheet_cell(tree, coordinate)
+        for left, top, right, bottom in index["arrays"]:
+            if left <= col_number <= right and top <= row_number <= bottom:
+                raise ValueError("this cell belongs to an array result; edit its inputs or use the programmable workflow to replace the whole formula group")
+    cell = index["cells"].get(coordinate)
+    if cell is None:
+        cell = worksheet_cell(tree, coordinate)
+        index["cells"][coordinate] = cell
     original = cell.find("s:f", NS)
     if original is not None and original.get("t") in ("shared", "array", "dataTable") and any(key in operation for key in ("value", "formula")):
         raise ValueError("editing a shared or array formula group requires the programmable workflow")
@@ -419,6 +441,8 @@ def merge_formula_caches(package, fresh, tree, calculated_tree, name, payload):
 def calculation_copy(package):
     duplicate = copy.copy(package)
     duplicate.changed = dict(package.changed)
+    duplicate.trees = {part: copy.deepcopy(tree) for part, tree in package.trees.items()}
+    duplicate.pending = set(package.pending)
     return duplicate
 
 
@@ -503,6 +527,8 @@ def prepare_dynamic_calculation(package, payload, scratch):
         for cell in package.xml(part).findall("s:sheetData/s:row/s:c", NS):
             if cell.find("s:f", NS) is not None and dynamic_formula(package, cell):
                 targets.append((name, part, cell.get("r")))
+    if not targets:
+        return package, []
     calculation = calculation_copy(package)
     measured = []
     for index, (name, part, coordinate) in enumerate(targets):
@@ -538,18 +564,21 @@ def patch(package, spec, payload, scratch):
     if warnings:
         raise ValueError("; ".join(warnings) + " Original file is unchanged; continue with the programmable Office workflow.")
     kind = package.kind
+    parts = {} if kind == "docx" else dict(document_parts(package))
+    paragraphs = paragraph_nodes(package) if kind == "docx" else []
+    worksheets = {}
     for operation in spec["operations"]:
         if any(operation.get(key, 0) < 0 for key in ("paragraph_index", "run_index", "slide_number", "shape_id")):
             raise ValueError("edit indices cannot be negative")
         if kind == "docx" and operation["kind"] == "word_text":
             part = "word/document.xml"
             tree = package.xml(part)
-            paragraph = tree.findall(".//w:body//w:p", NS)[operation["paragraph_index"]]
+            paragraph = paragraphs[operation["paragraph_index"]]
             if "run_index" in operation:
                 paragraph = paragraph.findall(".//w:r", NS)[operation["run_index"]]
             replace_text(paragraph.findall(".//w:t", NS), operation["old_text"], operation["new_text"])
         elif kind == "pptx" and operation["kind"] in ("slide_text", "slide_notes"):
-            part = dict(document_parts(package))[str(operation["slide_number"])]
+            part = parts[str(operation["slide_number"])]
             if operation["kind"] == "slide_notes":
                 part = next(target for role, target in package.relationships(part).values() if role == "notesSlide")
                 tree = package.xml(part)
@@ -559,9 +588,11 @@ def patch(package, spec, payload, scratch):
                 shape = next(node for node in slide_shapes(tree) if shape_id(node) == operation["shape_id"])
             replace_text(shape.findall(".//a:t", NS), operation["old_text"], operation["new_text"])
         elif kind == "xlsx" and operation["kind"] == "cell":
-            part = dict(document_parts(package))[operation["sheet"]]
+            part = parts[operation["sheet"]]
             tree = package.xml(part)
-            edit_cell(package, tree, operation)
+            if part not in worksheets:
+                worksheets[part] = worksheet_edit_index(tree)
+            edit_cell(package, tree, operation, worksheets[part])
         else:
             raise ValueError("operation does not apply to this file; use the programmable workflow for other edits")
         package.save_xml(part, tree)
@@ -637,7 +668,7 @@ def main():
             if hashlib.sha256(current).hexdigest() != package.sha:
                 raise ValueError("source changed during editing; original file is preserved and no result was published")
             destination = Path.cwd() / (name_for(spec["title"]) + output.suffix)
-            result = {"path": str(destination), "format": output.suffix[1:], "check_summary": json.dumps({"operations": len(spec["operations"]), "source_sha256": package.sha, "changed_parts": sorted(package.changed), "formula_errors": package.formula_errors, "formula_error_count": package.formula_error_count, "formula_errors_truncated": package.formula_error_count > len(package.formula_errors)}),
+            result = {"path": str(destination), "format": output.suffix[1:], "check_summary": json.dumps({"operations": len(spec["operations"]), "source_sha256": package.sha, "changed_parts": sorted(package.changed_parts()), "formula_errors": package.formula_errors, "formula_error_count": package.formula_error_count, "formula_errors_truncated": package.formula_error_count > len(package.formula_errors)}),
                       "formula_recalculated": recalculated, "visual_check_required": output.suffix in (".docx", ".pptx"), "elapsed_ms": round((time.monotonic()-started)*1000)}
             if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > payload["max_output_bytes"]:
                 raise ValueError("Office patch result exceeds its configured output budget; narrow the operations or use the programmable workflow")

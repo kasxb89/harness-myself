@@ -1,15 +1,15 @@
 ---
 name: office-pptx
-description: Create, read, edit, and check PowerPoint presentations (.pptx), including slide text, tables, images, and charts. Use when a PPTX file is an input or requested deliverable. Load this skill before running Office commands. Use only bundled LibreOffice unless the user explicitly opts out; without that opt-out, do not search for another LibreOffice executable.
+description: Create, read, edit, and check PowerPoint presentations (.pptx), including text, tables, images, and charts. Use slides_create directly for ordinary new decks when available. Load this skill for custom layouts, existing-deck edits, or visual checks. Use only bundled LibreOffice unless the user explicitly opts out; do not search for another LibreOffice executable.
 ---
 
 # PowerPoint presentations
 
-Follow an explicit user or applicable AGENTS.md requirement for an environment or library. Otherwise call `load_workspace_dependencies` and use its Python executable and bundled presentation libraries. Do not install npm or pip packages or locate a system interpreter for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.
+For an ordinary new editable deck, use `slides_create` directly when available, unless the user or applicable AGENTS.md selects another authoring environment or library. Supply the complete deck once; the tool locates its runtime and performs structural checks. Do not call `load_workspace_dependencies`, write an authoring script, or run another structural checker for this path. Complete the visual checks below, then present the file. Custom layouts, templates, unsupported features, and large local datasets use the programmable workflow.
+
+For the programmable workflow, follow an explicit user or applicable AGENTS.md requirement for an environment or library. Otherwise call `load_workspace_dependencies` once and reuse its Python executable and bundled presentation libraries throughout the task. Do not install npm or pip packages or locate a system interpreter for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.
 
 Keep scripts and output files in the task workspace. The runtime and skill directory contain shared read-only resources. Match the requested slide language and the supplied presentation's design when editing it.
-
-When `slides_create` is available and covers a new ordinary file, prefer it to writing an authoring script. Supply content once; it locates the bundled runtime and performs structural checks. Follow the remaining visual or formula checks indicated by its result, then present the final file. Custom layouts, existing-file edits, templates, unsupported features, and large local datasets keep the programmable workflow below; do not reject those requests merely because the structured tool does not cover them.
 
 For supported existing-file edits, use `office_inspect` then `office_patch` with its exact `source_sha256`. It preserves unrelated package parts and publishes a new file. A compatibility warning or unsupported operation means continue the programmable workflow below rather than refuse the user’s request. A changed source requires a fresh inspection; do not overwrite or blindly retry against stale indices.
 
@@ -18,6 +18,8 @@ For supported existing-file edits, use `office_inspect` then `office_patch` with
 Use `python-pptx` to inspect or modify an existing presentation. Inspect slide layouts, text runs, images, tables, and charts before editing. Change only the requested content, preserve mixed text formatting, and save to a new file unless the user requests an in-place edit. Rebuilding slides can discard unsupported animation, SmartArt, or other extension content.
 
 For a new deck, use `python-pptx` with editable text, tables, and charts. Use local image assets rather than network-dependent image URLs. Set slide dimensions, text sizes, and chart data explicitly.
+
+Reuse local images supplied for this task first. Prefer editable text, tables, charts, and shapes for information that does not need a photograph. Gather the needed assets together before authoring instead of interrupting each slide for another search or generation. Source photographs through available tools only when the brief needs them, save them locally, and retain their returned source information. Create AI illustrations only when the user requests them or the brief requires them; an ordinary deck does not need a generated image for every slide.
 
 A minimal editable deck, run with the selected Python executable:
 
@@ -59,7 +61,7 @@ Check that text and images fit the slide dimensions, titles form a useful sequen
 
 ## Check and deliver
 
-Run the shared checker with the selected Python executable; `<skill-directory>` is this loaded skill's resource base:
+For a file created or changed by a custom script, run the shared checker with the selected Python executable; `<skill-directory>` is this loaded skill's resource base. `slides_create` and `office_patch` already perform this check:
 
 ```text
 <python> <skill-directory>/../scripts/check_office.py <presentation.pptx> --out <checks.json>
@@ -75,8 +77,9 @@ Use the `libreofficeKit.node` and `libreofficeKit.cli` absolute paths supplied i
 
 ```sh
 "<node>" "<render-wrapper>" --api "<render-api>" --cli "<cli>" --input report.pptx --output-dir preview-v1 --pages 1,3,4 --dpi 144
-"<node>" "<cli>" convert --input report.pptx --output report.pdf
 ```
+
+Only for a user-requested PDF deliverable, run `"<node>" "<cli>" convert --input report.pptx --output report.pdf`. Visual inspection alone does not require PDF conversion.
 
 Batch affected slides in one call; inspect every slide for a new deck or a whole-deck design review. Read the returned manifest and selected image paths, including missing-font diagnostics. Outputs must be new directories/files. Retain and reuse previews for the same saved source; rerender only after edits, for missing slides, or to diagnose a concrete failure. Check clipping, alignment, contrast, and chart labels. Do not substitute guessed geometry for visual evidence or repeat successful exports of unchanged slides.
 

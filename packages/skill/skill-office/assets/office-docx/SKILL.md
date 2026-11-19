@@ -1,15 +1,15 @@
 ---
 name: office-docx
-description: Create, read, edit, and check Word documents (.docx), including reports, letters, and formatted tables. Use when a DOCX file is an input or requested deliverable. Load this skill before running Office commands. Use only bundled LibreOffice unless the user explicitly opts out; without that opt-out, do not search for another LibreOffice executable.
+description: Create, read, edit, and check Word documents (.docx), including reports, letters, and tables. Use word_create directly for ordinary new files when available. Load this skill for custom authoring, existing-file edits, or layout checks. Use only bundled LibreOffice unless the user explicitly opts out; do not search for another LibreOffice executable.
 ---
 
 # Word documents
 
-Use `python-docx` for DOCX creation and ordinary edits. Follow an explicit user or applicable AGENTS.md requirement for a project environment or another library. Otherwise call `load_workspace_dependencies` and execute the returned Python path with its bundled libraries. Do not install packages or discover a system Python for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.
+For an ordinary new editable document, use `word_create` directly when available, unless the user or applicable AGENTS.md selects another authoring environment or library. Supply the complete content once; the tool locates its runtime and performs structural checks. Do not call `load_workspace_dependencies`, write an authoring script, or run another structural checker for this path. Complete the applicable layout checks below, then present the file. Custom layouts, templates, unsupported features, and large local datasets use the programmable workflow.
+
+For the programmable workflow, use `python-docx` for DOCX creation and ordinary edits. Follow an explicit user or applicable AGENTS.md requirement for a project environment or another library. Otherwise call `load_workspace_dependencies` once and reuse its Python executable and bundled libraries throughout the task. Do not install packages or discover a system Python for the default workflow. If the tool is unavailable, use an already configured environment and report a missing dependency only when it prevents the requested operation.
 
 Keep source scripts, intermediate files, and final documents in the task workspace; the runtime and this skill directory are read-only resources. Use the user's requested language and preserve an existing document's design unless a redesign is requested.
-
-When `word_create` is available and covers a new ordinary file, prefer it to writing an authoring script. Supply content once; it locates the bundled runtime and performs structural checks. Follow the remaining visual or formula checks indicated by its result, then present the final file. Custom layouts, existing-file edits, templates, unsupported features, and large local datasets keep the programmable workflow below; do not reject those requests merely because the structured tool does not cover them.
 
 For supported existing-file edits, use `office_inspect` then `office_patch` with its exact `source_sha256`. It preserves unrelated package parts and publishes a new file. A compatibility warning or unsupported operation means continue the programmable workflow below rather than refuse the user’s request. A changed source requires a fresh inspection; do not overwrite or blindly retry against stale indices.
 
@@ -35,7 +35,7 @@ python-docx does not paginate or render documents. Do not represent ordinary rep
 
 ## Check and deliver
 
-Run the shared checker with the selected Python executable; `<skill-directory>` is this loaded skill's resource base:
+For a file created or changed by a custom script, run the shared checker with the selected Python executable; `<skill-directory>` is this loaded skill's resource base. `word_create` and `office_patch` already perform this check:
 
 ```text
 <python> <skill-directory>/../scripts/check_office.py <document.docx> --out <checks.json>
@@ -51,8 +51,9 @@ Use the `libreofficeKit.node` and `libreofficeKit.cli` absolute paths supplied i
 
 ```sh
 "<node>" "<render-wrapper>" --api "<render-api>" --cli "<cli>" --input report.docx --output-dir preview-v1 --pages 1,3 --dpi 144
-"<node>" "<cli>" convert --input report.docx --output report.pdf
 ```
+
+Only for a user-requested PDF deliverable, run `"<node>" "<cli>" convert --input report.docx --output report.pdf`. Visual inspection alone does not require PDF conversion.
 
 Choose pages relevant to the requested edit; inspect all pages when whole-document layout is required. Batch selected pages in one call and use the returned manifest's page count, image paths, and missing-font diagnostics. Output directories and converted files must be new. Reuse images for the same saved document; render again only after a source change, for an unrendered page, or to diagnose a concrete failure. Check page breaks, clipped text, headings, and table widths. Do not repeatedly export unchanged documents or infer visual overflow solely from guessed text geometry.
 
