@@ -60,7 +60,7 @@ function openOfficial() {
 }
 
 describe('human-engineer demand page', () => {
-  it('defaults to private personal cards and keeps raw budgets and independent request identities', () => {
+  it('keeps personal cards minimal while retaining searchable request data and independent identities', () => {
     const profile = serviceProfile()
     const first = request({ id: 'private-a', number: 'PRIVATE-101', title: '六月订单对账', preview: '核对退款明细',
       serviceProfileId: profile.id, serviceProfileName: profile.displayName, budget: '按里程碑协商，不超过 2k',
@@ -76,9 +76,19 @@ describe('human-engineer demand page', () => {
     const firstCard = within(cards).getByRole('heading', { name: first.title }).closest('li')
     const secondCard = within(cards).getByRole('heading', { name: second.title }).closest('li')
     if (firstCard === null || secondCard === null) throw new Error('Each private request has its own card')
-    expect(firstCard.querySelector('strong')?.textContent).toBe(first.budget)
-    expect(within(firstCard).getByText('期望交付：2026-12-01')).toBeTruthy()
+    expect(within(firstCard).getByText(profile.displayName)).toBeTruthy()
+    expect(firstCard.querySelector('time')?.getAttribute('dateTime')).toBe(first.updatedAt)
+    expect(firstCard.querySelectorAll('p')).toHaveLength(1)
+    expect(within(firstCard).queryByText(first.preview)).toBeNull()
+    expect(within(firstCard).queryByText(zh.statusCommunicating)).toBeNull()
+    expect(within(firstCard).queryByText(first.budget ?? '')).toBeNull()
+    expect(within(firstCard).queryByText('期望交付：2026-12-01')).toBeNull()
+    expect(within(firstCard).queryByText('2 条未读')).toBeNull()
+    expect(within(firstCard).queryByText(zh.budgetLabel)).toBeNull()
     expect(within(secondCard).queryByText(zh.budgetLabel)).toBeNull()
+    expect(actions.store.getSnapshot().requests[0]?.budget).toBe(first.budget)
+    expect(actions.store.getSnapshot().requests[0]?.preview).toBe(first.preview)
+    expect(actions.store.getSnapshot().requests[0]?.expectedDate).toBe(first.expectedDate)
     expect(cards.textContent).not.toContain('¥')
     expect(screen.queryByRole('list', { name: zh.officialCustomization })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: zh.loadMoreRequests }))
@@ -87,6 +97,9 @@ describe('human-engineer demand page', () => {
     expect(screen.getByRole('button', { name: zh.loadingMoreRequests })).toHaveProperty('disabled', true)
     const search = screen.getByRole('searchbox', { name: zh.searchRequests })
     fireEvent.change(search, { target: { value: '里程碑' } })
+    expect(screen.getByRole('heading', { name: first.title })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: second.title })).toBeNull()
+    fireEvent.change(search, { target: { value: '退款明细' } })
     expect(screen.getByRole('heading', { name: first.title })).toBeTruthy()
     expect(screen.queryByRole('heading', { name: second.title })).toBeNull()
     fireEvent.change(search, { target: { value: '' } })
@@ -104,6 +117,21 @@ describe('human-engineer demand page', () => {
     expect(actions.send).not.toHaveBeenCalled()
   })
 
+  it('uses a neutral service source without showing assignment state or a missing-engineer label', () => {
+    page({ requests: [request({ id: 'no-engineer', number: 'PRIVATE-103', title: '整理项目说明', engineer: null,
+      status: 'pending', preview: '这里是保留在原会话中的消息摘要' }),
+    request({ id: 'platform-request', number: 'PRIVATE-104', title: '梳理表单字段', engineer: null,
+      assigned: false, status: 'pending', preview: '另一段历史会话摘要' })] })
+    const cards = screen.getByRole('list', { name: zh.personalRequests })
+    expect(within(cards).getByText(zh.pageTitle)).toBeTruthy()
+    expect(within(cards).getByText(zh.platformReception)).toBeTruthy()
+    for (const label of [zh.waitingAssignment, zh.unassignedEngineer, zh.statusPending,
+      '这里是保留在原会话中的消息摘要', '另一段历史会话摘要']) {
+      expect(within(cards).queryByText(label)).toBeNull()
+    }
+    expect(within(cards).getAllByRole('button', { name: /^沟通：/u })).toHaveLength(2)
+  })
+
   it('reopens independent local draft cards without submitting or changing an unresolved operation', () => {
     const first = draftSummary({ scopeKey: 'private-draft-a', title: '整理订单资料', serviceProfileName: '订单服务',
       budget: '时间与范围确认后商议' })
@@ -111,8 +139,8 @@ describe('human-engineer demand page', () => {
       pending: true, error: zh.resultUnknown })
     const actions = page({ drafts: [first, second] })
     const cards = screen.getByRole('list', { name: zh.personalRequests })
-    expect(within(cards).getByText(first.budget ?? '')).toBeTruthy()
-    expect(within(cards).getByText(zh.pendingPublish)).toBeTruthy()
+    expect(within(cards).queryByText(first.budget ?? '')).toBeNull()
+    expect(within(cards).getByText(zh.resultUnknown)).toBeTruthy()
     fireEvent.click(within(cards).getByRole('button', { name: '继续编辑：整理订单资料' }))
     expect(actions.openDraft).toHaveBeenCalledExactlyOnceWith(first.scopeKey)
     fireEvent.click(screen.getByRole('button', { name: zh.backToPersonalRequests }))

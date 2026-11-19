@@ -93,10 +93,14 @@ async function layouts(page: Page, service: Locator, evidence: string, prefix: s
     await page.screenshot({ path: join(evidence, `${prefix}-${layout.name}.png`), animations: 'disabled' })
   }
 }
-async function titleDraft(chat: Locator, value: string): Promise<void> {
+async function titleDraft(chat: Locator, value: string, retained?: { budget: string; expectedDate: string }): Promise<void> {
   const details = chat.getByRole('button', { name: '补充信息（选填）', exact: true })
   await details.click()
   await chat.getByRole('textbox', { name: '需求标题', exact: true }).fill(value)
+  if (retained !== undefined) {
+    await chat.getByRole('textbox', { name: '预算', exact: true }).fill(retained.budget)
+    await chat.locator('input[type="date"]').fill(retained.expectedDate)
+  }
   await details.click()
 }
 async function assertCompactComposer(chat: Locator): Promise<void> {
@@ -142,10 +146,19 @@ async function assertPersonalCardLayouts(page: Page, service: Locator, evidence:
     await page.setViewportSize({ width: layout.width, height: 1000 })
     await page.evaluate(dark => document.body.toggleAttribute('data-ds-dark-theme', dark), layout.dark)
     await list.waitFor({ state: 'visible' })
+    await list.evaluate((node) => {
+      for (let parent = node.parentElement; parent !== null; parent = parent.parentElement) {
+        if (['auto', 'scroll'].includes(getComputedStyle(parent).overflowY)) parent.scrollTop = 0
+      }
+    })
     expect(await service.getByRole('tab', { name: '个人需求', exact: true }).getAttribute('aria-selected')).toBe('true')
     expect(await cards.count()).toBe(5)
     expect(await list.getByRole('button').filter({ hasText: '继续编辑' }).count()).toBe(3)
     expect(await list.getByRole('button').filter({ hasText: '沟通' }).count()).toBe(2)
+    for (const hidden of ['同一服务的第二个独立请求', '测试交付：已完成，请验收。', '待分配工程师', '已完成', '3600 MYR']) {
+      expect(await list.getByText(hidden, { exact: true }).count()).toBe(0)
+    }
+    expect(await list.getByText('期望交付：2026-12-20', { exact: true }).count()).toBe(0)
     expect(await service.getByRole('searchbox', { name: '搜索服务或能力', exact: true }).count()).toBe(0)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
     const boxes = []
@@ -153,11 +166,38 @@ async function assertPersonalCardLayouts(page: Page, service: Locator, evidence:
       expect(await card.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
       await assertReadableText(card.getByRole('heading', { level: 2 }))
       await assertReadableText(card.getByRole('button'))
-      boxes.push(await card.boundingBox())
+      const box = await card.boundingBox(), button = await card.getByRole('button').boundingBox()
+      if (box === null || button === null) throw new Error('A split personal demand card is missing its action')
+      expect(button.x).toBeGreaterThan(box.x + box.width * 0.6)
+      expect(await card.getByRole('button').evaluate(node => node.parentElement !== null
+        && Number.parseFloat(getComputedStyle(node.parentElement).borderLeftWidth) > 0)).toBe(true)
+      boxes.push(box)
+    }
+    if (layout.width === 1320) {
+      expect(Math.round(boxes[0]?.y ?? 0)).toBe(Math.round(boxes[1]?.y ?? 0))
+      expect(boxes[2]?.y).toBeGreaterThan(boxes[0]?.y ?? 0)
+    } else expect(new Set(boxes.map(box => Math.round(box.x))).size).toBe(1)
+    const scrollOwners = await list.evaluate((node) => {
+      const owners = []
+      for (let parent = node.parentElement; parent !== null; parent = parent.parentElement) {
+        if (['auto', 'scroll'].includes(getComputedStyle(parent).overflowY) && parent.scrollHeight > parent.clientHeight + 2) {
+          owners.push({ tag: parent.tagName, height: parent.clientHeight, scrollHeight: parent.scrollHeight })
+        }
+      }
+      return owners
+    })
+    if (layout.width === 760) expect(scrollOwners).toHaveLength(1)
+    else expect(scrollOwners.length).toBeLessThanOrEqual(1)
+    await page.screenshot({ path: join(evidence, `personal-five-${layout.name}.png`), fullPage: true, animations: 'disabled' })
+    if (layout.width === 760) {
+      await cards.first().hover(); await page.mouse.wheel(0, 1600)
+      await expect.poll(() => cards.last().getByRole('button').evaluate((node) => {
+        const box = node.getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight
+      })).toBe(true)
+      await page.screenshot({ path: join(evidence, `personal-five-bottom-${layout.name}.png`), fullPage: true, animations: 'disabled' })
     }
     geometry.push({ layout: layout.name, viewport: page.viewportSize(),
-      devicePixelRatio: await page.evaluate(() => window.devicePixelRatio), cards: boxes })
-    await page.screenshot({ path: join(evidence, `personal-five-${layout.name}.png`), animations: 'disabled' })
+      devicePixelRatio: await page.evaluate(() => window.devicePixelRatio), cards: boxes, scrollOwners })
   }
   await writeFile(join(evidence, 'personal-card-layouts.json'), JSON.stringify(geometry))
 }
@@ -218,13 +258,14 @@ async function exerciseIndependentServiceInbox(
   const second = object(JSON.parse(fixture.createBodies[2] ?? '{}') as unknown)
   expect(second.client_request_id).not.toBe(first.client_request_id)
   const drafts = [
-    { title: '草稿甲：这是一段足够长的自定义交付标题，用于验证一行省略后仍可搜索', body: '甲需要整理图片与视频素材' },
+    { title: '草稿甲：这是一段足够长的自定义交付标题，用于验证一行省略后仍可搜索', body: '甲需要整理图片与视频素材',
+      retained: { budget: '3600 MYR', expectedDate: '2026-12-20' } },
     { title: '草稿乙：独立客服资料', body: '乙需要客户支持资料' },
     { title: '草稿丙：独立流程', body: '丙需要固定工作流程' },
   ]
   for (const item of drafts) {
     await start()
-    await titleDraft(chat, item.title)
+    await titleDraft(chat, item.title, item.retained)
     await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).fill(item.body)
   }
   await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
@@ -236,6 +277,13 @@ async function exerciseIndependentServiceInbox(
     expect(await card.getByRole('button').textContent()).toBe('继续编辑')
     await card.getByRole('button').click()
     expect(await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).inputValue()).toBe(item.body)
+    if (item.retained !== undefined) {
+      const details = chat.getByRole('button', { name: '补充信息（选填）', exact: true })
+      await details.click()
+      expect(await chat.getByRole('textbox', { name: '预算', exact: true }).inputValue()).toBe(item.retained.budget)
+      expect(await chat.locator('input[type="date"]').inputValue()).toBe(item.retained.expectedDate)
+      await details.click()
+    }
     await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
   }
   const published = personal.getByRole('listitem').filter({ has: page.getByRole('heading', { name: '第二笔独立交付乙', exact: true }) })
@@ -425,7 +473,13 @@ it('keeps independent drafts, original unknown-submit keys, uploads and responsi
     await service.getByRole('button', { name: '返回个人需求', exact: true }).click()
     await personal.waitFor({ state: 'visible' })
     expect(await chat.isVisible()).toBe(false)
-    await personal.getByRole('listitem').filter({ hasText: '测试交付：已完成，请验收。' }).getByRole('button').click()
+    expect(await personal.getByText('测试交付：已完成，请验收。', { exact: true }).count()).toBe(0)
+    const restoredLabels = await personal.getByRole('button').evaluateAll((nodes, number) => nodes
+      .map(node => node.getAttribute('aria-label')).filter(label => label?.endsWith(`需求 ${number}`)), latest.number)
+    expect(restoredLabels).toHaveLength(1)
+    const restoredLabel = restoredLabels[0]
+    if (restoredLabel == null) throw new Error('The original private request card cannot be found')
+    await personal.getByRole('button', { name: restoredLabel, exact: true }).click()
     await chat.waitFor({ state: 'visible' })
     await assertMedia(page, chat, '需求截图.png', '需求演示.mp4')
     const downloadReady = page.waitForEvent('download')

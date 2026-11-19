@@ -2,13 +2,13 @@
 import { useState, type ReactNode } from 'react'
 import { Button, Input, IconPlusOutlineRegular, IconSearchOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DemandDraftSummary, DemandPageState } from './types.ts'
-import { DemandEmpty, DemandSkeleton, DemandStatusTag, demandTime, engineerName, type DemandTranslate } from './DemandUI.tsx'
+import { DemandEmpty, DemandSkeleton, demandTime, type DemandTranslate } from './DemandUI.tsx'
 import css from './DemandPage.module.css'
 
 /**
  * Continue the customer's own requests without publishing a shared demand feed.
  * @param props - Private server summaries, local scopes and original conversation callbacks.
- * @returns Searchable cards whose optional budget remains customer-entered text.
+ * @returns Split cards with request identity, service, time and the original conversation action.
  */
 export function PersonalDemandCards(props: {
   state: DemandPageState
@@ -55,43 +55,37 @@ export function PersonalDemandCards(props: {
       <span>{t('errorHint')}</span><Button size="sm" onClick={refresh}>{t('retry')}</Button>
     </div>}
     {initialLoading ? <DemandSkeleton label={t('loading')} /> : null}
-    {count === 0 ? null : <ul className={css.demandCardGrid} aria-label={t('personalRequests')}>
+    {count === 0 ? null : <ul className={css.personalCardGrid} aria-label={t('personalRequests')}>
       {drafts.map((row) => {
         const title = row.title.trim() || row.serviceProfileName?.trim() || t('newRequest')
         const source = row.serviceProfileName?.trim()
-          || (row.assigned === false ? t('platformReception') : engineerName(row.engineer, t))
-        const budget = row.budget?.trim()
-        return <li key={row.scopeKey} className={css.demandCard}>
-          <div className={css.cardMeta}><span>{source}</span><span>{t(row.pending ? 'pendingPublish' : 'requestDraft')}</span></div>
-          <h2>{title}</h2>
-          <p className={css.cardExcerpt}>{row.error ?? (draftText(row.scopeKey) || t(row.pending ? 'pendingDraftHint' : 'draftCardHint'))}</p>
-          {!row.expectedDate?.trim() ? null : <p className={css.cardExpectedDate}>{t('expectedDateNamed', { date: row.expectedDate })}</p>}
-          <div className={css.cardFooter}>
-            {!budget ? null : <div className={css.cardBudget}><span>{t('budgetLabel')}</span><strong>{row.budget}</strong></div>}
-            <Button size="sm" variant="primary" aria-label={t(row.pending ? 'checkDraftNamed' : 'continueDraftNamed', { title })}
+          || (row.assigned === false ? t('platformReception') : row.engineer?.displayName.trim()) || t('pageTitle')
+        const feedback = row.error ?? (row.pending ? t('pendingDraftHint') : '')
+        return <li key={row.scopeKey} className={css.personalCard}>
+          <div className={css.personalCardBody}>
+            <h2>{title}</h2><p>{source}</p>
+            {row.updatedAt === '' ? null : <time dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>}
+            {feedback === '' ? null : <p className={css.personalCardFeedback} role="status">{feedback}</p>}
+          </div>
+          <div className={css.personalCardAction}>
+            <Button variant="primary" aria-label={t(row.pending ? 'checkDraftNamed' : 'continueDraftNamed', { title })}
               onClick={() => { openDraft(row.scopeKey) }}>{t(row.pending ? 'confirmPublication' : 'continueDraft')}</Button>
           </div>
-          {row.updatedAt === '' ? null : <time className={css.cardTime} dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>}
         </li>
       })}
       {requests.map((row) => {
         const title = row.title.trim() || row.serviceProfileName?.trim() || t('newRequest')
         const source = row.serviceProfileName?.trim()
-          || (row.assigned === false ? t('platformReception') : engineerName(row.engineer, t))
-        const budget = row.budget?.trim()
-        return <li key={row.id} className={css.demandCard}>
-          <div className={css.cardMeta}><span>{source}</span>
-            <DemandStatusTag status={row.status} unassigned={row.assigned === false} t={t} /></div>
-          <h2>{title}</h2>
-          <p className={css.cardExcerpt}>{row.preview.trim() || t('noMessages')}</p>
-          {!row.expectedDate?.trim() ? null : <p className={css.cardExpectedDate}>{t('expectedDateNamed', { date: row.expectedDate })}</p>}
-          <div className={css.cardFooter}>
-            {!budget ? null : <div className={css.cardBudget}><span>{t('budgetLabel')}</span><strong>{row.budget}</strong></div>}
-            <Button size="sm" variant="primary" aria-label={t('communicateRequestNamed', { title, number: row.number })}
+          || (row.assigned === false ? t('platformReception') : row.engineer?.displayName.trim()) || t('pageTitle')
+        return <li key={row.id} className={css.personalCard}>
+          <div className={css.personalCardBody}>
+            <h2>{title}</h2><p>{source}</p>
+            <time dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>
+          </div>
+          <div className={css.personalCardAction}>
+            <Button variant="primary" aria-label={t('communicateRequestNamed', { title, number: row.number })}
               onClick={() => { open(row.id) }}>{t('communicate')}</Button>
           </div>
-          <div className={css.cardDetails}><time dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>
-            {row.unreadCount <= 0 ? null : <span>{t('unreadCount', { count: row.unreadCount })}</span>}</div>
         </li>
       })}
     </ul>}
