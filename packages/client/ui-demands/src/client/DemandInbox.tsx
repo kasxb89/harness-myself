@@ -1,6 +1,6 @@
 /** Existing private requests, their server stages and unread counts. */
 import { useState, type ReactNode } from 'react'
-import { Button, Input, Menu, IconPlusOutlineRegular, IconSearchOutlineRegular, IconSlidersTwoOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Input, Menu, Tooltip, IconPlusOutlineRegular, IconSearchOutlineRegular, IconSlidersTwoOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DemandDraftSummary, DemandPageState, DemandStatus } from './types.ts'
 import {
   DemandEmpty, DemandSkeleton, DemandStatusTag, EngineerAvatar, ServiceProfileAvatar, demandTime, engineerName, type DemandTranslate,
@@ -37,8 +37,14 @@ export function DemandInbox(props: {
       pending: state.draft?.scopeKey === current.scopeKey && state.draft.sending,
       error: state.draft?.scopeKey === current.scopeKey ? state.draft.error : null,
     }] : state.drafts
-  const drafts = draftScopes.filter(row => [row.title, row.engineer?.displayName ?? '', row.serviceProfileName ?? '']
-    .join(' ').toLocaleLowerCase().includes(search))
+  const draftText = (scopeKey: string) => state.draft?.scopeKey === scopeKey ? state.draft.text.trim() : ''
+  const drafts = draftScopes.filter(row => status === ''
+    && [row.title, row.engineer?.displayName ?? '', row.serviceProfileName ?? '', draftText(row.scopeKey)]
+      .join(' ').toLocaleLowerCase().includes(search))
+  const empty = search === '' && status === '' && state.requests.length === 0 && draftScopes.length === 0
+  const preview = (title: string, heading: string, text: string, fallback: string) =>
+    [title.trim() !== heading && title.trim() !== text.trim() ? title.trim() : '', text.trim()]
+      .filter(Boolean).join(' · ') || fallback
   return <aside className={css.inbox} aria-label={t('myRequests')}>
     <div className={css.inboxHeading}><h2>{t('myRequests')}</h2>
       <Button size="sm" variant="outline" onClick={create} icon={<IconPlusOutlineRegular size={14} />}>{t('newRequest')}</Button>
@@ -51,9 +57,11 @@ export function DemandInbox(props: {
           { id: 'all', label: t('allRequests') },
           ...statusFilters.map(value => ({ id: value, label: <DemandStatusTag status={value} t={t} /> })),
         ]} onSelect={(id) => { setStatus(statusFilters.find(value => value === id) ?? ''); setFilterOpen(false) }}
-        anchor={<Button size="sm" aria-label={t('filterRequests')} aria-haspopup="menu" aria-expanded={filterOpen}
-          data-active={status !== ''} onClick={() => { setFilterOpen(value => !value) }}
-          icon={<IconSlidersTwoOutlineRegular size={16} />}>{t('filterRequests')}</Button>} />
+        anchor={<Tooltip label={t(status === '' ? 'filterRequests' : 'filterRequestsActive')} portal>
+          <Button size="sm" className={css.inboxFilter} aria-label={t('filterRequests')} aria-haspopup="menu" aria-expanded={filterOpen}
+            aria-pressed={status !== ''} data-active={status !== ''} onClick={() => { setFilterOpen(value => !value) }}
+            icon={<IconSlidersTwoOutlineRegular size={16} />} />
+        </Tooltip>} />
     </div>
     {state.requestsStatus !== 'error' ? null : <div className={css.inlineNotice} role="alert">
       <span>{t('errorHint')}</span><Button size="sm" onClick={refresh}>{t('retry')}</Button>
@@ -64,41 +72,50 @@ export function DemandInbox(props: {
         <h3 className={css.listGroupHeading}>{t('draftsGroup')}</h3>
         {drafts.map((row) => {
           const selected = row.scopeKey === current?.scopeKey
+          const title = row.serviceProfileName?.trim() || row.title.trim()
+            || (row.assigned === false ? t('platformReception') : engineerName(row.engineer, t))
+          const profile = state.serviceProfiles.find(value => value.id === row.serviceProfileId)
+          const service = row.serviceProfileId || row.serviceProfileName?.trim() || row.assigned === false
           return <button type="button" key={row.scopeKey} className={css.requestRow} data-selected={selected}
             aria-current={selected ? 'true' : undefined} onClick={() => { openDraft(row.scopeKey) }}>
-            {row.assigned === false ? <ServiceProfileAvatar small /> : <EngineerAvatar engineer={row.engineer} small />}
+            {service ? <ServiceProfileAvatar {...(profile ? { profile } : {})} small />
+              : <EngineerAvatar engineer={row.engineer} small />}
             <span className={css.requestRowBody}>
-              <span className={css.requestRowTop}><strong>{row.title.trim() || t('newRequest')}</strong>
-                {row.updatedAt === '' ? null : <time dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>}</span>
-              <span className={css.requestPreview}>{row.error ?? (selected && state.draft?.scopeKey === row.scopeKey
-                && state.draft.text.trim() !== '' ? state.draft.text : row.serviceProfileName?.trim()
-                  ? t('serviceSource', { name: row.serviceProfileName })
-                  : row.assigned === false ? t('platformReception') : engineerName(row.engineer, t))}</span>
-              <span className={css.draftLabel} data-pending={row.pending}>{t(row.pending ? 'pendingPublish' : 'notPublished')}</span>
+              <span className={css.requestRowTop}><strong>{title}</strong>
+                <span className={css.draftLabel} data-pending={row.pending}>{t(row.pending ? 'pendingPublish' : 'requestDraft')}</span></span>
+              <span className={css.requestRowBottom}>
+                <span className={css.requestPreview}>{preview(row.title, title, row.error ?? draftText(row.scopeKey),
+                  row.assigned === false ? t('platformReception') : engineerName(row.engineer, t))}</span>
+                {row.updatedAt === '' ? null : <time dateTime={row.updatedAt}>{demandTime(row.updatedAt, t)}</time>}
+              </span>
             </span>
           </button>
         })}
       </div>}
-      {drafts.length === 0 || rows.length === 0 ? null : <h3 className={css.listGroupHeading}>{t('publishedRequests')}</h3>}
+      {rows.length === 0 ? null : <h3 className={css.listGroupHeading}>{t('publishedRequests')}</h3>}
       {rows.map((request) => {
         const selected = request.id === current?.requestId
-        const title = request.title.trim() || t('newRequest')
+        const originalTitle = request.title.trim()
+        const title = request.serviceProfileName?.trim() || originalTitle
+          || (request.assigned === false ? t('platformReception') : engineerName(request.engineer, t))
+        const profile = state.serviceProfiles.find(value => value.id === request.serviceProfileId)
+        const service = request.serviceProfileId || request.serviceProfileName?.trim() || request.assigned === false
         return <button type="button" key={request.id} className={css.requestRow} data-selected={selected} aria-current={selected ? 'true' : undefined}
           onClick={() => { open(request.id) }}>
-          {request.assigned === false ? <ServiceProfileAvatar small /> : <EngineerAvatar engineer={request.engineer} small />}
+          {service ? <ServiceProfileAvatar {...(profile ? { profile } : {})} small />
+            : <EngineerAvatar engineer={request.engineer} small />}
           <span className={css.requestRowBody}>
+            <span className={css.requestIdentity}>{t('requestNumber', { number: request.number })}</span>
             <span className={css.requestRowTop}><strong>{title}</strong>
-              <time dateTime={request.updatedAt}>{demandTime(request.updatedAt, t)}</time></span>
-            <span className={css.requestPreview}>{request.preview.trim() || (request.assigned === false
-              ? t('platformReception') : engineerName(request.engineer, t))}</span>
-            <span className={css.requestRowBottom}>
               <span className={css.requestRowContext}>
                 <DemandStatusTag status={request.status} unassigned={request.assigned === false} t={t} />
-                {!request.serviceProfileName?.trim() ? null
-                  : <span>{t('serviceSource', { name: request.serviceProfileName })}</span>}
-              </span>
-              {request.unreadCount <= 0 ? null : <span className={css.unread}
-                aria-label={t('unreadNamed', { name: title, count: request.unreadCount })}>{request.unreadCount}</span>}
+                {request.unreadCount <= 0 ? null : <span className={css.unread}
+                  aria-label={t('unreadNamed', { name: originalTitle || title, count: request.unreadCount })}>{request.unreadCount}</span>}
+              </span></span>
+            <span className={css.requestRowBottom}>
+              <span className={css.requestPreview}>{preview(originalTitle, title, request.preview,
+                request.assigned === false ? t('platformReception') : engineerName(request.engineer, t))}</span>
+              <time dateTime={request.updatedAt}>{demandTime(request.updatedAt, t)}</time>
             </span>
           </span>
         </button>
@@ -109,11 +126,11 @@ export function DemandInbox(props: {
         </Button>
       </div>}
       {rows.length > 0 || drafts.length > 0 || state.requestsStatus !== 'ready' ? null
-        : <DemandEmpty title={t(state.requests.length === 0 ? 'noRequests' : 'noMatchingRequests')}
-          detail={t(state.requests.length === 0 ? state.directoryMode === 'services' ? 'noServiceRequestsHint' : 'noRequestsHint'
+        : <DemandEmpty title={t(empty ? 'noRequests' : 'noMatchingRequests')}
+          detail={t(empty ? state.directoryMode === 'services' ? 'noServiceRequestsHint' : 'noRequestsHint'
             : 'noMatchingRequestsHint')}
-          actionLabel={state.requests.length === 0 ? t(state.directoryMode === 'services' ? 'findServices' : 'findEngineers') : undefined}
-          onAction={state.requests.length === 0 ? create : undefined} />}
+          actionLabel={empty ? t(state.directoryMode === 'services' ? 'findServices' : 'findEngineers') : undefined}
+          onAction={empty ? create : undefined} />}
     </div>
   </aside>
 }

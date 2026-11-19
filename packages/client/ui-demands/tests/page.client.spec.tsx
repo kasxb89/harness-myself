@@ -123,11 +123,12 @@ describe('human-engineer demand page', () => {
     expect(screen.queryByText(zh.presenceOffline)).toBeNull()
     expect(screen.queryByText(zh.offlineHint)).toBeNull()
     expect(screen.getAllByText(zh.waitingAssignment)).toHaveLength(2)
-    expect(screen.getAllByText('服务：示例订单管理服务')).toHaveLength(2)
+    expect(screen.getAllByText('服务：示例订单管理服务')).toHaveLength(1)
+    expect(within(screen.getByRole('complementary', { name: zh.myRequests })).getByText('示例订单管理服务')).toBeTruthy()
     actions.set({ conversation: { ...pending, assigned: true, engineer: exampleEngineers[0] ?? null, status: 'communicating' } })
     expect(screen.getByRole('heading', { name: '示例工程师林' })).toBeTruthy()
     expect(screen.getByText(zh.presenceAvailable)).toBeTruthy()
-    expect(screen.getAllByText('服务：示例订单管理服务')).toHaveLength(2)
+    expect(screen.getAllByText('服务：示例订单管理服务')).toHaveLength(1)
     actions.set({ requests: [request({ status: 'pending' })] })
     const legacy = screen.getByRole('button', { name: /示例订单页面改版/u })
     expect(within(legacy).getByText(zh.statusPending)).toBeTruthy()
@@ -217,6 +218,81 @@ describe('human-engineer demand page', () => {
     fireEvent.click(selected)
     expect(actions.openRequest).toHaveBeenCalledExactlyOnceWith('example-request')
     expect(actions.startRequest).not.toHaveBeenCalled()
+  })
+
+  it('leads with the real service while retaining each request title, message, number, and identity', () => {
+    const profile = serviceProfile({ avatarUrl: 'https://example.invalid/orders.png' })
+    const first = request({ id: 'orders-a', number: 'EXAMPLE-101', title: '本月对账', preview: '请核对退款金额',
+      serviceProfileId: profile.id, serviceProfileName: profile.displayName, assigned: false, unreadCount: 0 })
+    const second = request({ id: 'orders-b', number: 'EXAMPLE-102', title: '历史报表', preview: '导出季度数据',
+      serviceProfileId: profile.id, serviceProfileName: profile.displayName, status: 'completed', unreadCount: 0 })
+    const actions = page({ directoryMode: 'services', serviceProfiles: [profile], requests: [first, second],
+      conversation: conversation({ scopeKey: first.id, requestId: first.id }), draft: draft({ scopeKey: first.id }) })
+    openRequests()
+    const inbox = screen.getByRole('complementary', { name: zh.myRequests })
+    const firstRow = within(inbox).getByRole('button', { name: /EXAMPLE-101/u })
+    const secondRow = within(inbox).getByRole('button', { name: /EXAMPLE-102/u })
+    expect(firstRow.querySelector('strong')?.textContent).toBe(profile.displayName)
+    expect(secondRow.querySelector('strong')?.textContent).toBe(profile.displayName)
+    expect(within(firstRow).getByText('本月对账 · 请核对退款金额')).toBeTruthy()
+    expect(within(secondRow).getByText(zh.statusCompleted)).toBeTruthy()
+    expect(firstRow.querySelector('img')?.getAttribute('src')).toBe(profile.avatarUrl)
+    expect(secondRow.querySelector('img')?.getAttribute('src')).toBe(profile.avatarUrl)
+    expect(inbox.querySelectorAll('[aria-current="true"]')).toHaveLength(1)
+    fireEvent.click(secondRow)
+    expect(actions.openRequest).toHaveBeenCalledExactlyOnceWith(second.id)
+    const search = within(inbox).getByRole('searchbox', { name: zh.searchRequests })
+    for (const query of ['本月对账', '退款金额', 'EXAMPLE-101']) {
+      fireEvent.change(search, { target: { value: query } })
+      expect(within(inbox).getByRole('button', { name: /EXAMPLE-101/u })).toBeTruthy()
+      expect(within(inbox).queryByRole('button', { name: /EXAMPLE-102/u })).toBeNull()
+    }
+    fireEvent.change(search, { target: { value: profile.displayName } })
+    expect(within(inbox).getAllByRole('button', { name: /EXAMPLE-10[12]/u })).toHaveLength(2)
+    actions.set({ serviceProfiles: [] })
+    expect(within(inbox).getByRole('button', { name: /EXAMPLE-101/u }).querySelector('img')).toBeNull()
+  })
+
+  it('searches only the matching draft body and keeps status filters separate from unpublished drafts', () => {
+    const first = draftSummary({ scopeKey: 'draft-a', title: '目录整理' })
+    const second = draftSummary({ scopeKey: 'draft-b', title: '表格校对', serviceProfileName: '订单服务' })
+    page({ drafts: [first, second],
+      conversation: conversation({ scopeKey: second.scopeKey, requestId: null, number: null, status: null, title: second.title }),
+      draft: draft({ scopeKey: second.scopeKey, text: '核对六月退款' }),
+      requests: [request({ status: 'completed' })],
+    })
+    openRequests()
+    const inbox = screen.getByRole('complementary', { name: zh.myRequests })
+    const search = within(inbox).getByRole('searchbox', { name: zh.searchRequests })
+    fireEvent.change(search, { target: { value: '六月退款' } })
+    expect(within(inbox).getByRole('button', { name: /订单服务/u })).toBeTruthy()
+    expect(within(inbox).queryByRole('button', { name: /目录整理/u })).toBeNull()
+    fireEvent.change(search, { target: { value: '没有匹配项' } })
+    expect(within(inbox).getByText(zh.noMatchingRequests)).toBeTruthy()
+    expect(within(inbox).queryByText(zh.noRequests)).toBeNull()
+    fireEvent.change(search, { target: { value: '' } })
+    const filter = within(inbox).getByRole('button', { name: zh.filterRequests })
+    expect(filter.textContent).toBe('')
+    fireEvent.click(filter)
+    fireEvent.click(screen.getByRole('menuitem', { name: zh.statusCompleted }))
+    expect(filter.getAttribute('aria-pressed')).toBe('true')
+    expect(within(inbox).queryByRole('group', { name: zh.draftsGroup })).toBeNull()
+    expect(within(inbox).getByRole('button', { name: /示例订单页面改版/u })).toBeTruthy()
+    fireEvent.click(filter)
+    fireEvent.click(screen.getByRole('menuitem', { name: zh.allRequests }))
+    expect(filter.getAttribute('aria-pressed')).toBe('false')
+    expect(within(inbox).getByRole('group', { name: zh.draftsGroup })).toBeTruthy()
+  })
+
+  it('distinguishes a query with no matches from a genuinely empty inbox', () => {
+    page()
+    openRequests()
+    const inbox = screen.getByRole('complementary', { name: zh.myRequests })
+    expect(within(inbox).getByText(zh.noRequests)).toBeTruthy()
+    fireEvent.change(within(inbox).getByRole('searchbox', { name: zh.searchRequests }), { target: { value: '订单' } })
+    expect(within(inbox).getByText(zh.noMatchingRequests)).toBeTruthy()
+    expect(within(inbox).queryByText(zh.noRequests)).toBeNull()
+    expect(within(inbox).queryByRole('button', { name: zh.findEngineers })).toBeNull()
   })
 
   it('keeps text under controller ownership and permits the first text-only submission', () => {

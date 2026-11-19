@@ -9,7 +9,7 @@ import { expect, it, onTestFinished } from 'vitest'
 import { launchWebScaffold, watchConsole } from './scaffold.ts'
 import { saveFailureShot, ZH_BROWSER_LOCALE } from './support.ts'
 import { assertReadableText } from './readable-text.ts'
-import { installDemandFixture } from './fixtures/demands/host-fixture.ts'
+import { installDemandFixture, type DemandFixture } from './fixtures/demands/host-fixture.ts'
 
 const imageFile = fileURLToPath(new URL('../../../packages/llm/llm-deepseek/tests/fixtures/red.png', import.meta.url))
 const videoFile = fileURLToPath(new URL('./fixtures/sidebar-media/preview.mp4', import.meta.url))
@@ -116,6 +116,114 @@ async function composeWithKeyboard(input: Locator, content: string): Promise<str
   await input.press('Enter')
   return result
 }
+async function assertInboxLayouts(page: Page, service: Locator, evidence: string, serviceName: string): Promise<void> {
+  const inbox = service.getByRole('complementary', { name: '我的需求', exact: true })
+  const rows = inbox.getByRole('button').filter({ has: page.locator('strong') })
+  const coordinates: Json[] = []
+  for (const layout of [
+    { width: 1440, dark: false, name: 'wide-light' }, { width: 1440, dark: true, name: 'wide-dark' },
+    { width: 620, dark: false, name: 'compact-light' }, { width: 620, dark: true, name: 'compact-dark' },
+  ]) {
+    await page.setViewportSize({ width: layout.width, height: 1000 })
+    await page.evaluate(dark => document.body.toggleAttribute('data-ds-dark-theme', dark), layout.dark)
+    const back = service.getByRole('button', { name: '返回需求列表', exact: true })
+    if (layout.width === 620 && await back.isVisible()) await back.click()
+    await inbox.waitFor({ state: 'visible' })
+    expect(await rows.count()).toBe(5)
+    expect(await inbox.locator('button[aria-current="true"]').count()).toBe(1)
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1)).toBe(true)
+    for (const row of await rows.all()) {
+      expect(await row.locator('strong').textContent()).toBe(serviceName)
+      expect(await row.evaluate(node => node.scrollWidth <= node.clientWidth + 1)).toBe(true)
+      const bounds = await row.boundingBox()
+      if (bounds === null) throw new Error('A human conversation row is not visible')
+      expect(bounds.height).toBeLessThanOrEqual(76)
+      expect(bounds.y + bounds.height).toBeLessThanOrEqual(1000)
+      await assertReadableText(row.locator('strong'))
+      await assertReadableText(row.locator('time'))
+    }
+    await assertReadableText(inbox.getByRole('searchbox', { name: '搜索需求', exact: true }), '::placeholder')
+    coordinates.push({ layout: layout.name, inbox: await inbox.boundingBox(),
+      rowHeights: await rows.evaluateAll(nodes => nodes.map(node => node.getBoundingClientRect().height)) })
+    await page.screenshot({ path: join(evidence, `inbox-five-${layout.name}.png`), animations: 'disabled' })
+  }
+  await writeFile(join(evidence, 'inbox-layouts.json'), JSON.stringify(coordinates))
+}
+async function exerciseIndependentServiceInbox(
+  page: Page, service: Locator, fixture: DemandFixture, evidence: string, serviceName: string,
+): Promise<void> {
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  let chat = service.getByRole('region', { name: '与测试工程师林沟通', exact: true })
+  const start = async (): Promise<Locator> => {
+    await chat.getByRole('button', { name: '新需求', exact: true }).click()
+    await service.getByRole('button', { name: `为${serviceName}发布需求`, exact: true }).click()
+    chat = service.getByRole('region', { name: '与平台统一接待沟通', exact: true })
+    await chat.waitFor()
+    return chat
+  }
+  await start()
+  await titleDraft(chat, '第二笔独立交付乙')
+  await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).fill('同一服务的第二个独立请求')
+  await chat.getByRole('button', { name: '发送', exact: true }).click()
+  await chat.getByRole('textbox', { name: '输入消息', exact: true }).waitFor()
+  expect(fixture.records.size).toBe(2)
+  expect(new Set([...fixture.records.values()].map(row => row.id)).size).toBe(2)
+  expect(new Set([...fixture.records.values()].map(row => row.service_profile_id)).size).toBe(1)
+  const first = object(JSON.parse(fixture.createBodies[0] ?? '{}') as unknown)
+  const second = object(JSON.parse(fixture.createBodies[2] ?? '{}') as unknown)
+  expect(second.client_request_id).not.toBe(first.client_request_id)
+  const drafts = [
+    { title: '草稿甲：这是一段足够长的自定义交付标题，用于验证一行省略后仍可搜索', body: '甲需要整理图片与视频素材' },
+    { title: '草稿乙：独立客服资料', body: '乙需要客户支持资料' },
+    { title: '草稿丙：独立流程', body: '丙需要固定工作流程' },
+  ]
+  for (const item of drafts) {
+    await start()
+    await titleDraft(chat, item.title)
+    await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).fill(item.body)
+  }
+  const inbox = service.getByRole('complementary', { name: '我的需求', exact: true })
+  const rows = inbox.getByRole('button').filter({ has: page.locator('strong') })
+  const search = inbox.getByRole('searchbox', { name: '搜索需求', exact: true })
+  await expect.poll(() => rows.count()).toBe(5)
+  expect(await inbox.getByRole('group', { name: '草稿', exact: true }).getByRole('button').count()).toBe(3)
+  expect(await inbox.locator('button[aria-current="true"]').count()).toBe(1)
+  const submitted = fixture.createBodies.length
+  for (const item of drafts) {
+    await search.fill(item.title)
+    await expect.poll(() => rows.count()).toBe(1)
+    expect(await rows.first().locator('strong').textContent()).toBe(serviceName)
+    await rows.first().click()
+    expect(await chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true }).inputValue()).toBe(item.body)
+    expect(await rows.first().getAttribute('aria-current')).toBe('true')
+  }
+  await search.fill('第二笔独立交付乙')
+  await expect.poll(() => rows.count()).toBe(1)
+  await rows.first().click()
+  await chat.getByRole('textbox', { name: '输入消息', exact: true }).waitFor()
+  expect(await rows.first().locator('strong').textContent()).toBe(serviceName)
+  expect(fixture.createBodies).toHaveLength(submitted)
+  await search.fill('')
+  await expect.poll(() => rows.count()).toBe(5)
+  const filter = inbox.getByRole('button', { name: '筛选', exact: true })
+  expect(await filter.textContent()).toBe('')
+  await filter.hover()
+  await page.getByRole('tooltip', { name: '筛选', exact: true }).waitFor()
+  await filter.click()
+  const menu = page.getByRole('menu')
+  await menu.waitFor({ state: 'visible' })
+  await page.keyboard.press('Escape')
+  await menu.waitFor({ state: 'hidden' })
+  expect(await filter.evaluate(node => document.activeElement === node)).toBe(true)
+  await filter.click()
+  await page.getByRole('menuitem', { name: '已完成', exact: true }).click()
+  await expect.poll(() => inbox.getByText('第二笔独立交付乙', { exact: true }).count()).toBe(0)
+  await filter.click()
+  await page.getByRole('menuitem', { name: '全部需求', exact: true }).click()
+  await expect.poll(() => rows.count()).toBe(5)
+  expect(fixture.createBodies).toHaveLength(submitted)
+  await assertInboxLayouts(page, service, evidence, serviceName)
+}
 async function assertSingleMessageScroll(page: Page, log: Locator): Promise<void> {
   await expect.poll(() => log.evaluate(node => node.scrollHeight > node.clientHeight + 20)).toBe(true)
   const scrollOwners = await log.evaluate((node) => {
@@ -206,7 +314,7 @@ it('keeps independent drafts, original unknown-submit keys, uploads and responsi
     expect(fixture.records.size).toBe(2)
     const retainedText = '独立第二个需求的暂存后续消息'
     await chat.getByRole('textbox', { name: '输入消息', exact: true }).fill(retainedText)
-    await service.getByRole('group', { name: '草稿与待确认发布', exact: true }).getByRole('button').filter({ hasText: '首个待确认需求' }).click()
+    await service.getByRole('group', { name: '草稿', exact: true }).getByRole('button').filter({ hasText: '首个待确认需求' }).click()
     const originalDraft = chat.getByRole('textbox', { name: '说明需求、预期结果和相关限制', exact: true })
     expect(await originalDraft.inputValue()).toBe(firstText)
     expect(await originalDraft.isDisabled()).toBe(true)
@@ -340,10 +448,12 @@ it('pages 100 platform services, filters on the server and keeps the original in
     await chat.getByRole('button', { name: '确认验收', exact: true }).click()
     await chat.getByText('已验收', { exact: true }).waitFor()
     expect(queued.status).toBe('completed')
+    await exerciseIndependentServiceInbox(page, service, fixture, evidence, target.display_name)
     expect(diagnostics.pageErrors).toEqual([]); expect(diagnostics.warnings).toEqual([])
     await writeFile(join(evidence, 'result.json'), JSON.stringify({ syntheticOnly: true, catalogTotal: 100,
       sameUnknownServiceBody: fixture.createBodies[0] === fixture.createBodies[1], serviceTarget: target.id,
-      sourceSnapshot: queued.service_profile_name, directoryReads: fixture.directoryRequests.length, paidRequests: 0 }))
+      sourceSnapshot: queued.service_profile_name, independentPublished: 2, localDrafts: 3,
+      directoryReads: fixture.directoryRequests.length, paidRequests: 0 }))
   } catch (error) { await saveFailureShot(page, 'demands-service-directory'); throw error }
 }, 120_000)
 
