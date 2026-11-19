@@ -914,7 +914,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:137`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:138`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -4882,6 +4882,7 @@ export interface Config {
 | `@deepseek-ai/dsh-client-ui-demands` | — | [`packages/client/ui-demands/src/index.ts`](../packages/client/ui-demands/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-directory-picker-browse` | — | [`packages/client/ui-directory-picker-browse/src/index.ts`](../packages/client/ui-directory-picker-browse/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-directory-picker-native` | — | [`packages/client/ui-directory-picker-native/src/index.ts`](../packages/client/ui-directory-picker-native/src/index.ts) |
+| `@deepseek-ai/dsh-client-ui-forum` | — | [`packages/client/ui-forum/src/index.ts`](../packages/client/ui-forum/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-goal` | — | [`packages/client/ui-goal/src/index.ts`](../packages/client/ui-goal/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-imagegen` | — | [`packages/client/ui-imagegen/src/index.ts`](../packages/client/ui-imagegen/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-input-trigger` | — | [`packages/client/ui-input-trigger/src/index.ts`](../packages/client/ui-input-trigger/src/index.ts) |

@@ -17,7 +17,7 @@ import css from './DemandPage.module.css'
 export function DemandPage(props: DemandPageProps): ReactNode {
   const { useDemands, t, refresh, openLogin, startRequest, openRequest } = props
   const state = useDemands(value => value)
-  const [view, setView] = useState<'engineers' | 'requests'>('engineers')
+  const [view, setView] = useState<'engineers' | 'requests' | 'forum'>('engineers')
   const [mobileChat, setMobileChat] = useState(false)
   const navigationId = useId()
   const scope = state.conversation?.scopeKey
@@ -51,12 +51,13 @@ export function DemandPage(props: DemandPageProps): ReactNode {
         }} items={[
           { value: 'engineers', label: findLabel, id: `${navigationId}-engineers`, panelId: `${navigationId}-engineers-panel` },
           { value: 'requests', label: t('myRequests'), id: `${navigationId}-requests`, panelId: `${navigationId}-requests-panel` },
+          { value: 'forum', label: t('forum'), id: `${navigationId}-forum`, panelId: `${navigationId}-forum-panel` },
         ]} />
       {availability !== 'error' || !hasRetainedData ? null : <div className={css.pageNotice} role="alert">
         <span>{state.error ?? t('errorHint')}</span><Button size="sm" onClick={refresh}>{t('retry')}</Button>
       </div>}
       <div className={css.panel} role="tabpanel" id={`${navigationId}-${view}-panel`} aria-labelledby={`${navigationId}-${view}`}>
-        {showUnavailable ? <DemandEmpty people title={t(availability === 'login-required' ? 'loginTitle'
+        {view === 'forum' ? props.renderSlot('demands.forum', {}) : showUnavailable ? <DemandEmpty people title={t(availability === 'login-required' ? 'loginTitle'
           : availability === 'disabled' ? 'disabledTitle' : 'unconfiguredTitle')}
         detail={t(availability === 'login-required' ? 'loginHint' : availability === 'disabled' ? 'disabledHint' : 'unconfiguredHint')}
         actionLabel={availability === 'login-required' ? t('openLogin') : undefined}

@@ -81,6 +81,7 @@ Every package below exports a Cordis plugin that a bundle patch can name in a Lo
 | `@deepseek-ai/dsh-client-ui-demands` | no | Private customer demand chat and human engineer directory |
 | `@deepseek-ai/dsh-client-ui-directory-picker-browse` | no | In-app directory browsing surface: the workspace directory-flow owner rendering the host's listing and creation primitives |
 | `@deepseek-ai/dsh-client-ui-directory-picker-native` | no | Native directory-picker surface: the renderless workspace directory-flow occupant driving the local Desktop or Host OS chooser |
+| `@deepseek-ai/dsh-client-ui-forum` | no | Community posts, likes and immediately published comments in the demand workspace |
 | `@deepseek-ai/dsh-client-ui-goal` | no | Session goal surface: GoalBar docked above the composer, read from the goal session projection |
 | `@deepseek-ai/dsh-client-ui-imagegen` | no | Sidebar Image entry and page: text-to-image through the relay platform, sharing the Credits sign-in |
 | `@deepseek-ai/dsh-client-ui-input-trigger` | no | Input trigger pipeline: '/' and '@' detection, candidate menu, pick routing to registered sources |

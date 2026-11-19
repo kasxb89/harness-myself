@@ -37,7 +37,7 @@ function page(partial: Partial<DemandPageState> = {}) {
     downloadAttachment: vi.fn<(id: string) => void>(), acceptDelivery: vi.fn<(id: string) => void>(),
   }
   const props: DemandPageProps = {
-    ...actions,
+    ...actions, renderSlot: vi.fn(() => null),
     usePanelInfo: unusedHook, useSessions: unusedHook, useSessionStatus: unusedHook, useSessionRetainInfo: unusedHook,
     useWorkspaces: unusedHook, useResource: unusedHook, useDemands: bindSnapshotSelector(store),
     t: (key, params) => (translations.get(key) ?? key).replace(/\{(\w+)\}/gu, (placeholder: string, name: string) =>
@@ -55,6 +55,11 @@ function openRequests() {
 }
 
 describe('human-engineer demand page', () => {
+  it('opens the community tab without creating a demand', () => {
+    const actions = page(); fireEvent.click(screen.getByRole('tab', { name: zh.forum }))
+    expect(screen.getByRole('tabpanel').id).toMatch(/forum-panel$/u)
+    expect(actions.startRequest).not.toHaveBeenCalled(); expect(actions.send).not.toHaveBeenCalled()
+  })
   it('shows actual service profiles and server totals without presenting them as live engineers', () => {
     const actions = page({ directoryMode: 'services', serviceProfiles: [serviceProfile({ avatarUrl: 'https://example.invalid/service.png' })],
       servicesTotal: 100 })

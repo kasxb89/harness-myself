@@ -52,6 +52,7 @@
   ],
   "references": [
     { "path": "./packages/client/ui-demands" },
+    { "path": "./packages/client/ui-forum" },
     {
       "path": "./packages/client/ui-plaza"
     },

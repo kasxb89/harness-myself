@@ -13,6 +13,10 @@ import { DemandPanelIcon } from './DemandPanelIcon.tsx'
 import { en, NS, zh, type DemandLocaleKey } from './locales.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
+  interface SlotMap {
+    /** Community entry owned by the demand workspace. */
+    'demands.forum': { kind: 'single'; scope: 'root' }
+  }
   interface LocaleNamespaceMap {
     /** Human-engineer catalog, demand chat and delivery copy. */
     demands: DemandLocaleKey
@@ -65,6 +69,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   })
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main', key: PANEL_ID, locale: NS, inject: () => face,
+    children: { 'demands.forum': { kind: 'single', scope: 'root' } },
   }, DemandPage))
   ctx.slots.inject('sidebar.panellist', () => {
     let unregister: (() => void) | undefined

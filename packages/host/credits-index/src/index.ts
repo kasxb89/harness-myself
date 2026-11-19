@@ -61,7 +61,8 @@ import type { CreationTaskObserver } from './creation-activity.ts'
 import { readAnnouncements } from './announcements.ts'
 import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
-import { createDemandProxy } from './demand-proxy.ts'
+import { createDemandProxy, type DemandProxyOptions } from './demand-proxy.ts'
+import { createForumProxy } from './forum-proxy.ts'
 import { ONBOARDING_SURVEY_RESPONSE_LIMIT, parseSurveyRequest, readOnboardingSurvey } from './onboarding-survey.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
@@ -2574,7 +2575,7 @@ export function apply(ctx: Context, config: Config): void {
     return await send(latest)
   }
 
-  const demandProxy = createDemandProxy({
+  const productProxyOptions: DemandProxyOptions = {
     baseUrl: apiBaseUrl,
     requestRejection: (request) => {
       const connection = ctx.get('connection')
@@ -2608,7 +2609,10 @@ export function apply(ctx: Context, config: Config): void {
     limits: () => ({ requestTimeoutMs: resolved.demandRequestTimeoutMs, uploadTimeoutMs: resolved.demandUploadTimeoutMs,
       downloadTimeoutMs: resolved.demandDownloadTimeoutMs, maxJsonRequestBytes: resolved.demandMaxJsonRequestBytes,
       maxJsonResponseBytes: resolved.demandMaxJsonResponseBytes, maxChunkBytes: resolved.demandMaxChunkBytes }),
-  })
+  }
+  const demandProxy = createDemandProxy(productProxyOptions)
+  const forumProxy = createForumProxy(productProxyOptions)
+  ctx.effect(() => async () => { await forumProxy.close() }, 'credits-index: forum requests')
   ctx.effect(() => async () => { await demandProxy.close() }, 'credits-index: private human-engineer demand requests')
 
   /** All account data reads share one login-owned admission and the existing unique renewal owner. */
@@ -3310,6 +3314,7 @@ export function apply(ctx: Context, config: Config): void {
 
       try {
         if (await demandProxy.handle(request, response, route, method)) return
+        if (await forumProxy.handle(request, response, url.pathname, method)) return
         if (route === '/api/onboarding-survey' || route === '/api/onboarding-survey/defer') {
           const connection = ctx.get('connection')
           const rejected = connection === undefined ? 403 : connection.requestRejection(request)

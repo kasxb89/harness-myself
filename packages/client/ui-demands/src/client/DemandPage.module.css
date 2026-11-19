@@ -15,14 +15,14 @@
 .page[data-view='requests'] { padding: 0; }
 :global([data-platform='darwin']) .page[data-view='requests'] { padding-top: calc(var(--dsh-frame-top-clearance) + 8px); }
 .page[data-view='requests'] .pageContent { max-width: none; }
-.conversationNavigation { flex: none; width: min(calc(100% - 32px), 260px); margin: 8px 16px; }
+.conversationNavigation { flex: none; width: min(calc(100% - 32px), 360px); margin: 8px 16px; }
 .pageContent { display: flex; flex-direction: column; height: 100%; max-width: 1120px; min-width: 0; margin-inline: auto; }
 .pageHeader { display: flex; flex: none; align-items: center; gap: 14px; }
 .pageHeader > div { min-width: 0; }
 .pageHeader h1 { margin: 0; font-size: 24px; line-height: 32px; font-weight: 500; }
 .pageHeader p { margin: 4px 0 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 .pageIcon { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 56px; height: 56px; border-radius: var(--dsw-radius-xl); background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 9%, transparent); color: var(--dsw-alias-state-business-primary); }
-.navigation { flex: none; width: min(100%, 320px); margin: 22px 0 20px; }
+.navigation { flex: none; width: min(100%, 360px); margin: 22px 0 20px; }
 .panel { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .pageNotice, .inlineNotice { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 12px; font-size: 13px; line-height: 20px; color: var(--dsw-alias-state-error-primary); }
 .pageNotice { margin: 0 0 12px; }

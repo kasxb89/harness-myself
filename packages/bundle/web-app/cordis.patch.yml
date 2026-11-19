@@ -492,6 +492,9 @@
     - id: ui-plaza
       name: '@deepseek-ai/dsh-client-ui-plaza'
 
+    - id: ui-forum
+      name: '@deepseek-ai/dsh-client-ui-forum'
+
     - id: ui-demands
       name: '@deepseek-ai/dsh-client-ui-demands'
 

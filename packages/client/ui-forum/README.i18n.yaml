@@ -1,0 +1,46 @@
+# Bilingual-pair consistency record for README.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write packages/client/ui-forum/README.md
+/:
+  en: ac5a1b53d079e381
+  zh: bcde645ab7c9b9bc
+/deepseek-ai-dsh-client-ui-forum:
+  en: 4afd2ef32f506943
+  zh: bdc41745136271a7
+/deepseek-ai-dsh-client-ui-forum/summary:
+  en: dd9e2da8bf32acb0
+  zh: e97d3fb7589e2a61
+/deepseek-ai-dsh-client-ui-forum/table-of-contents:
+  en: 85ae920690e09162
+  zh: 08590556f0b20b8e
+/deepseek-ai-dsh-client-ui-forum/use-this-package:
+  en: 85165ac0786ea8c8
+  zh: adab1d71219f0d5f
+/deepseek-ai-dsh-client-ui-forum/understand-the-implementation:
+  en: 233f600d74722547
+  zh: 884d2553be8dfd1f
+/deepseek-ai-dsh-client-ui-forum/further-exploration:
+  en: e8215d4d75511f5b
+  zh: 5696e0a0f1172153
+/deepseek-ai-dsh-client-ui-forum/model-experience:
+  en: 215e7ba838619b7b
+  zh: 4f359fcfb8bc5345
+/deepseek-ai-dsh-client-ui-forum/model-experience/community-discussions:
+  en: 0ee1906dfdb10c0b
+  zh: 30a879ab2abbf1a5
+/deepseek-ai-dsh-client-ui-forum/model-experience/community-discussions/what-the-model-sees:
+  en: 2bdaf416ddf09283
+  zh: 56d2173f325f5375
+/deepseek-ai-dsh-client-ui-forum/model-experience/community-discussions/token-effect:
+  en: ecd42f5664c5fa7d
+  zh: 92bdfd7ef47ef87a
+/deepseek-ai-dsh-client-ui-forum/model-experience/community-discussions/kv-cache-effect:
+  en: f745afd7ebfb6c6e
+  zh: c51035318f0fdde0
+/deepseek-ai-dsh-client-ui-forum/known-limitations-and-deferred-work:
+  en: 5fda9db8054d2c6f
+  zh: fa5a0a3f9ae89453
+/deepseek-ai-dsh-client-ui-forum/known-limitations-and-deferred-work/dev-note:
+  en: 87ecc76d8b32bdfe
+  zh: ea9f545674099958
