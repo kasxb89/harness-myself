@@ -7,11 +7,17 @@ import { requestForum, type ForumOwner, type ForumRequest, type ForumResult } fr
 import { createForumJournal, type ForumJournal, type ForumOperation } from './forum-pending.ts'
 import type { ForumComment, ForumConfig, ForumFace, ForumIssue, ForumPage, ForumPost, ForumPostDraft, ForumState } from './forum-types.ts'
 import * as wire from './forum-wire.ts'
+import { createForumActivity } from './forum-activity.ts'
+import { createForumMedia } from './forum-media.ts'
+import type { ForumModelContext } from './forum-model-context.ts'
+import type { ForumUploadJournal } from './forum-upload-journal.ts'
+import type { ForumReplyTarget } from './forum-types.ts'
 
 /** Validated local feature availability and bounded I/O/poll timings. */
 export interface ForumControllerConfig {
   readonly enabled: boolean
   readonly requestTimeoutMs?: number
+  readonly uploadTimeoutMs?: number
   readonly foregroundPollMs?: number
   readonly backgroundPollMs?: number
 }
@@ -22,6 +28,7 @@ export interface ForumControllerDependencies {
   readonly uuid?: () => string
   readonly now?: () => number
   readonly isForeground?: () => boolean
+  readonly uploadJournal?: ForumUploadJournal
 }
 /** Stable model lifecycle and public commands. */
 export interface ForumController extends ForumFace {
@@ -57,7 +64,7 @@ const newest = <T extends { readonly id: string; readonly created_at: number }>(
  */
 export function createForumController(accountSource: Context['creditsSession'], config: ForumControllerConfig,
   deps: ForumControllerDependencies = {}): ForumController {
-  for (const value of [config.requestTimeoutMs, config.foregroundPollMs, config.backgroundPollMs]) {
+  for (const value of [config.requestTimeoutMs, config.uploadTimeoutMs, config.foregroundPollMs, config.backgroundPollMs]) {
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > 3_600_000)) throw new Error('FORUM_CONFIG_INVALID')
   }
   const source = createSnapshotStore<ForumState>(blank(config.enabled ? 'loading' : 'unavailable'))
@@ -67,12 +74,14 @@ export function createForumController(accountSource: Context['creditsSession'], 
   let disposed: Promise<void> | undefined, accountAbort = new AbortController(), timer: ReturnType<typeof setTimeout> | undefined
   let availability: ForumState['availability'] = config.enabled ? 'loading' : 'unavailable', error: ForumIssue | null = null
   let server: ForumConfig | null = null, unsupported = false, storageFailed = false, refreshTask: Promise<void> | undefined
+  let mediaRestored = false
   let posts = page<ForumPost>(), selectedPostId: string | null = null, detailEpoch = 0
   let detailStatus: 'loading' | 'ready' | 'error' = 'ready', detailError: ForumIssue | null = null, activeDraft: string | null = null
   let changeVersion = 0
   const postRecords = new Map<string, ForumPost>(), versions = new Map<string, number>(), comments = new Map<string, Page<ForumComment>>()
   const confirmedCommentVersions = new Map<string, number>()
   const drafts = new Map<string, ForumPostDraft>(), commentDrafts = new Map<string, string>()
+  const replyTargets = new Map<string, ForumReplyTarget>(), replyVersions = new Map<string, number>()
   const operations = new Map<string, ForumOperation>(), failures = new Map<string, ForumIssue>(), inflight = new Set<string>()
   const confirmed = new Set<string>(), likeChecked = new Set<string>()
   const tasks = new Set<Promise<void>>(), flights = new Set<AbortController>()
@@ -104,10 +113,12 @@ export function createForumController(accountSource: Context['creditsSession'], 
         const body = wire.forumObject(wire.forumJson(op.body))
         return { operationId: op.operationId, scopeKey: op.scopeKey, postId: op.postId, kind: op.kind,
           title: op.kind === 'post' ? wire.forumText(body.title, 200) : '',
-          body: op.kind === 'like' ? '' : wire.forumText(body.body, op.kind === 'post' ? 20_000 : 4000),
+          body: op.kind === 'like' ? '' : wire.forumText(body.body, op.kind === 'post' ? 20_000 : 4000,
+            Array.isArray(body.attachment_ids) && body.attachment_ids.length > 0),
           liked: op.kind === 'like' ? wire.forumBoolean(body.liked) : null, inflight: inflight.has(op.operationId),
           error: inflight.has(op.operationId) ? null : failures.get(op.operationId) ?? issue('FORUM_RESULT_UNKNOWN', true, op.operationId) }
-      }) })
+      }), activity: activity.snapshot(), uploads: media.snapshot(),
+      replyTarget: selectedPostId === null ? null : replyTargets.get(selectedPostId) ?? null })
   }
   const track = (work: () => Promise<void>): void => {
     const captured = owner
@@ -119,7 +130,8 @@ export function createForumController(accountSource: Context['creditsSession'], 
   const perform = async (captured: ForumOwner, input: Omit<ForumRequest, 'signal'>, signal?: AbortSignal): Promise<ForumResult> => {
     const flight = new AbortController(), accountSignal = accountAbort.signal, cancel = (): void => { flight.abort() }
     const deadlineState = { expired: false }
-    const deadline = setTimeout(() => { deadlineState.expired = true; flight.abort() }, config.requestTimeoutMs ?? 20_000)
+    const deadline = setTimeout(() => { deadlineState.expired = true; flight.abort() },
+      input.blob === undefined ? config.requestTimeoutMs ?? 20_000 : config.uploadTimeoutMs ?? 120_000)
     flights.add(flight); accountSignal.addEventListener('abort', cancel, { once: true })
     signal?.addEventListener('abort', cancel, { once: true })
     if (!sameOwner(captured) || accountSignal.aborted || signal?.aborted === true) flight.abort()
@@ -186,7 +198,13 @@ export function createForumController(accountSource: Context['creditsSession'], 
     try {
       const answer = await perform(captured, { method: 'GET', path: `/posts/${id}` })
       if (!sameOwner(captured) || epoch !== detailEpoch || selectedPostId !== id) return
-      if (!answer.ok) { detailStatus = 'error'; detailError = issue(answer.code); return }
+      if (!answer.ok) {
+        if (answer.httpStatus === 403 || answer.httpStatus === 404) {
+          postRecords.delete(id); comments.delete(id); replyTargets.delete(id)
+          posts.items = posts.items.filter(item => item.id !== id)
+        }
+        detailStatus = 'error'; detailError = issue(answer.code); return
+      }
       const post = wire.forumPost(wire.forumObject(answer.payload).post)
       if (post.id !== id) throw new wire.ForumWireError()
       mergePost(post, version); detailStatus = 'ready'; publish(); await readComments(captured, id)
@@ -194,6 +212,21 @@ export function createForumController(accountSource: Context['creditsSession'], 
       if (sameOwner(captured) && epoch === detailEpoch) { detailStatus = 'error'; detailError = issue('FORUM_PROTOCOL_INVALID') }
     } finally { if (sameOwner(captured) && epoch === detailEpoch) publish() }
   }
+  const model: ForumModelContext = { owner: () => owner, valid: sameOwner, config: () => server, perform, publish, track }
+  const activity = createForumActivity(model, { openPost: readPost, focusComment: (comment) => {
+    const state = commentPage(comment.post_id)
+    state.items = newest([...new Map([...state.items, comment].map(item => [item.id, item])).values()]); publish()
+  } })
+  const media = createForumMedia(model, { ...deps.uploadJournal === undefined ? {} : { journal: deps.uploadJournal }, uuid,
+    canEdit: target => target.kind === 'post'
+      ? drafts.get(target.scopeKey)?.postId === null && pending(target.scopeKey, 'post').length === 0
+      : postRecords.has(target.postId) && pending(`post:${target.postId}`, 'comment').length === 0,
+    reserved: id => [...operations.values()].some((operation) => {
+      const body = wire.forumObject(wire.forumJson(operation.body))
+      return Array.isArray(body.attachment_ids) && body.attachment_ids.includes(id)
+    }),
+    error: (value) => { error = value; if (value.code === 'FORUM_PENDING_STORAGE_FAILED') storageFailed = true; publish() },
+  })
   const refreshAll = async (): Promise<void> => {
     if (refreshTask !== undefined) return refreshTask
     const captured = owner
@@ -207,9 +240,18 @@ export function createForumController(accountSource: Context['creditsSession'], 
           availability = 'error'; error = issue(answer.code); return
         }
         server = wire.forumConfig(answer.payload); unsupported = false
+        if (server.capabilities.image_uploads === true && !mediaRestored) {
+          try {
+            for (const target of media.restore(captured)) if (target.kind === 'post' && !drafts.has(target.scopeKey)) {
+              drafts.set(target.scopeKey, { scopeKey: target.scopeKey, title: '', body: '', createdAt: wire.forumInteger(now()),
+                postId: null, sending: false, locked: false, error: null })
+            }
+            mediaRestored = true
+          } catch (_storage: unknown) { storageFailed = true; error = issue('FORUM_PENDING_STORAGE_FAILED') }
+        }
         availability = storageFailed ? 'error' : server.enabled ? 'ready' : 'disabled'
         if (!storageFailed) error = null
-        publish(); await readPosts(captured)
+        publish(); await Promise.all([readPosts(captured), activity.refresh(captured)])
         if (sameOwner(captured) && selectedPostId !== null) await readPost(captured, selectedPostId)
       } catch (_protocol: unknown) {
         if (sameOwner(captured)) { availability = 'error'; error = issue('FORUM_PROTOCOL_INVALID') }
@@ -220,11 +262,16 @@ export function createForumController(accountSource: Context['creditsSession'], 
   const schedule = (): void => {
     if (timer !== undefined) clearTimeout(timer)
     timer = undefined
-    if (!active || !visible || owner === null || unsupported || !config.enabled) return
+    if (!active || owner === null || unsupported || !config.enabled
+      || !visible && server?.capabilities.notifications !== true) return
     const foreground = deps.isForeground?.() ?? (typeof document === 'undefined'
       || document.visibilityState !== 'hidden' && document.hasFocus())
-    timer = setTimeout(() => { timer = undefined; track(async () => { await refreshAll(); schedule() }) },
-      foreground ? config.foregroundPollMs ?? 15_000 : config.backgroundPollMs ?? 60_000)
+    timer = setTimeout(() => { timer = undefined; track(async () => {
+      const captured = owner
+      if (visible) await refreshAll()
+      else if (captured !== null) await activity.background(captured)
+      schedule()
+    }) }, visible && foreground ? config.foregroundPollMs ?? 15_000 : config.backgroundPollMs ?? 60_000)
   }
   const save = (captured: ForumOwner, operation: ForumOperation): boolean => {
     if (!sameOwner(captured)) return false
@@ -242,22 +289,39 @@ export function createForumController(accountSource: Context['creditsSession'], 
   const recordPostMutation = (post: ForumPost): void => {
     versions.set(post.id, ++changeVersion); mergePost(post)
   }
-  const execute = async (operation: ForumOperation): Promise<void> => {
+  const execute = async (operation: ForumOperation, recovering = false): Promise<void> => {
     const captured = owner
     if (captured === null || !sameOwner(captured) || inflight.has(operation.operationId) || confirmed.has(operation.operationId)) return
     inflight.add(operation.operationId); failures.delete(operation.operationId); publish()
     try {
-      const answer = await perform(captured, { method: operation.method, path: operation.path, body: operation.body })
+      let answer: ForumResult
+      if (recovering && operation.kind !== 'like' && server?.capabilities.receipt_lookup === true) {
+        answer = await perform(captured, { method: 'GET', path: `/receipts?${new URLSearchParams({
+          kind: operation.kind, client_request_id: operation.operationId,
+        })}` })
+        if (!sameOwner(captured)) return
+        if (!answer.ok && answer.httpStatus !== 404) {
+          failures.set(operation.operationId, issue(answer.code, true, operation.operationId)); return
+        }
+        if (!answer.ok) answer = await perform(captured, { method: operation.method, path: operation.path, body: operation.body })
+      } else answer = await perform(captured, { method: operation.method, path: operation.path, body: operation.body })
       if (!sameOwner(captured)) return
       if (!answer.ok) { failures.set(operation.operationId, issue(answer.code, answer.unknown, operation.operationId)); return }
       const payload = wire.forumObject(answer.payload), body = wire.forumObject(wire.forumJson(operation.body))
+      const imageIds = Array.isArray(body.attachment_ids) ? body.attachment_ids.map(wire.forumUuid) : []
+      const checkImages = (value: ForumPost | ForumComment): void => {
+        const actual = value.attachments ?? []
+        if (actual.length !== imageIds.length || actual.some(item => !imageIds.includes(item.id))) throw new wire.ForumWireError()
+      }
       if (operation.kind === 'comment') {
         const comment = wire.forumComment(payload.comment)
         wire.forumBoolean(payload.replayed)
         if (comment.post_id !== operation.postId || String(comment.author.id) !== captured.id
-          || comment.body !== String(body.body).trim()) {
+          || comment.body !== String(body.body).trim() || (comment.reply_to_comment_id ?? '') !== (body.reply_to_comment_id ?? '')) {
           throw new wire.ForumWireError()
         }
+        checkImages(comment); media.committed(captured, imageIds)
+        if (replyTargets.get(comment.post_id)?.id === body.reply_to_comment_id) replyTargets.delete(comment.post_id)
         const state = commentPage(comment.post_id)
         state.items = newest([...new Map([...state.items, comment].map(item => [item.id, item])).values()]); state.status = 'ready'
         versions.set(comment.post_id, ++changeVersion); confirmedCommentVersions.set(comment.id, changeVersion)
@@ -278,6 +342,7 @@ export function createForumController(accountSource: Context['creditsSession'], 
             || post.body !== String(body.body).trim()) {
             throw new wire.ForumWireError()
           }
+          checkImages(post); media.committed(captured, imageIds)
           const draft = drafts.get(operation.scopeKey)
           if (draft !== undefined) drafts.set(operation.scopeKey, { ...draft, postId: post.id, error: null })
           posts.items = newest([...new Map([...posts.items, post].map(item => [item.id, item])).values()])
@@ -316,8 +381,10 @@ export function createForumController(accountSource: Context['creditsSession'], 
     if (timer !== undefined) clearTimeout(timer)
     timer = undefined
     detailEpoch += 1; server = null; unsupported = false; storageFailed = false; error = null; refreshTask = undefined
+    mediaRestored = false
     posts = page(); selectedPostId = null; detailStatus = 'ready'; detailError = null; activeDraft = null; changeVersion = 0
     postRecords.clear(); versions.clear(); comments.clear(); confirmedCommentVersions.clear(); drafts.clear(); commentDrafts.clear()
+    replyTargets.clear(); replyVersions.clear(); activity.reset(); media.reset()
     operations.clear(); failures.clear(); inflight.clear(); confirmed.clear(); likeChecked.clear()
   }
   const observe = (): void => {
@@ -340,7 +407,8 @@ export function createForumController(accountSource: Context['creditsSession'], 
           if (operation.kind === 'post') {
             const body = wire.forumObject(wire.forumJson(operation.body))
             drafts.set(operation.scopeKey, { scopeKey: operation.scopeKey, title: wire.forumText(body.title, 200),
-              body: wire.forumText(body.body, 20_000), createdAt: operation.createdAt, postId: null,
+              body: wire.forumText(body.body, 20_000, Array.isArray(body.attachment_ids) && body.attachment_ids.length > 0),
+              createdAt: operation.createdAt, postId: null,
               sending: false, locked: true, error: null })
           }
         }
@@ -392,17 +460,20 @@ export function createForumController(accountSource: Context['creditsSession'], 
       const captured = owner
       if (captured === null || !mutationReady()) return
       const original = pending(scope, 'post')[0]
-      if (original !== undefined) { track(() => execute(original)); return }
+      if (original !== undefined) { track(() => execute(original, true)); return }
       const draft = drafts.get(scope)
       if (draft === undefined || draft.postId !== null) return
       try {
         if (server?.enabled !== true || !server.capabilities.immediate_publish) throw new Error('FORUM_CLOSED')
-        const title = wire.forumText(draft.title, 200), body = wire.forumText(draft.body, 20_000), operationId = uuid()
+        const images = media.ids({ kind: 'post', scopeKey: scope })
+        if (images.length > 0 && server.capabilities.image_uploads !== true) throw new Error('FORUM_ATTACHMENT_INVALID')
+        const title = wire.forumText(draft.title, 200), body = wire.forumText(draft.body, 20_000, images.length > 0), operationId = uuid()
         const operation = newOperation(captured, { operationId, scopeKey: scope, postId: null, kind: 'post', method: 'POST', path: '/posts',
-          body: JSON.stringify({ client_request_id: operationId, title, body }) })
+          body: JSON.stringify({ client_request_id: operationId, title, body, ...images.length === 0 ? {} : { attachment_ids: images } }) })
         if (operation !== null) track(() => execute(operation))
       } catch (failure: unknown) {
-        const code = failure instanceof Error && failure.message === 'FORUM_CLOSED' ? 'FORUM_CLOSED' : 'FORUM_INVALID_INPUT'
+        const code = failure instanceof Error && ['FORUM_CLOSED', 'FORUM_UPLOAD_PENDING', 'FORUM_ATTACHMENT_INVALID'].includes(failure.message)
+          ? failure.message : 'FORUM_INVALID_INPUT'
         drafts.set(scope, { ...draft, error: issue(code) })
         publish()
       }
@@ -416,9 +487,16 @@ export function createForumController(accountSource: Context['creditsSession'], 
       if (captured === null || !mutationReady() || !postRecords.has(id)) return
       if (server?.enabled !== true || !server.capabilities.comments) { commentPage(id).error = issue('FORUM_CLOSED'); publish(); return }
       const body = commentDrafts.get(id) ?? ''
-      if (body.trim() === '') return
+      let images: readonly string[]
+      try { images = media.ids({ kind: 'comment', postId: id }) }
+      catch (_pending: unknown) { commentPage(id).error = issue('FORUM_UPLOAD_PENDING'); publish(); return }
+      if (images.length > 0 && server.capabilities.image_uploads !== true) { commentPage(id).error = issue('FORUM_ATTACHMENT_INVALID'); publish(); return }
+      if (body.trim() === '' && images.length === 0) return
+      const target = replyTargets.get(id)
+      if (target !== undefined && server.capabilities.comment_replies !== true) { commentPage(id).error = issue('FORUM_INVALID_INPUT'); publish(); return }
       const operationId = uuid(), operation = newOperation(captured, { operationId, scopeKey: `post:${id}`, postId: id,
-        kind: 'comment', method: 'POST', path: `/posts/${id}/comments`, body: JSON.stringify({ client_request_id: operationId, body }) })
+        kind: 'comment', method: 'POST', path: `/posts/${id}/comments`, body: JSON.stringify({ client_request_id: operationId, body,
+          ...images.length === 0 ? {} : { attachment_ids: images }, ...target === undefined ? {} : { reply_to_comment_id: target.id } }) })
       if (operation !== null) { commentDrafts.set(id, ''); publish(); track(() => execute(operation)) }
     },
     loadMoreComments: (id) => {
@@ -440,7 +518,29 @@ export function createForumController(accountSource: Context['creditsSession'], 
       const operation = operations.get(id)
       if (operation === undefined || confirmed.has(id) || !mutationReady()) return
       if (operation.kind === 'like' && !likeChecked.has(id)) track(() => checkLike(operation))
-      else { likeChecked.delete(id); track(() => execute(operation)) }
+      else { likeChecked.delete(id); track(() => execute(operation, true)) }
     },
+    setFeedScope: activity.setScope, loadMoreOwnPosts: activity.loadMoreOwnPosts, loadMoreOwnComments: activity.loadMoreOwnComments,
+    refreshNotifications: activity.refreshNotifications, loadMoreNotifications: activity.loadMoreNotifications,
+    markNotificationsRead: activity.markRead, openNotification: activity.openNotification, openHistoryComment: activity.openComment,
+    updateNickname: activity.updateNickname,
+    setReplyTarget: (postId, commentId) => {
+      const captured = owner
+      if (captured === null || !mutationReady() || server?.capabilities.comment_replies !== true
+        || !postRecords.has(postId) || pending(`post:${postId}`, 'comment').length > 0) return
+      const version = (replyVersions.get(postId) ?? 0) + 1; replyVersions.set(postId, version)
+      if (commentId === null) { replyTargets.delete(postId); publish(); return }
+      try { wire.forumId(commentId) } catch (_input: unknown) { return }
+      track(async () => {
+        const known = commentPage(postId).items.find(item => item.id === commentId)
+        const answer = known === undefined ? await perform(captured, { method: 'GET', path: `/posts/${postId}/comments/${commentId}` }) : null
+        if (!sameOwner(captured) || replyVersions.get(postId) !== version || pending(`post:${postId}`, 'comment').length > 0) return
+        if (answer !== null && !answer.ok) { commentPage(postId).error = issue(answer.code); publish(); return }
+        const comment = known ?? wire.forumComment(wire.forumObject(answer?.ok === true ? answer.payload : null).comment)
+        if (comment.id !== commentId || comment.post_id !== postId) throw new wire.ForumWireError()
+        replyTargets.set(postId, { id: comment.id, postId, author: comment.author, body: comment.body }); publish()
+      })
+    },
+    addAttachments: media.add, retryAttachment: media.retry, removeAttachment: media.remove, contentUrl: media.contentUrl,
   }
 }

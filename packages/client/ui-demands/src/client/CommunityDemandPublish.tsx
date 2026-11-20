@@ -1,7 +1,7 @@
 /** Explicit public publication form; uploads and operation identity stay with the owner. */
 import { useId, useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { Button, Checkbox, Input, Menu, Modal, IconPaperclipOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Button, Checkbox, FileTypeIcon, Input, Menu, Modal, IconPaperclipOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CommunityOperationView, CommunityPublishDraft, CommunityServiceChoice } from './community-view.ts'
 import type { DemandAttachment } from './types.ts'
 import { DemandUploads } from './DemandAttachments.tsx'
@@ -37,9 +37,16 @@ export function CommunityDemandPublish(props: {
   const formId = useId()
   const files = useRef<HTMLInputElement>(null)
   const [serviceMenu, setServiceMenu] = useState(false)
+  const [dragging, setDragging] = useState(false)
   const unknown = operation.state === 'unknown'
   const editingLocked = props.locked || operation.state === 'submitting' || unknown
     || operation.state === 'failed' && operation.recoverable === true
+  const allowedTypes = attachmentAccept.toLowerCase().split(',').map(value => value.trim())
+  const allowsImages = allowedTypes.some(value => value.startsWith('image/') || /^\.(?:avif|gif|heic|heif|jpe?g|png|webp)$/u.test(value))
+  const allowsVideos = allowedTypes.some(value => value.startsWith('video/') || /^\.(?:avi|m4v|mkv|mov|mp4|webm)$/u.test(value))
+  const uploadLabel = allowsImages && allowsVideos ? 'communityUploadMedia'
+    : allowsImages ? 'communityUploadImages' : allowsVideos ? 'communityUploadVideos' : 'addAttachments'
+  const uploadLocked = editingLocked || !canPublish || attachmentAccept.trim() === ''
   const selected = services.find(item => item.id === draft.serviceId)
   const allowPublic = draft.allowPublic === true
   const validService = services.length === 0 || selected !== undefined && selected.disabled !== true
@@ -67,13 +74,48 @@ export function CommunityDemandPublish(props: {
       <label className={css.field} htmlFor={`${formId}-brief`}><span>{t('communityBrief')}</span>
         <textarea id={`${formId}-brief`} value={draft.brief} disabled={editingLocked} required rows={4}
           onChange={(event) => { update({ brief: event.target.value }) }} /></label>
-      <label className={css.field} htmlFor={`${formId}-budget`}><span>{t('communityBudget')}</span>
-        <Input id={`${formId}-budget`} value={draft.publicBudget ?? ''} disabled={editingLocked} maxLength={100}
-          onChange={(event) => { update({ publicBudget: event.target.value }) }} /></label>
-      {draft.expectedDeliveryDate === undefined ? null : <label className={css.field} htmlFor={`${formId}-delivery`}>
-        <span>{t('communityExpectedDelivery')}</span>
-        <Input id={`${formId}-delivery`} type="date" value={draft.expectedDeliveryDate} disabled={editingLocked}
-          onChange={(event) => { update({ expectedDeliveryDate: event.target.value }) }} /></label>}
+      <section className={css.field} aria-label={t('communityPublicAttachments')}>
+        <span>{t('communityPublicAttachments')}</span>
+        <Button type="button" variant="outline" className={css.uploadTarget} disabled={uploadLocked}
+          data-dragging={dragging && !uploadLocked} aria-labelledby={`${formId}-upload-label`}
+          aria-describedby={`${formId}-upload-hint`} onClick={() => { files.current?.click() }}
+          onDragOver={(event) => {
+            if (uploadLocked || !Array.from(event.dataTransfer.types).includes('Files')) return
+            event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setDragging(true)
+          }} onDragLeave={(event) => {
+            if (event.relatedTarget instanceof Node && event.currentTarget.contains(event.relatedTarget)) return
+            setDragging(false)
+          }} onDrop={(event) => {
+            event.preventDefault(); setDragging(false)
+            if (!uploadLocked && event.dataTransfer.files.length > 0) props.onAddAttachments(Array.from(event.dataTransfer.files))
+          }}>
+          <span className={css.uploadMediaIcons} aria-hidden="true">
+            {allowsImages ? <FileTypeIcon kind="image" size={32} /> : null}
+            {allowsVideos ? <FileTypeIcon kind="video" size={32} /> : null}
+            {allowsImages || allowsVideos ? null : <IconPaperclipOutlineRegular size={28} />}
+          </span>
+          <span className={css.uploadTargetCopy}>
+            <span id={`${formId}-upload-label`} className={css.uploadTargetTitle}>{t(uploadLabel)}</span>
+            <span id={`${formId}-upload-hint`} className={css.uploadTargetHint}>{t('communityUploadHint')}</span>
+          </span>
+        </Button>
+        <DemandUploads attachments={attachments} remove={props.onRemoveAttachment} retry={props.onRetryAttachment}
+          disabled={editingLocked} t={t} />
+        <input ref={files} type="file" hidden multiple accept={attachmentAccept} disabled={uploadLocked}
+          aria-label={t('selectAttachmentFiles')} onChange={(event) => {
+            if (!uploadLocked && event.target.files !== null) props.onAddAttachments(Array.from(event.target.files))
+            event.target.value = ''
+          }} />
+      </section>
+      <div className={css.publishTerms} data-single={draft.expectedDeliveryDate === undefined}>
+        <label className={css.field} htmlFor={`${formId}-budget`}><span>{t('communityBudget')}</span>
+          <Input id={`${formId}-budget`} value={draft.publicBudget ?? ''} disabled={editingLocked} maxLength={100}
+            onChange={(event) => { update({ publicBudget: event.target.value }) }} /></label>
+        {draft.expectedDeliveryDate === undefined ? null : <label className={css.field} htmlFor={`${formId}-delivery`}>
+          <span>{t('communityExpectedDelivery')}</span>
+          <Input id={`${formId}-delivery`} type="date" value={draft.expectedDeliveryDate} disabled={editingLocked}
+            onChange={(event) => { update({ expectedDeliveryDate: event.target.value }) }} /></label>}
+      </div>
       {services.length === 0 ? null : <div className={css.field}>
         <span id={`${formId}-service`}>{t('communityService')}</span>
         <Menu open={serviceMenu && !editingLocked} portal selectedId={draft.serviceId}
@@ -83,18 +125,6 @@ export function CommunityDemandPublish(props: {
             aria-haspopup="menu" aria-expanded={serviceMenu && !editingLocked} onClick={() => { setServiceMenu(value => !value) }}>
             <span id={`${formId}-service-value`}>{selected?.label ?? t('communityChooseService')}</span></Button>} />
       </div>}
-      <section className={css.field} aria-label={t('communityPublicAttachments')}>
-        <span>{t('communityPublicAttachments')}</span>
-        <DemandUploads attachments={attachments} remove={props.onRemoveAttachment} retry={props.onRetryAttachment}
-          disabled={editingLocked} t={t} />
-        <div><Button size="sm" variant="outline" disabled={editingLocked} icon={<IconPaperclipOutlineRegular size={16} />}
-          onClick={() => { files.current?.click() }}>{t('addAttachments')}</Button></div>
-        <input ref={files} type="file" hidden multiple accept={attachmentAccept} disabled={editingLocked}
-          aria-label={t('selectAttachmentFiles')} onChange={(event) => {
-            if (!editingLocked && event.target.files !== null) props.onAddAttachments(Array.from(event.target.files))
-            event.target.value = ''
-          }} />
-      </section>
       <Checkbox checked={allowPublic} disabled={editingLocked} label={t('communityPublicConsent')}
         onChange={(value) => { update({ allowPublic: value }) }} />
       <p className={css.note}>{t('communityPublicScope')}</p>

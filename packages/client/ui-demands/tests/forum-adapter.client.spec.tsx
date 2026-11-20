@@ -34,6 +34,53 @@ function commands(): Omit<ForumFace, 'hooks'> {
 }
 
 describe('forum presentation', () => {
+  it.each([
+    ['FORUM_PROFILE_INVALID', 'forumIssueProfileInvalid'], ['FORUM_REVISION_CONFLICT', 'forumIssueRevisionConflict'],
+    ['FORUM_IDEMPOTENCY_CONFLICT', 'forumIssueConflict'], ['FORUM_STORAGE_UNAVAILABLE', 'forumIssueUnavailable'],
+    ['FORUM_UPLOAD_FILE_MISMATCH', 'uploadFileMismatch'], ['FORUM_UPLOAD_RESELECT', 'uploadReselect'],
+    ['FORUM_UPLOAD_PENDING', 'forumImagesPending'], ['FORUM_UPLOAD_TOO_MANY', 'forumIssueTooManyImages'],
+    ['FORUM_UPLOAD_INVALID', 'forumIssueImageInvalid'], ['FORUM_UPLOAD_FAILED', 'forumIssueUploadFailed'],
+    ['FORUM_RESULT_UNKNOWN', 'forumOperationUnknown'], ['FORUM_PENDING_STORAGE_FAILED', 'pendingStorageFailed'],
+    ['FORUM_PROTOCOL_INVALID', 'forumIssueProtocol'], ['FORUM_ATTACHMENT_INVALID', 'forumIssueAttachmentInvalid'],
+    ['FORUM_UPLOAD_OFFSET_CONFLICT', 'forumIssueUploadOffset'],
+  ] as const)('keeps %s as a specific localizable cause with an actionable next step', (code, key) => {
+    expect(forumIssueText({ code, unknown: code === 'FORUM_RESULT_UNKNOWN', operationId: 'original' }, t)).toBe(zh[key])
+    expect(forumIssueText({ code, unknown: false, operationId: 'original' }, t)).not.toBe(zh.forumIssueFailed)
+  })
+
+  it('retains only the exact server pseudonym tied to its author id even when that id has phone-like length', () => {
+    const author = { id: 451129010, display_name: '论坛用户451129010' }
+    const post = forumExamplePost({ author })
+    const view = forumCenterView(state({ selectedPostId: post.id, selectedPost: post }), t)
+    expect(view.detail.post?.authorName).toBe(author.display_name)
+    const mismatched = forumCenterView(state({ selectedPostId: post.id,
+      selectedPost: { ...post, author: { ...author, id: 451129011 } } }), t)
+    expect(mismatched.detail.post?.authorName).toBeNull()
+  })
+  it.each(['13800138000', '+60 12-345-6789', '+1 (202) 555-0147', '＋８６ １３８００１３８０００',
+    '138****8000', '+60•••••6789', '用户138****8000'])('hides phone-like author names from retained list/detail/reply presentation: %s', (display_name) => {
+    const post = forumExamplePost({ author: { id: 1, display_name } })
+    const reply = forumExampleComment({ author: { id: 2, display_name }, post_id: post.id })
+    const view = forumCenterView(state({ posts: { items: [post], status: 'ready', error: null, hasMore: false, loadingMore: false },
+      selectedPostId: post.id, selectedPost: post,
+      comments: { items: [reply], status: 'ready', error: null, hasMore: false, loadingMore: false } }), t)
+    expect(view.list.posts[0]?.authorName).toBeNull()
+    expect(view.detail.post?.authorName).toBeNull()
+    expect(view.detail.post?.replies[0]?.authorName).toBeNull()
+    expect(JSON.stringify(view)).not.toContain(display_name)
+    expect(view.list.posts[0]?.id).toBe(post.id)
+    expect(view.detail.post?.replies[0]?.id).toBe(reply.id)
+  })
+
+  it('preserves custom names, emoji and user-authored text without deriving identity from contact text', () => {
+    for (const display_name of ['阿泽😊', 'Alex', 'R2D2', 'Studio 2026']) {
+      const post = forumExamplePost({ author: { id: 1, display_name }, body: '用户主动填写：13800138000' })
+      const view = forumCenterView(state({ selectedPostId: post.id, selectedPost: post }), t)
+      expect(view.detail.post?.authorName).toBe(display_name)
+      expect(view.detail.post?.body).toBe(post.body)
+    }
+  })
+
   it('retains real authors and counts, rejects stale cross-post replies and gates writes on a verified detail', () => {
     const post = forumExamplePost({ like_count: 0, comment_count: 1 })
     const snapshot = state({ selectedPostId: post.id, selectedPost: post,

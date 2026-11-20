@@ -128,6 +128,8 @@ export type SidebarRootInjected = {
    * conversation, which is the main column's view when no panel owns it.
    */
   selectPanel: (id: MainPanelId | null) => void
+  /** Check the optional activation policy before a physical sidebar slot action runs. */
+  requestSidebarAccess: () => boolean
   /** Private reactive sources bound to framework selector hooks. */
   hooks: { panels: ObservableSnapshot<readonly SidebarPanelMetadata[]>; shortcuts: ObservableSnapshot<readonly ShortcutCatalogEntry[]> }
 }

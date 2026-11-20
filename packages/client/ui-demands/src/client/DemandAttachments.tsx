@@ -58,13 +58,24 @@ export function DemandUploads(props: {
   t: DemandTranslate
 }): ReactNode {
   const { attachments, remove, retry, disabled = false, t } = props
+  const [previewId, setPreviewId] = useState<string | null>(null)
+  const closePreview = useCallback(() => { setPreviewId(null) }, [])
+  const preview = attachments.find(attachment => attachment.id === previewId && attachment.status === 'ready')
   if (attachments.length === 0) return null
-  return <ul className={css.uploads}>
+  return <><ul className={css.uploads}>
     {attachments.map((attachment) => {
       const progress = typeof attachment.progressPercent === 'number' && Number.isFinite(attachment.progressPercent)
         ? Math.min(100, Math.max(0, attachment.progressPercent)) : undefined
       return <li key={attachment.id} className={css.upload} data-state={attachment.status}>
-        <span className={css.uploadIcon} aria-hidden="true"><IconPaperclipOutlineRegular size={18} /></span>
+        {attachment.status === 'ready' && attachment.previewUrl && attachment.kind === 'image'
+          ? <button type="button" className={css.uploadPreview} aria-label={t('previewAttachmentNamed', { name: attachment.name })}
+            onClick={() => { setPreviewId(attachment.id) }}>
+            <img src={attachment.previewUrl} alt={attachment.name} loading="lazy" decoding="async" draggable={false} />
+          </button>
+          : attachment.status === 'ready' && attachment.previewUrl && attachment.kind === 'video'
+            ? <video className={css.uploadVideo} src={attachment.previewUrl} aria-label={attachment.name}
+              controls playsInline preload="metadata" />
+            : <span className={css.uploadIcon} aria-hidden="true"><IconPaperclipOutlineRegular size={18} /></span>}
         <div className={css.uploadCopy}>
           <span className={css.fileName}>{attachment.name}</span>
           <span className={css.uploadState}>
@@ -85,4 +96,7 @@ export function DemandUploads(props: {
       </li>
     })}
   </ul>
+  {preview?.kind === 'image' && preview.previewUrl ? <ImageLightbox src={preview.previewUrl} alt={preview.name}
+    labels={{ dialog: t('imagePreview'), close: t('close') }} onClose={closePreview} /> : null}
+  </>
 }

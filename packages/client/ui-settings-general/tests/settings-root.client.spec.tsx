@@ -139,7 +139,7 @@ function mount({
   const renderShell = () => sidebarCollapsed === undefined
     ? <SettingsRoot {...props} />
     : <SidebarRoot
-      collapsed={sidebarCollapsed} width={300}
+      collapsed={sidebarCollapsed} width={300} requestSidebarAccess={() => true}
       useSessions={props.useSessions} useSessionStatus={useSessionStatus} useSessionRetainInfo={props.useSessionRetainInfo}
       usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={select => select([])}
       useShortcuts={select => select(shortcuts)} useResource={useResource} useWorkspaces={unusedHook}

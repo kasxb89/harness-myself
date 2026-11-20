@@ -1,0 +1,19 @@
+.images { display: flex; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.preview, .unavailable { display: flex; align-items: center; justify-content: center; width: 112px; height: 112px; padding: 0; overflow: hidden; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); }
+.preview { cursor: zoom-in; }
+.preview img, .uploadPreview img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.preview:focus-visible, .uploadPreview:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: 2px; }
+.unavailable { flex-direction: column; gap: 8px; padding: 8px; font: var(--dsw-font-xxs-12); overflow-wrap: anywhere; }
+.composer { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.selection { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; min-width: 0; }
+.selection > span { color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxs-12); }
+.fileInput { display: none; }
+.uploads { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.upload { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 8px; border: 0.5px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); }
+.uploadPreview, .uploadIcon { display: inline-flex; flex: none; width: 44px; height: 44px; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: var(--dsw-radius-sm); overflow: hidden; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); }
+.uploadPreview { cursor: zoom-in; }
+.uploadCopy { display: flex; flex: 1; flex-direction: column; gap: 4px; min-width: 0; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xxs-12); }
+.fileName { overflow: hidden; color: var(--dsw-alias-label-primary); text-overflow: ellipsis; white-space: nowrap; }
+.uploadCopy progress { width: 100%; max-width: 160px; height: 4px; accent-color: var(--dsw-alias-demand-accent); }
+.error { color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
+@media (width <= 560px) { .preview, .unavailable { width: 88px; height: 88px; } }

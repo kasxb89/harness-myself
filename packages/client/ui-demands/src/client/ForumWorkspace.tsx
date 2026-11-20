@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Button } from '@deepseek-ai/dsh-client-ui-primitives'
 import { ForumCenter } from './ForumCenter.tsx'
-import { forumCenterView, forumIssueText, forumOperationView } from './forum-adapter.ts'
+import { forumAccountTools, forumCenterView, forumImageComposer, forumIssueText, forumOperationView, forumPublicAuthorName } from './forum-adapter.ts'
 import type { ForumFace, ForumState } from './forum-types.ts'
 import type { DemandTranslate } from './DemandUI.tsx'
 import css from './DemandPage.module.css'
@@ -18,6 +18,9 @@ export function ForumWorkspace({ state, commands, t }: {
   t: DemandTranslate
 }): ReactNode {
   const [composerOpen, setComposerOpen] = useState(false)
+  const [nicknameOpen, setNicknameOpen] = useState(false)
+  const [nicknameValue, setNicknameValue] = useState('')
+  const submittedNickname = useRef<string | null>(null)
   const openedScope = useRef<string | null>(null)
   const draft = state.postDrafts.find(row => row.scopeKey === state.activePostDraftScope)
   const publication = draft === undefined ? undefined
@@ -27,7 +30,45 @@ export function ForumWorkspace({ state, commands, t }: {
     : forumOperationView(publication, t)
   const reply = state.pending.find(row => row.kind === 'comment' && row.postId === state.selectedPostId)
   const otherDrafts = state.postDrafts.filter(row => row.postId === null && row.scopeKey !== draft?.scopeKey
-    && (row.title !== '' || row.body !== '' || row.locked))
+    && (row.title !== '' || row.body !== '' || row.locked || state.uploads?.some(upload => upload.target.kind === 'post'
+      && upload.target.scopeKey === row.scopeKey) === true))
+  const profile = state.activity?.profile
+  const publicName = profile?.value === null || profile?.value === undefined ? ''
+    : forumPublicAuthorName(profile.value.display_name, profile.value.id) ?? ''
+  useEffect(() => {
+    setComposerOpen(false)
+    openedScope.current = null
+    setNicknameOpen(false)
+    setNicknameValue('')
+    submittedNickname.current = null
+  }, [state.accountId])
+  useEffect(() => {
+    if (submittedNickname.current === null || profile?.saving !== false || profile.status !== 'ready'
+      || profile.error !== null || profile.value?.display_name !== submittedNickname.current
+      || nicknameValue.trim() !== submittedNickname.current) return
+    submittedNickname.current = null
+    setNicknameOpen(false)
+  }, [profile, nicknameValue])
+  const accountControls = forumAccountTools(state, commands, t,
+    commands.updateNickname === undefined ? undefined : {
+      displayName: publicName, open: nicknameOpen, value: nicknameValue, saving: profile?.saving === true,
+      locked: profile?.status !== 'ready' || state.availability !== 'ready',
+      canSave: profile?.error?.unknown !== true && nicknameValue.trim() !== '' && Array.from(nicknameValue.trim()).length <= 40
+        && nicknameValue.trim() !== publicName,
+      error: profile?.error?.unknown === true
+        ? `${forumIssueText(profile.error, t) ?? ''} ${t('forumOperationUnknown')}`.trim()
+        : forumIssueText(profile?.error ?? null, t),
+      onOpen: () => { setNicknameValue(publicName); submittedNickname.current = null; setNicknameOpen(true) },
+      onClose: () => { setNicknameOpen(false) }, onChange: setNicknameValue,
+      onSave: () => { submittedNickname.current = nicknameValue.trim(); commands.updateNickname?.(nicknameValue.trim()) },
+      onRetry: commands.refresh,
+      retryLabel: profile?.error?.unknown === true ? t('forumCheckProfile') : t('forumReloadProfile'),
+    })
+  const postMedia = draft === undefined ? undefined
+    : forumImageComposer(state, commands, { kind: 'post', scopeKey: draft.scopeKey }, t)
+  const replyMedia = state.selectedPostId === null ? undefined
+    : forumImageComposer(state, commands, { kind: 'comment', postId: state.selectedPostId }, t)
+  const replyTarget = state.replyTarget?.postId !== state.selectedPostId ? null : state.replyTarget ?? null
   useEffect(() => {
     if (!composerOpen) return
     if (state.activePostDraftScope !== null && draft?.postId === null) {
@@ -46,14 +87,31 @@ export function ForumWorkspace({ state, commands, t }: {
         onClick={() => { commands.openPostDraft(row.scopeKey); openedScope.current = row.scopeKey; setComposerOpen(true) }}>
         {t('forumResumeNamed', { title: row.title || t('forumUnnamedDraft') })}</Button>)}
     </div>}
-    <ForumCenter view={forumCenterView(state, t)} postDraft={{ title: draft?.title ?? '', body: draft?.body ?? '' }}
+    <ForumCenter view={forumCenterView(state, t, commands.contentUrl)} postDraft={{ title: draft?.title ?? '', body: draft?.body ?? '' }}
       replyDraft={state.commentDraft} postLocked={draft?.locked === true} replyLocked={reply !== undefined}
       postOperation={publicationView} replyOperation={forumOperationView(reply, t)}
       postComposerOpen={composerOpen}
+      {...(accountControls === undefined ? {} : { accountControls })}
+      {...(postMedia === undefined ? {} : { postMedia })}
+      {...(replyMedia === undefined ? {} : { replyMedia })}
+      replyTarget={replyTarget === null ? null : { id: replyTarget.id,
+        authorName: forumPublicAuthorName(replyTarget.author.display_name, replyTarget.author.id), excerpt: replyTarget.body }}
+      highlightedReplyId={state.activity?.highlightedCommentId ?? null}
+      {...(state.config?.capabilities.comment_replies !== true || commands.setReplyTarget === undefined ? {} : {
+        onSelectReply: (id: string) => { if (state.selectedPostId !== null) commands.setReplyTarget?.(state.selectedPostId, id) },
+        onCancelReply: () => { if (state.selectedPostId !== null) commands.setReplyTarget?.(state.selectedPostId, null) },
+      })}
+      {...(state.config?.capabilities.my_activity !== true || commands.openHistoryComment === undefined ? {} : {
+        onOpenHistoryComment: (postId: string, commentId: string) => { commands.openHistoryComment?.(postId, commentId) },
+      })}
       onOpenPostComposer={() => { openedScope.current = null; setComposerOpen(true) }}
       onClosePostComposer={() => { openedScope.current = null; setComposerOpen(false) }}
       onStartPost={commands.startPost} onOpenPost={commands.openPost} onBack={commands.closePost}
-      onRefresh={commands.refresh} onLoadMore={commands.loadMorePosts}
+      onRefresh={commands.refresh} onLoadMore={() => {
+        if (state.activity?.scope === 'mine') commands.loadMoreOwnPosts?.()
+        else if (state.activity?.scope === 'comments') commands.loadMoreOwnComments?.()
+        else commands.loadMorePosts()
+      }}
       onLoadMoreReplies={() => { if (state.selectedPostId !== null) commands.loadMoreComments(state.selectedPostId) }}
       onChangePost={(patch) => { if (draft !== undefined) commands.updatePostDraft(draft.scopeKey, patch) }}
       onSubmitPost={() => { if (draft !== undefined) commands.publishPost(draft.scopeKey) }}

@@ -43,6 +43,14 @@ const MIME: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
+  '.avif': 'image/avif',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
   '.json': 'application/json',
   '.map': 'application/json',
   '.webmanifest': 'application/manifest+json',
@@ -58,6 +66,21 @@ const STATIC_MISS_CODES: ReadonlySet<string | undefined> = new Set([
   'ENOTDIR',
 ])
 
+/** Resolve one byte range; malformed, empty and unsatisfiable ranges return null. */
+function mediaRange(value: string, size: number): readonly [number, number] | null {
+  const match = /^bytes=(\d*)-(\d*)$/iu.exec(value.trim())
+  if (match === null || size === 0) return null
+  const [, first = '', last = ''] = match
+  if (first === '') {
+    const suffix = Number(last)
+    if (last === '' || !Number.isSafeInteger(suffix) || suffix < 1) return null
+    return [Math.max(0, size - suffix), size - 1]
+  }
+  const start = Number(first), end = last === '' ? size - 1 : Number(last)
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= size || end < start) return null
+  return [start, Math.min(end, size - 1)]
+}
+
 /**
  * Serve one GET/HEAD static request from the dist root.
  * @param pathname - decoded URL pathname of the request.
@@ -67,11 +90,13 @@ const STATIC_MISS_CODES: ReadonlySet<string | undefined> = new Set([
  * @param authorizeIndex - authenticates an index response before its bytes are read.
  * @param renderIndex - produces the index.html body (structured injection
  * rendering) for the dist root and configured index path.
+ * @param request - optional method and Range header; recognized media supports one byte range, and HEAD omits the body.
  */
 export async function serveStatic(
   pathname: string, res: ServerResponse, distRoot: string, distIndex: string,
   authorizeIndex: () => boolean,
   renderIndex: () => Promise<string>,
+  request: { readonly method?: string; readonly range?: string | undefined } = {},
 ): Promise<void> {
   const target = resolve(normalize(join(distRoot, pathname)))
   // Traversal rejection: the target must be distRoot itself (`/`) or stay under
@@ -84,14 +109,15 @@ export async function serveStatic(
   }
   let body: string | Buffer
   let type: string
+  const index = target === distRoot || target === distIndex
   try {
-    if (target === distRoot || target === distIndex) {
+    if (index) {
       if (!authorizeIndex()) return
       body = await renderIndex()
       type = HTML_MIME
     } else {
       body = await readFile(target)
-      type = MIME[extname(target)] ?? 'application/octet-stream'
+      type = MIME[extname(target).toLowerCase()] ?? 'application/octet-stream'
     }
   } catch (error) {
     // Only absent or non-file targets are 404; other filesystem failures reach
@@ -101,8 +127,23 @@ export async function serveStatic(
     res.end()
     return
   }
-  res.writeHead(200, { 'content-type': type })
-  res.end(body)
+  const media = !index && (type.startsWith('image/') || type.startsWith('video/'))
+  const size = Buffer.byteLength(body)
+  if (media && request.range !== undefined && Buffer.isBuffer(body)) {
+    const range = mediaRange(request.range, size)
+    if (range === null) {
+      res.writeHead(416, { 'content-type': type, 'accept-ranges': 'bytes', 'content-range': `bytes */${String(size)}`, 'content-length': '0' })
+      res.end()
+      return
+    }
+    const [start, end] = range
+    res.writeHead(206, { 'content-type': type, 'accept-ranges': 'bytes',
+      'content-range': `bytes ${String(start)}-${String(end)}/${String(size)}`, 'content-length': String(end - start + 1) })
+    res.end(request.method === 'HEAD' ? undefined : body.subarray(start, end + 1))
+    return
+  }
+  res.writeHead(200, { 'content-type': type, 'content-length': String(size), ...media ? { 'accept-ranges': 'bytes' } : {} })
+  res.end(request.method === 'HEAD' ? undefined : body)
 }
 
 /**
@@ -135,6 +176,7 @@ export function apply(ctx: Context, config: Config): void {
       distIndex,
       () => ctx.connection.authorizeIndex(req, res),
       renderIndex,
+      { method: req.method, range: req.headers.range },
     )
   }), 'frontend-static: fallback seat')
 }

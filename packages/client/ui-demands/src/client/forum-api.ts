@@ -1,14 +1,17 @@
 /** One-attempt account-verified forum transport through the fixed same-origin Host proxy. */
 import { appPath } from '@deepseek-ai/dsh-client-ui-primitives'
-import { forumInteger, forumJson, forumObject, forumText } from './forum-wire.ts'
+import { forumInteger, forumJson, forumObject, forumText, forumUuid } from './forum-wire.ts'
 
 /** Captured existing login identity and its account-switch epoch. */
 export interface ForumOwner { readonly id: string; readonly owner: string; readonly epoch: number }
 /** Immutable JSON request, cancellable by the owning account lifecycle. */
 export interface ForumRequest {
-  readonly method: 'GET' | 'POST' | 'PUT'
+  readonly method: 'GET' | 'POST' | 'PUT' | 'PATCH'
   readonly path: string
   readonly body?: string
+  readonly blob?: Blob
+  readonly offset?: number
+  readonly onProgress?: (bytes: number) => void
   readonly signal: AbortSignal
 }
 /** Verified payload or classified failure retaining unknown mutation outcomes. */
@@ -67,9 +70,10 @@ export async function requestForum(owner: ForumOwner, request: ForumRequest): Pr
   try {
     response = await fetch(appPath('/credits/api/forum' + request.path), {
       method: request.method, signal: request.signal, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-      headers: { accept: 'application/json', 'content-type': 'application/json',
-        'x-yunshu-account-id': owner.id, 'x-yunshu-account-owner': owner.owner },
-      ...request.body === undefined ? {} : { body: request.body },
+      headers: { accept: 'application/json', 'content-type': request.blob === undefined ? 'application/json' : 'application/octet-stream',
+        'x-yunshu-account-id': owner.id, 'x-yunshu-account-owner': owner.owner,
+        ...request.offset === undefined ? {} : { 'upload-offset': String(forumInteger(request.offset)) } },
+      ...request.body === undefined && request.blob === undefined ? {} : { body: request.blob ?? request.body },
     })
   } catch (_network: unknown) { return failed(aborted(request.signal) ? 'FORUM_CANCELLED' : 'FORUM_NETWORK', 0, mutation) }
   let raw: string
@@ -78,6 +82,23 @@ export async function requestForum(owner: ForumOwner, request: ForumRequest): Pr
     return failed(failure instanceof ForumResponseError ? 'FORUM_PROTOCOL_INVALID'
       : aborted(request.signal) ? 'FORUM_CANCELLED' : 'FORUM_NETWORK', response.status, mutation)
   }
-  try { return decode(raw, owner, response.status, mutation) }
+  try {
+    const answer = decode(raw, owner, response.status, mutation)
+    if (answer.ok && request.blob !== undefined) request.onProgress?.(request.blob.size)
+    return answer
+  }
   catch (_protocol: unknown) { return failed('FORUM_PROTOCOL_INVALID', response.status, mutation) }
+}
+
+/** Build a local URL whose Host signs and rechecks the current forum asset permission.
+ * @param owner - Current account guards, never credentials.
+ * @param attachmentId - Exact forum attachment UUID.
+ * @param disposition - Inline preview or original-file download.
+ * @returns A fixed same-origin content URL.
+ */
+export function forumContentUrl(owner: Pick<ForumOwner, 'id' | 'owner'>, attachmentId: string,
+  disposition: 'inline' | 'attachment' = 'inline'): string {
+  return appPath(`/credits/api/forum/attachments/${encodeURIComponent(forumUuid(attachmentId))}/content?${new URLSearchParams({
+    account_id: owner.id, account_owner: owner.owner, disposition,
+  })}`)
 }

@@ -7,7 +7,13 @@
     "noEmit": true,
     "rewriteRelativeImportExtensions": false
   },
+  "files": [
+    "packages/client/ui-demands/src/index.ts",
+    "packages/client/ui-demands/src/config.ts",
+    "packages/client/ui-demands/src/client/case-showcase-types.ts"
+  ],
   "include": [
+    "apps/web/tests/sidebar-login-reminder.e2e.ts",
     "apps/web/tests/onboarding-survey.e2e.ts",
     "apps/web/tests/configurable-onboarding-survey.e2e.ts",
     "apps/web/tests/announcement-banner.e2e.ts",

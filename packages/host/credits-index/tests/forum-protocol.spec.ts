@@ -55,7 +55,7 @@ describe('forum text posts, comments and desired-state likes', () => {
       author_id: 99, phone: 'hidden', token: 'hidden', publish_to_community: true, attachment_ids: [ids.comment],
       media_url: 'https://hidden.invalid', review: 'approved', schema_version: 1 }
     expect(forumRequest('create-post', input)).toEqual({ client_request_id: 'post-operation',
-      title: '  原始标题  ', body: '\n保留原始正文\n' })
+      title: '  原始标题  ', body: '\n保留原始正文\n', attachment_ids: [ids.comment] })
   })
 
   it('counts post title, body and durable key limits in Unicode scalar values', () => {
@@ -130,8 +130,34 @@ describe('forum text posts, comments and desired-state likes', () => {
   it('projects exact public post fields and removes nested account, moderation and media data', () => {
     const source = post({ author: { id: 42, display_name: '', phone: 'hidden', email: 'hidden', token: 'hidden' },
       schema_version: 1, updated_at: 2, view_count: 9, reviewed_at: 3, delete_reason: 'hidden',
-      private_text: 'hidden', attachments: [ids.comment], media_url: 'https://hidden.invalid', storage_path: '/hidden' })
-    expect(response('post', { post: source, request_id: 'hidden' }, ids.post)).toEqual({ post: post() })
+      private_text: 'hidden', attachments: [], media_url: 'https://hidden.invalid', storage_path: '/hidden' })
+    expect(response('post', { post: source, request_id: 'hidden' }, ids.post)).toEqual({ post: post({ attachments: [] }) })
+  })
+
+  it.each(['13800138000', '+60 12-345-6789', '+1 (202) 555-0147', '＋８６ １３８００１３８０００',
+    '138****8000', '+60•••••6789', '用户138****8000'])('does not expose a phone-like forum author name: %s', (display_name) => {
+    const original = post({ author: { id: 42, display_name } })
+    const expected = post({ author: { id: 42, display_name: '' } })
+    const detail = response('post', { post: original }, ids.post)
+    expect(detail).toEqual({ post: expected })
+    const list = response('posts', { items: [original], next_cursor: '', has_more: false })
+    expect(list).toEqual({ items: [expected], next_cursor: '', has_more: false })
+    const reply = comment({ author: { id: 42, display_name } })
+    const comments = response('comments', { items: [reply], next_cursor: '', has_more: false }, ids.post)
+    expect(comments).toEqual({ items: [comment({ author: { id: 42, display_name: '' } })], next_cursor: '', has_more: false })
+    expect(JSON.stringify([detail, list, comments])).not.toContain(display_name)
+    expect(response('create-post', { post: original, replayed: false })).toEqual({ post: expected, replayed: false })
+    expect(response('create-comment', { comment: reply, replayed: true }, ids.post))
+      .toEqual({ comment: comment({ author: { id: 42, display_name: '' } }), replayed: true })
+  })
+
+  it('keeps custom author names and user-authored content intact while hiding a numeric login fallback', () => {
+    for (const display_name of ['阿泽😊', 'Alex', 'R2D2', 'Studio 2026']) {
+      const original = post({ author: { id: 42, display_name } })
+      expect(response('post', { post: original }, ids.post)).toEqual({ post: original })
+    }
+    const original = post({ title: '手机号填写说明', body: '用户主动填写：13800138000', author: { id: 42, display_name: '13800138000' } })
+    expect(response('post', { post: original }, ids.post)).toEqual({ post: { ...original, author: { id: 42, display_name: '' } } })
   })
 
   it('validates post identities, authors, timestamps, counts and viewer-liked booleans', () => {
@@ -165,8 +191,8 @@ describe('forum text posts, comments and desired-state likes', () => {
 
   it('projects ordinary comments and requires every comment to belong to the selected parent', () => {
     const original = comment({ author: { id: 77, display_name: '', phone: 'hidden', key: 'hidden' },
-      post_title: 'hidden', reviewed_at: 3, deleted_at: 4, attachments: [ids.post], seq: 8 })
-    const expected = comment({ author: { id: 77, display_name: '' } })
+      post_title: 'Parent title', reviewed_at: 3, deleted_at: 4, attachments: [], seq: 8 })
+    const expected = comment({ author: { id: 77, display_name: '' }, attachments: [], post_title: 'Parent title' })
     expect(response('comments', { items: [original], next_cursor: '', has_more: false }, ids.post))
       .toEqual({ items: [expected], next_cursor: '', has_more: false })
     expect(() => response('comments', { items: [original], next_cursor: '', has_more: false }, ids.other)).toThrow(DemandProtocolError)
@@ -207,6 +233,8 @@ describe('forum text posts, comments and desired-state likes', () => {
   it('retains only the frozen forum error codes for safe local reporting', () => {
     expect([...FORUM_ERRORS].sort()).toEqual(['FORUM_AUTH_REQUIRED', 'FORUM_FORBIDDEN', 'FORUM_INVALID_INPUT',
       'FORUM_CURSOR_INVALID', 'FORUM_CLOSED', 'FORUM_NOT_FOUND', 'FORUM_REQUEST_CONFLICT',
-      'FORUM_REVISION_CONFLICT', 'FORUM_UNAVAILABLE'].sort())
+      'FORUM_REVISION_CONFLICT', 'FORUM_UNAVAILABLE', 'FORUM_PROFILE_INVALID', 'FORUM_UPLOAD_OFFSET_CONFLICT',
+      'FORUM_ATTACHMENT_INVALID', 'FORUM_UPLOAD_UNSUPPORTED', 'FORUM_UPLOAD_TOO_LARGE',
+      'FORUM_IDEMPOTENCY_CONFLICT', 'FORUM_STORAGE_UNAVAILABLE'].sort())
   })
 })

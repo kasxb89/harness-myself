@@ -18,13 +18,15 @@ import { en, NS, zh, type CreditsKey } from './locales.ts'
 import { WorkspaceGuide, WorkspaceGuideToast } from './WorkspaceGuide.tsx'
 import { createWorkspaceGuide } from './workspace-guide-store.ts'
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
-import { createCreditsSessionSource, type CreditsSnapshot } from './session-store.ts'
+import { createCreditsSessionSource, refreshCredits, type CreditsSnapshot } from './session-store.ts'
 import { SessionModelCredits, TurnModelCredits, type ModelCreditsInjected } from './ModelCredits.tsx'
 import { BalanceNotice, type BalanceNoticeInjected } from './BalanceNotice.tsx'
 import { createOnboardingSurvey } from './onboarding-survey-store.ts'
 import { OnboardingSurvey, OnboardingSurveyEntry } from './OnboardingSurvey.tsx'
 import { ChatMediaPreferences } from './ChatMediaPreferences.tsx'
 import { createMediaPreferences } from './media-preferences-controller.ts'
+import { createSidebarLogin } from './sidebar-login-store.ts'
+import { SidebarLoginReminder } from './SidebarLoginReminder.tsx'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -72,6 +74,14 @@ export const Config: z<Config> = z.object({
 export function apply(ctx: ClientContext, config: Config = {}): void {
   const resolved = Config(config) as Required<Config>
   ctx.provide('creditsSession', createCreditsSessionSource())
+  const { request: requestSidebarAccess, start: startSidebarLogin, ...sidebarLogin } = createSidebarLogin(
+    ctx.creditsSession, signal => refreshCredits(signal), () => { ctx.layout.selectPanel(PANEL_ID) },
+  )
+  ctx.provide('sidebarAccess', { request: requestSidebarAccess })
+  ctx.effect(() => startSidebarLogin(), 'ui-credits: sidebar login reminder lifecycle')
+  ctx.slots.inject('shell.overlay', () => ctx.slots.register({
+    name: 'shell.overlay', id: 'sidebar-login-reminder', locale: NS, inject: () => sidebarLogin,
+  }, SidebarLoginReminder))
   ctx.inject(['quotaNotices'], (scope) => {
     scope.effect(() => scope.quotaNotices.registerBalanceScope((owner) => {
       const session = scope.creditsSession.getSnapshot().session

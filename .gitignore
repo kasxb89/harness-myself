@@ -37,6 +37,8 @@ python/**/__pycache__/
 python/**/.pytest_cache/
 packages/**/__pycache__/
 apps/web/dist/
+# Local showcase materials are staged by the preview/deployment asset owner.
+/apps/web/public/local-case-media
 .artifacts/
 .dsh-build/
 .dsh-report/

@@ -53,6 +53,36 @@ async function bench(declare = true) {
 }
 
 describe('ui-sidebar apply', () => {
+  it('consults the optional sidebar policy before navigation and new sessions and releases it on disposal', async () => {
+    const b = await bench()
+    let allowed = false
+    const request = vi.fn(() => allowed)
+    const policy = b.ctx.plugin((scope: Context) => { scope.provide('sidebarAccess', { request }) })
+    await policy.await()
+    await b.ctx.plugin({ inject: [...inject], apply }).await()
+    const injected = (b.slots.entries('sidebar')[0]!.inject as () => SidebarRootInjected)()
+    for (const id of [null, 'demands', 'employees', 'artifacts', 'imagegen', 'plaza', 'skillhub', 'plugins'] as const) {
+      injected.selectPanel(id as MainPanelId | null)
+    }
+    injected.startSession()
+    expect(b.layout.selectPanel).not.toHaveBeenCalled()
+    expect(b.uiWorkspace.startSession).not.toHaveBeenCalled()
+    expect(request).toHaveBeenCalledTimes(9)
+    injected.toggleSidebar()
+    expect(b.layout.toggleSidebar).toHaveBeenCalledOnce()
+    expect(request).toHaveBeenCalledTimes(9)
+    expect(injected.requestSidebarAccess()).toBe(false)
+    allowed = true
+    injected.selectPanel('demands' as MainPanelId)
+    injected.startSession('workspace' as never)
+    expect(b.layout.selectPanel).toHaveBeenCalledExactlyOnceWith('demands')
+    expect(b.uiWorkspace.startSession).toHaveBeenCalledExactlyOnceWith('workspace')
+    await policy.dispose()
+    injected.selectPanel(null)
+    expect(b.layout.selectPanel).toHaveBeenLastCalledWith(null)
+    expect(injected.requestSidebarAccess()).toBe(true)
+  })
+
   it('keeps the host Loader entry inert', () => {
     expect(hostApply).not.toThrow()
   })
@@ -80,7 +110,7 @@ describe('ui-sidebar apply', () => {
     expect(leading[0]!.locale).toBe('sidebar')
     expect(leading[0]!.inject).toBe(b.slots.entries('sidebar')[0]!.inject)
     const injected = (b.slots.entries('sidebar')[0]!.inject as () => SidebarRootInjected)()
-    expect(Object.keys(injected)).toEqual(['startSession', 'toggleSidebar', 'selectPanel', 'hooks'])
+    expect(Object.keys(injected)).toEqual(['startSession', 'toggleSidebar', 'selectPanel', 'requestSidebarAccess', 'hooks'])
     expect(injected.hooks.panels.getSnapshot()).toEqual([])
     expect(b.slots.entries('main')).toEqual([])
     // Both arms delegate to the Workspace UI's shared New Session action.

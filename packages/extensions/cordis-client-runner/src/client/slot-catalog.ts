@@ -3103,6 +3103,7 @@ export const CLIENT_SLOT_API: readonly ClientSlotEntry[] = [
       'client-ui-artifacts OperationToast id \'artifacts.operation-toast\'',
       'client-ui-chat QuotaNoticeHost id \'chat.quota-notice\'',
       'client-ui-creative CreativeDraftNotice',
+      'client-ui-credits SidebarLoginReminder id \'sidebar-login-reminder\'',
       'client-ui-credits OnboardingSurvey id \'onboarding-survey\'',
       'client-ui-credits WorkspaceGuideToast id \'workspace-guide-notice\'',
       'client-ui-plugin-manager PluginRefreshToast id \'plugin-manager.refresh-toast\'',

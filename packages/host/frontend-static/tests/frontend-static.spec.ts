@@ -6,7 +6,7 @@
  * GET/HEAD, and seat release on fiber disposal (HMR safety).
  */
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -30,7 +30,7 @@ afterEach(async () => {
 })
 
 /** Write a dist fixture and the authenticated Web rows, then boot them through the real Loader. */
-async function loadComposition(): Promise<Context> {
+async function loadComposition(media = false): Promise<Context> {
   root = await mkdtemp(join(tmpdir(), 'dsh-frontend-static-'))
   const dist = join(root, 'dist')
   await mkdir(dist)
@@ -39,6 +39,11 @@ async function loadComposition(): Promise<Context> {
   await writeFile(join(dist, 'app.js'), 'export {}')
   await writeFile(join(dist, 'blob.bin'), 'BLOB')
   await writeFile(join(dist, 'manifest.webmanifest'), '{}')
+  if (media) {
+    await writeFile(join(dist, 'cover.png'), await readFile(new URL('../../../llm/llm-deepseek/tests/fixtures/red.png', import.meta.url)))
+    await writeFile(join(dist, 'clip.mp4'), await readFile(new URL('../../../../apps/web/tests/fixtures/sidebar-media/preview.mp4', import.meta.url)))
+    await writeFile(join(dist, 'empty.mp4'), '')
+  }
   await mkdir(join(dist, 'empty'))
   const configPath = join(root, 'cordis.yml')
   await writeFile(configPath, [
@@ -94,6 +99,72 @@ async function request(port: number, path: string, init?: RequestInit): Promise<
 }
 
 describe('real Loader composition', () => {
+  it('serves media with its MIME type and explicit byte length while HEAD omits bytes', async () => {
+    const loaded = await loadComposition(true)
+    for (const [file, type] of [['cover.png', 'image/png'], ['clip.mp4', 'video/mp4']] as const) {
+      const bytes = await readFile(join(root!, 'dist', file))
+      const url = `http://127.0.0.1:${String(loaded.webServer.port)}/${file}`
+      const get = await fetch(url)
+      expect(get.status).toBe(200)
+      expect(get.headers.get('content-type')).toBe(type)
+      expect(get.headers.get('content-length')).toBe(String(bytes.length))
+      expect(get.headers.get('accept-ranges')).toBe('bytes')
+      expect(Buffer.from(await get.arrayBuffer())).toEqual(bytes)
+      const head = await fetch(url, { method: 'HEAD' })
+      expect(head.status).toBe(200)
+      expect(head.headers.get('content-type')).toBe(type)
+      expect(head.headers.get('content-length')).toBe(String(bytes.length))
+      expect(await head.text()).toBe('')
+    }
+    const origin = `http://127.0.0.1:${String(loaded.webServer.port)}`
+    expect((await fetch(origin + '/', { headers: { range: 'bytes=0-31' } })).status).toBe(401)
+    const script = await fetch(origin + '/app.js', { headers: { range: 'bytes=0-1' } })
+    expect(script.status).toBe(200)
+    expect(script.headers.get('content-range')).toBeNull()
+    expect(script.headers.get('accept-ranges')).toBeNull()
+    expect(await script.text()).toBe('export {}')
+  })
+
+  it('serves exact media prefix, suffix and open-ended ranges for GET and HEAD', async () => {
+    const loaded = await loadComposition(true)
+    const bytes = await readFile(join(root!, 'dist', 'clip.mp4'))
+    const url = `http://127.0.0.1:${String(loaded.webServer.port)}/clip.mp4`
+    for (const [range, start, end] of [
+      ['bytes=0-31', 0, 31],
+      ['bytes=8-', 8, bytes.length - 1],
+      ['bytes=-32', bytes.length - 32, bytes.length - 1],
+      [`bytes=0-${String(bytes.length + 50)}`, 0, bytes.length - 1],
+      [`bytes=-${String(bytes.length + 50)}`, 0, bytes.length - 1],
+    ] as const) {
+      for (const method of ['GET', 'HEAD']) {
+        const response = await fetch(url, { method, headers: { range } })
+        expect(response.status).toBe(206)
+        expect(response.headers.get('content-type')).toBe('video/mp4')
+        expect(response.headers.get('accept-ranges')).toBe('bytes')
+        expect(response.headers.get('content-range')).toBe(`bytes ${String(start)}-${String(end)}/${String(bytes.length)}`)
+        expect(response.headers.get('content-length')).toBe(String(end - start + 1))
+        expect(Buffer.from(await response.arrayBuffer())).toEqual(method === 'GET' ? bytes.subarray(start, end + 1) : Buffer.alloc(0))
+      }
+    }
+  })
+
+  it('rejects invalid or unsatisfiable media ranges without returning the complete file', async () => {
+    const loaded = await loadComposition(true)
+    const bytes = await readFile(join(root!, 'dist', 'clip.mp4'))
+    const url = `http://127.0.0.1:${String(loaded.webServer.port)}`
+    for (const range of ['', 'bytes=', 'bytes=0-1,4-5', 'bytes=9-4', 'bytes=-0', `bytes=${String(bytes.length)}-`, 'bytes=9007199254740992-']) {
+      const response = await fetch(url + '/clip.mp4', { headers: { range } })
+      expect(response.status).toBe(416)
+      expect(response.headers.get('content-range')).toBe(`bytes */${String(bytes.length)}`)
+      expect(response.headers.get('content-length')).toBe('0')
+      expect(await response.text()).toBe('')
+    }
+    const empty = await fetch(url + '/empty.mp4', { headers: { range: 'bytes=0-0' } })
+    expect(empty.status).toBe(416)
+    expect(empty.headers.get('content-range')).toBe('bytes */0')
+    expect(await empty.text()).toBe('')
+  })
+
   it('serves explicit index entries and files while preserving HTTP error semantics', { timeout: 60_000 }, async () => {
     const loaded = await loadComposition()
     const unloaded = [...loaded.loader.entries()]

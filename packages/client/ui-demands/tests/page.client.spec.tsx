@@ -25,7 +25,8 @@ const translations: ReadonlyMap<string, string> = new Map(Object.entries(zh))
 
 function unusedHook(): never { throw new Error('The demand page reads only its injected service snapshot') }
 
-function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityState> = {}, discussion: Partial<ForumState> = {}) {
+function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityState> = {}, discussion: Partial<ForumState> = {},
+  showcaseItems: DemandPageProps['showcaseItems'] = []) {
   const store = createSnapshotStore(demandState(partial))
   const communityStore = createSnapshotStore(communityState(shared))
   const emptyPage = { items: [], status: 'ready' as const, hasMore: false, loadingMore: false, error: null }
@@ -59,6 +60,7 @@ function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityS
   }
   const props: DemandPageProps = {
     ...actions,
+    showcaseItems,
     usePanelInfo: unusedHook, useSessions: unusedHook, useSessionStatus: unusedHook, useSessionRetainInfo: unusedHook,
     useWorkspaces: unusedHook, useResource: unusedHook, useDemands: bindSnapshotSelector(store),
     useCommunity: bindSnapshotSelector(communityStore), community, useForum: bindSnapshotSelector(forumStore), forum,
@@ -84,6 +86,41 @@ function openOfficial() {
 }
 
 describe('human-engineer demand page', () => {
+  it('keeps configured case materials separate from customer requests and forum publications', () => {
+    const actions = page({ availability: 'disabled' }, {}, {}, [{ id: 'case-reference', title: '公开产品界面',
+      description: '已经配置的作品素材', category: 'web', coverUrl: '/case-media/cover.png',
+      media: [{ kind: 'image', url: '/case-media/cover.png' }], sourceName: '素材作者' }])
+    fireEvent.click(screen.getByRole('tab', { name: zh.showcaseTab }))
+    expect(screen.getByRole('tab', { name: zh.showcaseTab }).getAttribute('aria-selected')).toBe('true')
+    const preview = zh.showcasePreviewNamed.replace('{title}', '公开产品界面')
+    fireEvent.click(screen.getByRole('button', { name: preview }))
+    expect(screen.getByRole('dialog', { name: '公开产品界面' })).toBeTruthy()
+    expect(actions.setWorkspaceView).toHaveBeenLastCalledWith('other')
+    expect(actions.community.startPublication).not.toHaveBeenCalled()
+    expect(actions.forum.startPost).not.toHaveBeenCalled()
+    expect(actions.startRequest).not.toHaveBeenCalled()
+    expect(actions.send).not.toHaveBeenCalled()
+  })
+
+  it.each(['login-required', 'loading', 'error', 'disabled'] as const)('retains all four destination tabs while %s', (availability) => {
+    const actions = page({ availability, categories: [], engineers: [] },
+      { availability, accountId: null, config: null }, { availability, accountId: null, config: null })
+    const labels = [zh.demandSquare, zh.forumTabLabel, zh.showcaseTab, zh.officialCustomization]
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(labels)
+    for (const label of labels) {
+      fireEvent.click(screen.getByRole('tab', { name: label }))
+      expect(screen.getByRole('tab', { name: label }).getAttribute('aria-selected')).toBe('true')
+      expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual(labels)
+    }
+    expect(actions.startRequest).not.toHaveBeenCalled()
+    expect(actions.community.publish).not.toHaveBeenCalled()
+    expect(actions.forum.publishPost).not.toHaveBeenCalled()
+    if (availability === 'login-required') {
+      fireEvent.click(screen.getByRole('button', { name: zh.openLogin }))
+      expect(actions.openLogin).toHaveBeenCalledOnce()
+    }
+  })
+
   it('checks an original acceptance from My accepted after its public detail disappears and approval capability is absent', () => {
     const listing = communityListing(), shared = communityState({ availability: 'ready', config: communityConfig() })
     const original = { kind: 'accept' as const, operationId: 'original-hidden-acceptance', scopeKey: `accept:${listing.id}`,
@@ -148,7 +185,7 @@ describe('human-engineer demand page', () => {
         author: { id: 2, display_name: '讨论作者' }, created_at: 100, like_count: 0, comment_count: 0, liked: false }],
       status: 'ready', hasMore: false, loadingMore: false, error: null },
     })
-    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual([zh.demandSquare, zh.forumTabLabel, zh.officialCustomization])
+    expect(screen.getAllByRole('tab').map(tab => tab.textContent)).toEqual([zh.demandSquare, zh.forumTabLabel, zh.showcaseTab, zh.officialCustomization])
     expect(screen.getByRole('heading', { name: '私有需求标题' })).toBeTruthy()
     fireEvent.click(screen.getByRole('tab', { name: zh.forumTabLabel }))
     expect(screen.getByRole('button', { name: zh.forumOpenPost.replace('{title}', '真实讨论帖子') })).toBeTruthy()
@@ -333,7 +370,7 @@ describe('human-engineer demand page', () => {
       serviceProfileId: profile.id, serviceProfileName: profile.displayName, budget: '   ', unreadCount: 0 })
     const actions = page({ directoryMode: 'services', serviceProfiles: [profile], servicesTotal: 1,
       requests: [first, second], requestsHaveMore: true })
-    expect(screen.getAllByRole('tab')).toHaveLength(3)
+    expect(screen.getAllByRole('tab')).toHaveLength(4)
     expect(screen.getByRole('tab', { name: zh.demandSquare }).getAttribute('aria-selected')).toBe('true')
     const cards = screen.getByRole('list', { name: zh.personalRequests })
     expect(within(cards).getAllByRole('listitem')).toHaveLength(2)

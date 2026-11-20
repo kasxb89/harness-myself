@@ -38,7 +38,11 @@ async function host(overrides: Partial<ForumProxyOptions> = {}) {
       headers: { 'x-yunshu-account-id': accountId, 'x-yunshu-account-owner': owner,
         ...data === undefined ? {} : { 'content-type': 'application/json' }, ...headers },
       ...data === undefined ? {} : { body: JSON.stringify(data) } })
-  return { call, send, current, media, proxy }
+  const raw = async (path: string, init: RequestInit) => await fetch(`http://127.0.0.1:${address.port}/credits/api/forum${path}`, {
+    ...init, headers: { 'x-yunshu-account-id': accountId, 'x-yunshu-account-owner': owner,
+      ...Object.fromEntries(new Headers(init.headers)) },
+  })
+  return { call, raw, send, current, media, proxy }
 }
 
 describe('fixed login-owned forum HTTP transport', () => {
@@ -159,5 +163,129 @@ describe('fixed login-owned forum HTTP transport', () => {
     expect(await (await small.call('/posts', 'POST', body)).json())
       .toMatchObject({ code: 'FORUM_PROTOCOL_INVALID', outcome: 'unknown', operationKey: operationId })
     expect(small.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('forwards bounded forum profile PATCH JSON through the existing owner without browser authority', async () => {
+    const forum = await host()
+    forum.send.mockResolvedValueOnce(Response.json({ success: true, data: { profile: {
+      id: 42, display_name: '设计师😊', revision: 2, phone: 'private', role: 10,
+    } } }))
+    expect(await (await forum.call('/profile', 'PATCH', { display_name: '设计师😊', revision: 1, role: 10 },
+      { authorization: 'Bearer browser-secret' })).json()).toMatchObject({ ok: true,
+      payload: { profile: { id: 42, display_name: '设计师😊', revision: 2 } } })
+    expect(forum.send).toHaveBeenCalledExactlyOnceWith('/api/product/forum/profile', expect.objectContaining({
+      method: 'PATCH', body: '{"display_name":"设计师😊","revision":1}',
+    }))
+    expect(new Headers(forum.send.mock.calls[0]?.[1].headers).has('authorization')).toBe(false)
+    expect(await (await forum.call('/profile?user_id=99', 'PATCH', { display_name: 'Name', revision: 2 })).json())
+      .toMatchObject({ code: 'FORUM_INVALID_INPUT' })
+    expect(forum.send).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers unknown original submission through GET receipt without issuing another create', async () => {
+    const forum = await host()
+    forum.send.mockRejectedValueOnce(new Error('original send lost'))
+    expect(await (await forum.call('/posts', 'POST', body)).json()).toMatchObject({ outcome: 'unknown', operationKey: operationId })
+    forum.send.mockResolvedValueOnce(Response.json({ success: true, data: { post: post(), replayed: true } }))
+    expect(await (await forum.call('/receipts?kind=post&client_request_id=' + operationId)).json())
+      .toMatchObject({ ok: true, payload: { post: { id: postId }, replayed: true } })
+    expect(forum.send.mock.calls.map(call => call[1].method)).toEqual(['POST', 'GET'])
+    expect(forum.send.mock.calls[1]?.[0]).toBe('/api/product/forum/receipts?kind=post&client_request_id=' + operationId)
+    expect(await (await forum.call('/receipts?kind=post&client_request_id=' + operationId + '&user_id=99')).json())
+      .toMatchObject({ code: 'FORUM_INVALID_INPUT' })
+    expect(forum.send).toHaveBeenCalledTimes(2)
+  })
+
+  it('exposes only server-scoped own activity, parent-bound comment detail and recipient notification routes', async () => {
+    const forum = await host()
+    const comment = { id: commentId, post_id: postId, body: 'Reply', author: { id: 42, display_name: '' }, created_at: 1,
+      post_title: 'Title', reply_to_comment_id: '', attachments: [] }
+    for (const [path, payload] of [
+      ['/me/posts?limit=10', { items: [post()], next_cursor: '', has_more: false }],
+      ['/me/comments', { items: [comment], next_cursor: '', has_more: false }],
+      [`/posts/${postId}/comments/${commentId}`, { comment }],
+      ['/notifications/unread', { unread_count: 1 }],
+      ['/notifications', { items: [{ id: '1', type: 'reply', post_id: postId, comment_id: commentId,
+        actor: { id: 43, display_name: '用户' }, post_title: 'Title', created_at: 1, read_at: 0 }],
+      next_cursor: '', has_more: false, unread_count: 1 }],
+    ] as const) {
+      forum.send.mockResolvedValueOnce(Response.json({ success: true, data: payload }))
+      expect(await (await forum.call(path)).json()).toMatchObject({ ok: true, payload })
+    }
+    forum.send.mockResolvedValueOnce(Response.json({ success: true, data: { unread_count: 0 } }))
+    expect(await (await forum.call('/notifications/read', 'POST', { notification_ids: ['1'], recipient_id: 43 })).json())
+      .toMatchObject({ ok: true, payload: { unread_count: 0 } })
+    expect(forum.send.mock.calls.at(-1)?.[1].body).toBe('{"notification_ids":["1"]}')
+    expect(await (await forum.call('/me/posts?user_id=99')).json()).toMatchObject({ code: 'FORUM_INVALID_INPUT' })
+    expect(forum.send).toHaveBeenCalledTimes(6)
+  })
+
+  it('streams original upload bytes once under the captured forum target and keeps receipt metadata incomplete until ready', async () => {
+    const forum = await host(), bytes = new Uint8Array([1, 2, 3, 4])
+    const upload = { id: commentId, attachment_id: commentId, offset: 0, chunk_bytes: 4,
+      status: 'uploading', expires_at: 100, attachment: null }
+    const init = { client_upload_id: operationId, target_kind: 'comment', post_id: postId, name: 'image.png', mime_type: 'image/png', size_bytes: 4 }
+    forum.send.mockResolvedValueOnce(Response.json({ success: true, data: upload }, { status: 201 }))
+    expect(await (await forum.call('/uploads', 'POST', { ...init, scope: 'conversation', owner_id: 99 })).json())
+      .toMatchObject({ ok: true, payload: upload })
+    expect(forum.send.mock.calls[0]?.[1].body).toBe(JSON.stringify(init))
+    forum.send.mockImplementationOnce(async (path, input) => {
+      expect(path).toBe(`/api/product/forum/uploads/${commentId}/chunks`)
+      expect(input.method).toBe('PUT')
+      expect(new Headers(input.headers).get('upload-offset')).toBe('0')
+      expect(new Uint8Array(await new Response(input.body).arrayBuffer())).toEqual(bytes)
+      return Response.json({ success: true, data: { ...upload, offset: 4 } })
+    })
+    expect(await (await forum.raw(`/uploads/${commentId}/chunks`, { method: 'PUT', body: bytes,
+      headers: { 'content-type': 'application/octet-stream', 'content-length': '4', 'upload-offset': '0' } })).json())
+      .toMatchObject({ ok: true, payload: { offset: 4, attachment: null } })
+    forum.send.mockResolvedValueOnce(Response.json({ success: true, data: { ...upload, offset: 4 } }))
+    expect(await (await forum.call(`/uploads/${commentId}`)).json()).toMatchObject({ ok: true })
+    expect(forum.send.mock.calls.map(call => call[1].method)).toEqual(['POST', 'PUT', 'GET'])
+    expect((await forum.call(`/uploads/${commentId}/content`, 'PUT', {})).status).toBe(404)
+    expect(forum.media).not.toHaveBeenCalled()
+  })
+
+  it('mints only local owner-guarded media paths and serves signed exact-path original bytes with Range and HEAD', async () => {
+    const forum = await host()
+    const url = `https://forum-api.invalid/prefix/api/product/forum/attachments/${commentId}/content?token=private-signature`
+    const signed = { success: true, data: { url, expires_at: 100 } }
+    forum.send.mockResolvedValueOnce(Response.json(signed))
+    const link = await (await forum.call(`/attachments/${commentId}/link`, 'POST', { disposition: 'inline' })).json() as { payload: { url: string } }
+    expect(link.payload.url).toBe(`/credits/api/forum/attachments/${commentId}/content?account_id=42&account_owner=${owner}&disposition=inline`)
+    expect(JSON.stringify(link)).not.toContain('private-signature')
+    const content = link.payload.url.slice('/credits/api/forum'.length)
+    forum.send.mockResolvedValueOnce(Response.json(signed))
+    forum.media.mockResolvedValueOnce(new Response(new Uint8Array([2, 3]), { status: 206, headers: {
+      'content-type': 'image/png', 'content-range': 'bytes 1-2/4', 'content-length': '2', 'accept-ranges': 'bytes',
+    } }))
+    const media = await forum.raw(content, { headers: { range: 'bytes=1-2' } })
+    expect(media.status).toBe(206); expect(new Uint8Array(await media.arrayBuffer())).toEqual(new Uint8Array([2, 3]))
+    expect(media.headers.get('cache-control')).toBe('private, no-store')
+    expect(forum.media).toHaveBeenCalledExactlyOnceWith(`/api/product/forum/attachments/${commentId}/content?token=private-signature`,
+      expect.objectContaining({ method: 'GET', headers: { range: 'bytes=1-2' } }))
+    forum.send.mockResolvedValueOnce(Response.json(signed))
+    forum.media.mockResolvedValueOnce(new Response(null, { headers: { 'content-type': 'image/png', 'content-length': '4' } }))
+    expect((await forum.raw(content, { method: 'HEAD' })).status).toBe(200)
+    expect(forum.media).toHaveBeenCalledTimes(2)
+    expect(forum.send.mock.calls.every(call => call[0] === `/api/product/forum/attachments/${commentId}/link`)).toBe(true)
+  })
+
+  it('rejects cross-family signed URLs, stale owners and invalid media before any public file request', async () => {
+    const forum = await host()
+    forum.send.mockResolvedValueOnce(Response.json({ success: true, data: {
+      url: `https://forum-api.invalid/prefix/api/product/community-demands/attachments/${commentId}/content?token=secret`, expires_at: 100,
+    } }))
+    expect(await (await forum.call(`/attachments/${commentId}/link`, 'POST', { disposition: 'inline' })).json())
+      .toMatchObject({ code: 'FORUM_PROTOCOL_INVALID' })
+    expect(forum.media).not.toHaveBeenCalled()
+    const path = `/attachments/${commentId}/content?account_id=42&account_owner=${'b'.repeat(64)}&disposition=inline`
+    expect(await (await forum.raw(path, {})).json()).toMatchObject({ code: 'ACCOUNT_CHANGED' })
+    expect(forum.send).toHaveBeenCalledTimes(1)
+    for (const mime_type of ['video/mp4', 'image/svg+xml']) {
+      expect(await (await forum.call('/uploads', 'POST', { client_upload_id: operationId, target_kind: 'post', post_id: '',
+        name: 'image', mime_type, size_bytes: 4 })).json()).toMatchObject({ code: 'FORUM_INVALID_INPUT' })
+    }
+    expect(forum.send).toHaveBeenCalledTimes(1)
   })
 })

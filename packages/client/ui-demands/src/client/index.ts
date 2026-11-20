@@ -1,6 +1,5 @@
 /** Private demand navigation and account-owned human-engineer conversations. */
 import type { Context } from '@deepseek-ai/cordis'
-import z from '@deepseek-ai/schemastery'
 import type { MainPanelId } from '@deepseek-ai/dsh-client-ui-layout/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-credits/client'
@@ -14,6 +13,10 @@ import { DemandPage } from './DemandPage.tsx'
 import { DemandPanelIcon } from './DemandPanelIcon.tsx'
 import { en, NS, zh, type DemandLocaleKey } from './locales.ts'
 import type { DemandWorkspaceFace } from './types.ts'
+import { type Config, DEMANDS_CONFIG_GLOBAL, publicDemandConfig } from '../config.ts'
+
+// Browser Loader has no Host options; defaults must be applied after its public bootstrap is merged.
+export type { Config } from '../config.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -27,39 +30,23 @@ const PANEL_ID = 'demands' as MainPanelId
 /** Runtime dependencies retain the existing shared product login. */
 export const inject = ['slots', 'locale', 'layout', 'creditsSession']
 
-/** Client transport deadlines and refresh cadence; service publication is owned by the backend. */
-export interface Config {
-  /** Local transport availability, independent of the backend's new-demand switch. */
-  enabled?: boolean
-  /** Complete deadline for one metadata request or bounded upload chunk. */
-  requestTimeoutMs?: number
-  /** Complete deadline for one resumable binary upload slice on slower connections. */
-  uploadTimeoutMs?: number
-  /** Delay between message reads while this panel is in the foreground. */
-  foregroundPollMs?: number
-  /** Delay between background message reads; background views never mark messages read. */
-  backgroundPollMs?: number
-  /** Delay between demand-list refreshes. */
-  listPollMs?: number
-}
-
-/** Validate the local carrier settings before account reads or timers start. */
-export const Config: z<Config> = z.object({
-  enabled: z.boolean().default(true),
-  requestTimeoutMs: z.natural().min(1000).max(300_000).default(20_000),
-  uploadTimeoutMs: z.natural().min(1000).max(3_600_000).default(120_000),
-  foregroundPollMs: z.natural().min(1000).max(300_000).default(3000),
-  backgroundPollMs: z.natural().min(1000).max(300_000).default(15_000),
-  listPollMs: z.natural().min(1000).max(300_000).default(15_000),
-})
-
 /**
- * Register the demand page and its dynamic sidebar entry without changing AI sessions.
+ * Register the demand page and enabled sidebar entry without changing AI sessions.
  * @param ctx - Client composition with the shared account, locale and slot services.
  * @param config - Validated carrier timeouts and refresh cadence.
  */
 export function apply(ctx: Context, config: Config = {}): void {
-  const resolved = Config(config) as Required<Config>
+  const page = globalThis as Partial<Record<typeof DEMANDS_CONFIG_GLOBAL, unknown>>
+  const bootstrap = publicDemandConfig(page[DEMANDS_CONFIG_GLOBAL] ?? {})
+  const resolved = publicDemandConfig({
+    enabled: config.enabled ?? bootstrap.enabled,
+    requestTimeoutMs: config.requestTimeoutMs ?? bootstrap.requestTimeoutMs,
+    uploadTimeoutMs: config.uploadTimeoutMs ?? bootstrap.uploadTimeoutMs,
+    foregroundPollMs: config.foregroundPollMs ?? bootstrap.foregroundPollMs,
+    backgroundPollMs: config.backgroundPollMs ?? bootstrap.backgroundPollMs,
+    listPollMs: config.listPollMs ?? bootstrap.listPollMs,
+    showcaseItems: config.showcaseItems ?? bootstrap.showcaseItems,
+  })
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'ui-demands: dictionaries')
   const { start, dispose, setVisible, ...face } = createDemandController(ctx.creditsSession, resolved, {
@@ -81,32 +68,13 @@ export function apply(ctx: Context, config: Config = {}): void {
   const setWorkspaceView: DemandWorkspaceFace['setWorkspaceView'] = (view) => { workspaceView = view; visibility() }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main', key: PANEL_ID, locale: NS,
-    inject: () => ({ ...face, hooks: { ...face.hooks, ...communityHooks, ...forumHooks }, community, forum, setWorkspaceView }),
+    inject: () => ({ ...face, hooks: { ...face.hooks, ...communityHooks, ...forumHooks }, community, forum,
+      setWorkspaceView, showcaseItems: resolved.showcaseItems }),
   }, DemandPage))
-  ctx.slots.inject('sidebar.panellist', () => {
-    let unregister: (() => void) | undefined
-    const reconcile = (): void => {
-      const state = face.hooks.demands.getSnapshot()
-      const shared = communityHooks.community.getSnapshot()
-      const discussion = forumHooks.forum.getSnapshot()
-      const visible = state.availability === 'ready' || state.requests.length > 0 || state.conversation !== null
-        || shared.availability === 'ready' || shared.orders.all.items.length > 0 || shared.conversation !== null
-        || discussion.availability === 'ready' || discussion.posts.items.length > 0
-      if (visible && unregister === undefined) {
-        unregister = ctx.slots.register({
-          name: 'sidebar.panellist', id: PANEL_ID, order: 35, label: () => t('panelLabel'), locale: NS,
-        }, DemandPanelIcon)
-      } else if (!visible && unregister !== undefined) {
-        unregister()
-        unregister = undefined
-      }
-    }
-    const unsubscribe = face.hooks.demands.subscribe(reconcile)
-    const unsubscribeCommunity = communityHooks.community.subscribe(reconcile)
-    const unsubscribeForum = forumHooks.forum.subscribe(reconcile)
-    reconcile()
-    return () => { unsubscribe(); unsubscribeCommunity(); unsubscribeForum(); unregister?.() }
-  })
+  if (resolved.enabled) ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
+    name: 'sidebar.panellist', id: PANEL_ID, order: 35, label: () => t('panelLabel'), locale: NS,
+    inject: () => ({ hooks: forumHooks }),
+  }, DemandPanelIcon))
   ctx.effect(() => {
     const stop = start()
     const stopCommunity = startCommunity()

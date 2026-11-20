@@ -44,7 +44,7 @@ export function CommunityWorkspace(props: {
   const moderatedSquare = state.config?.capabilities.community_approval_v1 === true
     && state.config.publication_policy === 'approval_required'
   const draft = state.publications.find(item => item.scopeKey === (publicationKey ?? state.activePublicationScope))
-  const publication = draft === undefined ? null : communityPublishPresentation(draft, state, legacy, t)
+  const publication = draft === undefined ? null : communityPublishPresentation(draft, state, legacy, t, commands.contentUrl)
   const listing = state.selectedListing?.id === listingId ? state.selectedListing : null
   const detail = listing === null ? null : communityDetailsPresentation(listing, state, t, commands.contentUrl)
   const chat = state.conversation?.order.id === chatId ? communityChatPresentation(state, t, commands.contentUrl) : null

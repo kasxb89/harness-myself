@@ -1,5 +1,5 @@
 /** A forum view renders supplied public posts without owning transport or submission identities. */
-import { useId, type ReactNode } from 'react'
+import { useId, useLayoutEffect, useRef, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
   Button, Input, Modal, StateDot, IconCloseOutlineRegular, IconLikeFillRegular,
@@ -7,6 +7,10 @@ import {
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { ForumCenterProps, ForumOperationView } from './forum-view.ts'
 import { DemandEmpty, DemandSkeleton, demandTime, type DemandTranslate } from './DemandUI.tsx'
+import { ForumEmojiPicker } from './ForumEmojiPicker.tsx'
+import { ForumAccountControls } from './ForumAccountControls.tsx'
+import { ForumImageComposer, ForumImages } from './ForumImages.tsx'
+import { forumAccountControlLabels } from './forum-adapter.ts'
 import css from './ForumCenter.module.css'
 
 function operationLocked(operation: ForumOperationView): boolean {
@@ -36,10 +40,15 @@ function RecoveryAction({ operation, onCheck, t }: {
       onClick={onCheck}>{t(operation.recovering ? 'forumChecking' : 'forumRetryOriginal')}</Button>
 }
 
+function ForumAvatar({ name }: { name: string | null }): ReactNode {
+  const author = name?.trim()
+  return <span className={css.avatar} aria-hidden="true">{author ? Array.from(author)[0] : <IconUserOutlineRegular size={16} />}</span>
+}
+
 function AuthorTime({ name, createdAt, t }: { name: string | null; createdAt: string; t: DemandTranslate }): ReactNode {
   const author = name?.trim()
   return <div className={css.metadata}>
-    <span className={css.avatar} aria-hidden="true">{author ? Array.from(author)[0] : <IconUserOutlineRegular size={16} />}</span>
+    <ForumAvatar name={name} />
     <div className={css.authorDetails}><span>{author || t('forumMember')}</span>
       {createdAt === '' ? null : <time dateTime={createdAt}>{demandTime(createdAt, t)}</time>}</div>
   </div>
@@ -53,14 +62,52 @@ function AuthorTime({ name, createdAt, t }: { name: string | null; createdAt: st
 export function ForumCenter(props: ForumCenterProps): ReactNode {
   const { view, postDraft, replyDraft, postOperation, replyOperation, t } = props
   const formId = useId()
+  const postBodyRef = useRef<HTMLTextAreaElement>(null)
+  const replyBodyRef = useRef<HTMLTextAreaElement>(null)
+  const replyNodes = useRef(new Map<string, HTMLElement>())
+  const emojiCaret = useRef<{ field: 'post' | 'reply'; value: string; position: number } | null>(null)
+  useLayoutEffect(() => {
+    const caret = emojiCaret.current
+    if (caret === null || caret.value !== (caret.field === 'post' ? postDraft.body : replyDraft)) return
+    emojiCaret.current = null
+    const input = caret.field === 'post' ? postBodyRef.current : replyBodyRef.current
+    input?.focus()
+    input?.setSelectionRange(caret.position, caret.position)
+  }, [postDraft.body, replyDraft])
   const detail = view.detail
   const post = detail.post?.id === detail.postId ? detail.post : null
+  const highlightedReplyExists = post?.replies.some(reply => reply.id === props.highlightedReplyId) === true
+  useLayoutEffect(() => {
+    if (!highlightedReplyExists || props.highlightedReplyId === null || props.highlightedReplyId === undefined) return
+    const element = replyNodes.current.get(props.highlightedReplyId)
+    element?.scrollIntoView({ block: 'center' })
+    element?.focus({ preventScroll: true })
+  }, [props.highlightedReplyId, highlightedReplyExists, post?.id])
   const ready = view.availability === 'ready'
   const postEditingLocked = props.postLocked || !ready || !view.canCreate || operationLocked(postOperation)
   const replyEditingLocked = props.replyLocked || !ready || post?.canReply !== true || operationLocked(replyOperation)
-  const canSubmitPost = !postEditingLocked && postDraft.title.trim() !== '' && postDraft.body.trim() !== ''
-  const canSubmitReply = !replyEditingLocked && replyDraft.trim() !== ''
-  const retainedPost = postDraft.title !== '' || postDraft.body !== '' || postOperation.state !== 'idle'
+  const insertEmoji = (field: 'post' | 'reply', emoji: string): void => {
+    if (field === 'post' ? postEditingLocked : replyEditingLocked) return
+    const input = field === 'post' ? postBodyRef.current : replyBodyRef.current
+    const value = field === 'post' ? postDraft.body : replyDraft
+    const start = input?.selectionStart ?? value.length, end = input?.selectionEnd ?? value.length
+    const next = value.slice(0, start) + emoji + value.slice(end)
+    emojiCaret.current = { field, value: next, position: start + emoji.length }
+    if (field === 'post') props.onChangePost({ body: next })
+    else props.onChangeReply(next)
+  }
+  const postImagesReady = props.postMedia?.items.every(item => item.status === 'ready') !== false
+  const replyImagesReady = props.replyMedia?.items.every(item => item.status === 'ready') !== false
+  const postHasImages = (props.postMedia?.items.length ?? 0) > 0
+  const replyHasImages = (props.replyMedia?.items.length ?? 0) > 0
+  const postHasContent = postDraft.body.trim() !== '' || props.postMedia?.allowImageOnly === true && postHasImages
+  const replyHasContent = replyDraft.trim() !== '' || props.replyMedia?.allowImageOnly === true && replyHasImages
+  const canSubmitPost = !postEditingLocked && postImagesReady && postDraft.title.trim() !== '' && postHasContent
+  const canSubmitReply = !replyEditingLocked && replyImagesReady && replyHasContent
+  const retainedPost = postDraft.title !== '' || postDraft.body !== '' || postHasImages || postOperation.state !== 'idle'
+  const commentsScope = view.list.kind === 'comments' || props.accountControls?.scope === 'comments'
+  const historyComments = view.list.comments ?? []
+  const listCount = commentsScope ? historyComments.length : view.list.posts.length
   const showNotice = view.reason !== null || view.availability === 'disabled' || view.availability === 'login-required'
   return <section className={css.center} aria-label={t('forumTabLabel')}>
     <header className={css.toolbar}>
@@ -72,41 +119,55 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
           onClick={() => { props.onStartPost(); props.onOpenPostComposer() }}>{t('forumNewPost')}</Button>
       </div>
     </header>
+    {props.accountControls === undefined ? null : <ForumAccountControls {...props.accountControls}
+      disabled={props.accountControls.disabled === true || !ready} labels={forumAccountControlLabels(t)} />}
     {showNotice ? <p className={css.notice} role="status">{view.reason
       ?? t(view.availability === 'login-required' ? 'forumSignIn' : 'forumDisabled')}</p> : null}
     {props.postComposerOpen || !recoverable(postOperation) ? null : <div className={css.queryError}>
       <OperationNotice operation={postOperation} t={t} /><RecoveryAction operation={postOperation} onCheck={props.onCheckPost} t={t} />
     </div>}
     <div className={css.viewport}>
-      {view.list.posts.length === 0 || view.list.error === null && view.list.status !== 'error' ? null : <div className={css.queryError} role="alert">
+      {listCount === 0 || view.list.error === null && view.list.status !== 'error' ? null : <div className={css.queryError} role="alert">
         <span>{view.list.error ?? t('forumLoadFailed')}</span><Button size="sm"
           disabled={view.list.status === 'loading'} onClick={props.onRefresh}>{t('retry')}</Button></div>}
-      {view.list.posts.length > 0 ? <ul className={css.postList} aria-label={t('forumPostList')} aria-busy={view.list.status === 'loading'}>
-        {view.list.posts.map(item => <li key={item.id}><article className={css.postRow}>
-          <button type="button" className={css.postOpen} aria-haspopup="dialog"
-            aria-label={t('forumOpenPost', { title: item.title })} onClick={() => { props.onOpenPost(item.id) }}>
-            <span className={css.postTitle} role="heading" aria-level={3}>{item.title}</span>
-            {item.excerpt.trim() === '' ? null : <span className={css.excerpt}>{item.excerpt}</span>}
-          </button>
-          <div className={css.rowFooter}><AuthorTime name={item.authorName} createdAt={item.createdAt} t={t} />
+      {commentsScope && historyComments.length > 0 ? <ul className={css.postList} aria-label={t('forumMyComments')}
+        aria-busy={view.list.status === 'loading'}>{historyComments.map(comment => <li key={comment.id}>
+          <article className={css.historyComment}>
+            <AuthorTime name={comment.authorName} createdAt={comment.createdAt} t={t} />
+            <button type="button" className={css.postOpen} aria-haspopup="dialog"
+              aria-label={t('forumOpenPost', { title: comment.postTitle })} onClick={() => {
+                if (props.onOpenHistoryComment !== undefined) props.onOpenHistoryComment(comment.postId, comment.id)
+                else props.onOpenPost(comment.postId)
+              }}><span className={css.commentPostTitle}>{t('forumCommentOn', { title: comment.postTitle })}</span>
+              <span className={css.excerpt}>{comment.body}</span></button>
+            {comment.images === undefined ? null : <ForumImages images={comment.images} t={t} />}
+          </article></li>)}</ul>
+        : !commentsScope && view.list.posts.length > 0 ? <ul className={css.postList} aria-label={t('forumPostList')} aria-busy={view.list.status === 'loading'}>
+          {view.list.posts.map(item => <li key={item.id}><article className={css.postRow}>
+            <AuthorTime name={item.authorName} createdAt={item.createdAt} t={t} />
+            <div className={css.postContent}><button type="button" className={css.postOpen} aria-haspopup="dialog"
+              aria-label={t('forumOpenPost', { title: item.title })} onClick={() => { props.onOpenPost(item.id) }}>
+              <span className={css.postTitle} role="heading" aria-level={3}>{item.title}</span>
+              {item.excerpt.trim() === '' ? null : <span className={css.excerpt}>{item.excerpt}</span>}
+            </button>{item.images === undefined ? null : <ForumImages images={item.images} t={t} />}</div>
             <div className={css.counts}>
-              {item.likeCount === null ? null : <span><IconLikeOutlineRegular size={14} />{t('forumLikeCount', { count: item.likeCount })}</span>}
-              {item.replyCount === null ? null : <span><IconQueueOutlineRegular size={14} />{t('forumReplyCount', { count: item.replyCount })}</span>}
+              {item.likeCount === null ? null : <span><IconLikeOutlineRegular size={16} />{t('forumLikeCount', { count: item.likeCount })}</span>}
+              {item.replyCount === null ? null : <span><IconQueueOutlineRegular size={16} />{t('forumReplyCount', { count: item.replyCount })}</span>}
             </div>
-          </div>
-        </article></li>)}
-      </ul> : view.list.status === 'loading' || view.availability === 'loading' ? <DemandSkeleton compact label={t('loading')} />
-        : view.list.status === 'error' || view.availability === 'error' ? <DemandEmpty title={t('forumLoadFailed')}
-          detail={view.list.error ?? view.reason ?? t('forumRetryHint')} actionLabel={t('retry')} onAction={props.onRefresh} />
-          : view.availability !== 'ready' ? <DemandEmpty title={t(view.availability === 'login-required' ? 'forumSignIn' : 'forumDisabled')}
-            detail={view.reason ?? t('forumUnavailableHint')} />
-            : <DemandEmpty title={t('forumEmpty')} detail={t('forumEmptyHint')} />}
+          </article></li>)}
+        </ul> : view.list.status === 'loading' || view.availability === 'loading' ? <DemandSkeleton compact label={t('loading')} />
+          : view.list.status === 'error' || view.availability === 'error' ? <DemandEmpty title={t('forumLoadFailed')}
+            detail={view.list.error ?? view.reason ?? t('forumRetryHint')} actionLabel={t('retry')} onAction={props.onRefresh} />
+            : view.availability !== 'ready' ? <DemandEmpty title={t(view.availability === 'login-required' ? 'forumSignIn' : 'forumDisabled')}
+              detail={view.reason ?? t('forumUnavailableHint')} />
+              : <DemandEmpty title={t(commentsScope ? 'forumMyCommentsEmpty' : props.accountControls?.scope === 'mine' ? 'forumMyPostsEmpty' : 'forumEmpty')}
+                detail={t(commentsScope ? 'forumMyCommentsEmptyHint' : 'forumEmptyHint')} />}
       {!view.list.hasMore ? null : <div className={css.loadMore}><Button variant="outline" size="sm"
         disabled={view.list.loadingMore || view.list.status === 'loading'} onClick={props.onLoadMore}>
         {t(view.list.loadingMore ? 'forumLoadingMore' : 'forumLoadMore')}</Button></div>}
     </div>
     <Modal open={detail.postId !== null} onClose={props.onBack} title={post?.title ?? t('forumTabLabel')}
-      className={clsx(css.detailDialog)} headless>
+      className={clsx(css.detailDrawer)} backdropBlur={false} headless>
       <Button className={css.detailClose} aria-label={t('close')} onClick={props.onBack}
         icon={<IconCloseOutlineRegular size={18} />} />
       {post === null || detail.error === null && detail.status !== 'error' ? null : <div className={css.detailError} role="alert">
@@ -119,6 +180,7 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
             <header className={css.postHeader}>
               <AuthorTime name={post.authorName} createdAt={post.createdAt} t={t} /><h2>{post.title}</h2></header>
             <p className={css.body}>{post.body}</p>
+            {post.images === undefined ? null : <ForumImages images={post.images} t={t} />}
             <div className={css.postActions}>
               <Button className={css.likeButton} variant="ghost" aria-pressed={post.liked}
                 icon={post.liked ? <IconLikeFillRegular size={16} /> : <IconLikeOutlineRegular size={16} />}
@@ -131,14 +193,34 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
             </div>
             <OperationNotice operation={post.likeOperation} t={t} />
           </article>
-          <aside className={css.discussionPane}>
-            <section className={css.replies} aria-labelledby={`${formId}-replies`}>
+          <aside className={css.discussionPane} aria-label={t('forumReplies')}>
+            <header className={css.discussionHeader}>
               <h3 id={`${formId}-replies`}>{t('forumReplies')}
                 {post.replyCount === null ? null : <span>{post.replyCount}</span>}</h3>
+            </header>
+            <section className={css.replies} aria-labelledby={`${formId}-replies`}>
               {post.replies.length === 0 ? <p className={css.note}>{t('forumNoReplies')}</p>
                 : <ul className={css.replyList}>{post.replies.map(reply => <li key={reply.id}>
-                  <article className={css.reply}><AuthorTime name={reply.authorName} createdAt={reply.createdAt} t={t} />
-                    <p className={css.body}>{reply.body}</p>
+                  <article className={css.reply} tabIndex={props.highlightedReplyId === reply.id ? -1 : undefined}
+                    data-highlighted={props.highlightedReplyId === reply.id} ref={(element) => {
+                      if (element === null) replyNodes.current.delete(reply.id)
+                      else replyNodes.current.set(reply.id, element)
+                    }}>
+                    <ForumAvatar name={reply.authorName} />
+                    <div className={css.replyContent}>
+                      <div className={css.replyAuthor}><span>{reply.authorName?.trim() || t('forumMember')}</span>
+                        {reply.createdAt === '' ? null : <time dateTime={reply.createdAt}>{demandTime(reply.createdAt, t)}</time>}</div>
+                      <p className={css.body}>{reply.body}</p>
+                      {!reply.replyTo ? null : <p className={css.replyRecipient}>
+                        {t('forumReplyTo', { name: reply.replyTo.authorName?.trim() || t('forumMember') })}
+                        {reply.replyTo.excerpt.trim() === '' ? null : <span>{reply.replyTo.excerpt}</span>}</p>}
+                      {reply.images === undefined ? null : <ForumImages images={reply.images} t={t} />}
+                      {props.onSelectReply === undefined ? null : <Button className={css.replyAction} size="sm" variant="ghost"
+                        disabled={replyEditingLocked} aria-label={t('forumReplyTo', { name: reply.authorName?.trim() || t('forumMember') })}
+                        onClick={() => {
+                          if (!replyEditingLocked) { props.onSelectReply?.(reply.id); replyBodyRef.current?.focus() }
+                        }}>{t('forumReplyAction')}</Button>}
+                    </div>
                   </article></li>)}</ul>}
               {!post.hasMoreReplies ? null : <div className={css.loadMore}><Button variant="outline" size="sm"
                 disabled={post.loadingMoreReplies} onClick={props.onLoadMoreReplies}>
@@ -148,9 +230,20 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
               event.preventDefault()
               if (canSubmitReply) props.onSubmitReply()
             }}>
+              {!props.replyTarget ? null : <div className={css.replyTarget}>
+                <div><span>{t('forumReplyTo', { name: props.replyTarget.authorName?.trim() || t('forumMember') })}</span>
+                  {props.replyTarget.excerpt.trim() === '' ? null : <p>{props.replyTarget.excerpt}</p>}</div>
+                {props.onCancelReply === undefined ? null : <Button size="sm" variant="ghost" disabled={replyEditingLocked}
+                  icon={<IconCloseOutlineRegular size={14} />} aria-label={t('forumCancelReply')}
+                  onClick={() => { if (!replyEditingLocked) props.onCancelReply?.() }} />}
+              </div>}
               <label className={css.field} htmlFor={`${formId}-reply`}><span>{t('forumReplyBody')}</span>
-                <textarea id={`${formId}-reply`} value={replyDraft} rows={3} disabled={replyEditingLocked}
+                <textarea ref={replyBodyRef} id={`${formId}-reply`} value={replyDraft} rows={2} disabled={replyEditingLocked}
                   onChange={(event) => { if (!replyEditingLocked) props.onChangeReply(event.target.value) }} /></label>
+              <ForumEmojiPicker label={t('forumEmoji')} groupLabel={t('forumChooseEmoji')} disabled={replyEditingLocked}
+                onSelect={(emoji) => { insertEmoji('reply', emoji) }} />
+              {props.replyMedia === undefined ? null : <ForumImageComposer media={props.replyMedia} disabled={replyEditingLocked} t={t} />}
+              {replyImagesReady ? null : <p className={css.note} role="status">{t('forumImagesPending')}</p>}
               {post.replyReason === null ? null : <p className={css.note}>{post.replyReason}</p>}
               <OperationNotice operation={replyOperation} t={t} />
               <div className={css.formFooter}>
@@ -179,8 +272,13 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
           <Input id={`${formId}-title`} value={postDraft.title} disabled={postEditingLocked} required
             onChange={(event) => { if (!postEditingLocked) props.onChangePost({ title: event.target.value }) }} /></label>
         <label className={css.field} htmlFor={`${formId}-body`}><span>{t('forumPostBody')}</span>
-          <textarea id={`${formId}-body`} value={postDraft.body} disabled={postEditingLocked} required rows={6}
+          <textarea ref={postBodyRef} id={`${formId}-body`} value={postDraft.body} disabled={postEditingLocked}
+            required={props.postMedia?.allowImageOnly !== true || !postHasImages} rows={6}
             onChange={(event) => { if (!postEditingLocked) props.onChangePost({ body: event.target.value }) }} /></label>
+        <ForumEmojiPicker label={t('forumEmoji')} groupLabel={t('forumChooseEmoji')} disabled={postEditingLocked}
+          onSelect={(emoji) => { insertEmoji('post', emoji) }} />
+        {props.postMedia === undefined ? null : <ForumImageComposer media={props.postMedia} disabled={postEditingLocked} t={t} />}
+        {postImagesReady ? null : <p className={css.note} role="status">{t('forumImagesPending')}</p>}
         <p className={css.note}>{t('forumPublicHint')}</p>
         <OperationNotice operation={postOperation} t={t} />
       </form>

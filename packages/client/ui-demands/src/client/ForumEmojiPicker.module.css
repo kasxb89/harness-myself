@@ -1,0 +1,5 @@
+.menu { width: 304px; max-width: calc(100vw - 24px); }
+.grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 4px; padding: 4px; }
+.emoji { display: grid; place-items: center; min-width: 0; min-height: 44px; padding: 4px; border: 0; border-radius: var(--dsw-radius-md); background: transparent; color: var(--dsw-alias-label-primary); font-size: 20px; line-height: 28px; cursor: pointer; }
+.emoji:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.emoji:focus-visible { outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary)); outline-offset: -2px; background: var(--dsw-alias-interactive-bg-hover); }

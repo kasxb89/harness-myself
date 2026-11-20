@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 /** Pure forum views retain controlled drafts and recover only the original parent-owned operation. */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {} from '../src/client/index.ts'
 import { ForumCenter } from '../src/client/ForumCenter.tsx'
@@ -49,6 +50,27 @@ function withDetail(props: ForumCenterProps, post: ForumPostDetail): ForumCenter
 }
 
 describe('pure forum center', () => {
+  it.each(['post', 'reply'] as const)('inserts an emoji at the %s selection without submitting', async (field) => {
+    const props = forumProps()
+    function Composer() {
+      const [body, setBody] = useState('前后')
+      const value = field === 'post' ? props : withDetail(props, detail())
+      return <ForumCenter {...value} postComposerOpen={field === 'post'}
+        postDraft={{ title: '标题', body }} replyDraft={body}
+        onChangePost={(patch) => { if (patch.body !== undefined) setBody(patch.body) }} onChangeReply={setBody} />
+    }
+    render(<Composer />)
+    const input = screen.getByRole('textbox', { name: field === 'post' ? zh.forumPostBody : zh.forumReplyBody })
+    if (!(input instanceof HTMLTextAreaElement)) throw new Error('Expected textarea')
+    input.focus(); input.setSelectionRange(1, 1)
+    fireEvent.click(screen.getByRole('button', { name: zh.forumEmoji }))
+    fireEvent.click(screen.getByRole('menuitem', { name: '😀' }))
+    await vi.waitFor(() => { expect(input.value).toBe('前😀后'); expect(document.activeElement).toBe(input) })
+    expect([input.selectionStart, input.selectionEnd]).toEqual([3, 3])
+    expect(props.onSubmitPost).not.toHaveBeenCalled()
+    expect(props.onSubmitReply).not.toHaveBeenCalled()
+  })
+
   it('shows a real empty state and keeps two same-title posts distinct without invented counts', () => {
     const props = forumProps()
     const view = render(<ForumCenter {...props} />)
@@ -208,6 +230,32 @@ describe('pure forum center', () => {
     expect(screen.getByText('这是一条真实回复')).toBeTruthy()
     expect(screen.getByText(/<img src="https:\/\/example.invalid\/unapproved">/u)).toBeTruthy()
     expect(screen.getByRole('dialog').querySelectorAll('img,video,a')).toHaveLength(0)
+  })
+
+  it('keeps the reply composer outside the named comment list while preserving authors, pagination and a controlled draft', () => {
+    const props = forumProps()
+    const post = detail({ replyCount: 37, hasMoreReplies: true,
+      replies: [
+        { id: 'reply-1', authorName: '小林', createdAt: '2026-11-19T03:00:00Z', body: '先确认输入格式，再整理字段映射。' },
+        { id: 'reply-2', authorName: ' ', createdAt: '', body: '保留原始文件，后续可以核对。' },
+      ] })
+    render(<ForumCenter {...withDetail(props, post)} replyDraft="正在组织回复，尚未提交" />)
+    const dialog = screen.getByRole('dialog')
+    const discussion = within(dialog).getByRole('complementary', { name: zh.forumReplies })
+    const replies = within(discussion).getByRole('region', { name: '回复37' })
+    const composer = within(discussion).getByRole('form', { name: zh.forumReplyForm })
+    expect(replies.contains(composer)).toBe(false)
+    expect(within(replies).getAllByRole('article')).toHaveLength(2)
+    expect(within(replies).getByText('小林')).toBeTruthy()
+    expect(within(replies).getByText(zh.forumMember)).toBeTruthy()
+    expect(within(replies).getByText(post.replies[1]!.body)).toBeTruthy()
+    expect(within(composer).getByRole('textbox', { name: zh.forumReplyBody }))
+      .toHaveProperty('value', '正在组织回复，尚未提交')
+    fireEvent.click(within(replies).getByRole('button', { name: zh.forumLoadMoreReplies }))
+    expect(props.onLoadMoreReplies).toHaveBeenCalledOnce()
+    expect(props.onSubmitReply).not.toHaveBeenCalled()
+    expect(props.onChangeReply).not.toHaveBeenCalled()
+    expect(props.onBack).not.toHaveBeenCalled()
   })
 
   it('keeps likes controlled and checks an uncertain toggle with the exact post id', () => {

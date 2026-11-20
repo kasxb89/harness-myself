@@ -16,7 +16,7 @@
  * scrollbar indirection away while it is elsewhere, so a list the user is not
  * pointing at carries no bar.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import clsx from 'clsx'
 import {
   BrandMark, IconNewChatOutlineMedium, IconNewChatOutlineRegular, IconPanelLeftOutlineRegular, isDarwinDesktop, ShortcutKeys, Tooltip,
@@ -108,12 +108,23 @@ export function SidebarRoot({
   startSession,
   toggleSidebar,
   selectPanel,
+  requestSidebarAccess,
   usePanels,
   useShortcuts,
   usePanelInfo,
   t,
   renderSlot,
 }: SidebarRootComponentProps) {
+  const checkSlotAction = (event: MouseEvent<HTMLDivElement>): void => {
+    const target = event.target
+    // Portaled dialogs bubble through React, but are not physical sidebar actions.
+    if (!(target instanceof Element) || !event.currentTarget.contains(target)
+      || target.closest('button, a, input, select, textarea, [role="button"], [role="menuitem"], [role="treeitem"]') === null) return
+    if (!requestSidebarAccess()) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+  }
   const panels = usePanels(snapshot => snapshot)
   const panelActive = usePanelInfo(info => info.activePanelId !== null)
   const shortcut = useShortcuts(rows => rows.find(row => row.id === 'sidebar.left.toggle'))
@@ -217,10 +228,10 @@ export function SidebarRoot({
   // content column keeps no foot of its own).
   const railFoot = (
     <div className={css.railFootArea}>
-      <div className={css.footerActions}>
+      <div className={css.footerActions} onClickCapture={checkSlotAction}>
         {renderSlot('sidebar.footer.action', { wide: false })}
       </div>
-      <div className={css.settingsArea}>
+      <div className={css.settingsArea} onClickCapture={checkSlotAction}>
         {renderSlot('sidebar.settings', { wide: false })}
       </div>
     </div>
@@ -338,7 +349,7 @@ export function SidebarRoot({
           mounted while a panel owns the main column — the tree and its search
           keep their state — and hides, because browsing sessions belongs to the
           conversation rather than to whichever panel is open. */}
-      <div className={panelActive ? clsx(css.regionArea, css.regionHidden) : css.regionArea}>
+      <div className={panelActive ? clsx(css.regionArea, css.regionHidden) : css.regionArea} onClickCapture={checkSlotAction}>
         {renderSlot('sidebar.workspaces', {
           wide,
           expandSidebar: () => { if (collapsed) toggleSidebar() },

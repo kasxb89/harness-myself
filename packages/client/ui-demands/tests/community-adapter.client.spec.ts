@@ -220,6 +220,27 @@ describe('community UI adapter', () => {
     expect(communityRulesPresentation(null)).toMatchObject({ maxFiles: 0, maxFileBytes: 0, accept: '' })
   })
 
+  it('uses owner-authorized previews only for ready attachments in the selected public upload scope', () => {
+    const draft = publication()
+    const asset = exampleCommunityAttachment({ id: 'ready-listing-image', scope: 'listing' })
+    const state = ready({ uploads: [
+      upload({ operationId: 'ready-operation', status: 'ready', progressPercent: 100, attachment: asset }),
+      upload({ operationId: 'pending-operation', attachment: asset }),
+      upload({ operationId: 'wrong-asset-scope', status: 'ready', attachment: { ...asset, scope: 'conversation' } }),
+      upload({ operationId: 'private-operation', scope: 'conversation', status: 'ready', attachment: { ...asset, scope: 'conversation' } }),
+    ] })
+    const contentUrl = vi.fn((id: string) => id === asset.id ? '/authorized/listing-image' : null)
+    const view = communityPublishPresentation(draft, state, demandState(), t, contentUrl)
+    expect(view.attachments.map(item => item.id)).toEqual(['ready-operation', 'pending-operation', 'wrong-asset-scope'])
+    expect(view.attachments[0]?.previewUrl).toBe('/authorized/listing-image')
+    expect(view.attachments[1]?.previewUrl).toBeUndefined()
+    expect(view.attachments[2]?.previewUrl).toBeUndefined()
+    expect(contentUrl).toHaveBeenCalledExactlyOnceWith(asset.id)
+    const denied = communityPublishPresentation(draft, state, demandState(), t, () => null)
+    expect(denied.attachments.every(item => item.previewUrl === undefined)).toBe(true)
+    expect(communityPublishPresentation(draft, state, demandState(), t).attachments.every(item => item.previewUrl === undefined)).toBe(true)
+  })
+
   it('uses actual persisted isSelf, raw-second timestamps and separate local operation identities without fake sequence fields', () => {
     const order = communityOrder({ id: 'chat-order', my_role: 'publisher', publisher: { id: 1, display_name: '当前发布人' },
       acceptor: { id: 2, display_name: '当前接单人' } })

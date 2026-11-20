@@ -77,6 +77,8 @@ export type DemandTransportRoute = {
   readonly uploadId?: string
   readonly attachmentId?: string
   readonly resourceId?: string
+  /** Optional nested resource, bound together with its parent by the consumer codec. */
+  readonly secondaryId?: string
 }
 /** Codecs supplied by the separate private-demand, community-order and public-forum contracts. */
 export interface DemandTransportProtocol {
@@ -363,7 +365,7 @@ export function createDemandTransport(options: DemandProxyOptions, protocol: Dem
         operationKey = `${route.uploadId}:${offset}`
         init = { method: 'PUT', signal, duplex: 'half', body: uploadStream(request, Number(length), limits.maxChunkBytes, signal, () => account.isCurrent()),
           headers: { accept: 'application/json', 'content-type': 'application/octet-stream', 'content-length': length, 'upload-offset': offset } }
-      } else if (route.method === 'POST' || route.method === 'PUT') {
+      } else if (route.method === 'POST' || route.method === 'PUT' || route.method === 'PATCH') {
         if (query.size !== 0) throw new DemandInputError('DEMAND_INVALID_INPUT')
         let body: ReturnType<typeof demandRequest>
         try { body = protocol.request(route.kind, await readInput(request, limits.maxJsonRequestBytes, signal)) }

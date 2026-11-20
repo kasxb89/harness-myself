@@ -582,6 +582,72 @@ export interface Config {
 ```
 <!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-shortcuts -->
 
+<!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-ui-demands -->
+<a id="deepseek-aidsh-client-ui-demands"></a>
+
+## `@deepseek-ai/dsh-client-ui-demands`
+
+- `source`: [`packages/client/ui-demands/src/config.ts:6`](../packages/client/ui-demands/src/config.ts)
+
+```ts config-catalog
+/** Client transport deadlines and refresh cadence; service publication is owned by the backend. */
+export interface Config {
+  /** Local transport availability, independent of the backend's new-demand switch. */
+  enabled?: boolean
+  /** Complete deadline for one metadata request or bounded upload chunk. */
+  requestTimeoutMs?: number
+  /** Complete deadline for one resumable binary upload slice on slower connections. */
+  uploadTimeoutMs?: number
+  /** Delay between message reads while this panel is in the foreground. */
+  foregroundPollMs?: number
+  /** Delay between background message reads; background views never mark messages read. */
+  backgroundPollMs?: number
+  /** Delay between demand-list refreshes. */
+  listPollMs?: number
+  /** Explicitly configured public reference materials, separate from user demand records. */
+  showcaseItems?: (Omit<CaseShowcaseItem, 'media'> & {
+    /** Ordered public media entries included in the case. */
+    media: CaseShowcaseMedia[]
+  })[]
+}
+
+/** A configured case and its source attribution, independent of customer demand records. */
+export interface CaseShowcaseItem {
+  /** Stable identifier for this configured case. */
+  readonly id: string
+  /** Public title displayed on the case card. */
+  readonly title: string
+  /** Short explanation of the case and its result. */
+  readonly description: string
+  /** Product category used by the case filters. */
+  readonly category: CaseShowcaseCategory
+  /** Public cover image displayed before opening the case. */
+  readonly coverUrl: string
+  /** Ordered images and videos available in the case viewer. */
+  readonly media: readonly CaseShowcaseMedia[]
+  /** Name of the public source or material owner. */
+  readonly sourceName?: string
+  /** Optional public source page for attribution. */
+  readonly sourceUrl?: string
+  /** Additional attribution shown with the case materials. */
+  readonly attribution?: string
+}
+
+/** One explicitly published media URL; local filesystem paths and credentials stay with the host. */
+export interface CaseShowcaseMedia {
+  /** Media presentation used by the case viewer. */
+  readonly kind: 'image' | 'video'
+  /** Explicitly public media URL served by the configured content origin. */
+  readonly url: string
+  /** Optional public preview image for a video. */
+  readonly posterUrl?: string
+}
+
+/** Product category used only for local filtering, never inferred from a filename. */
+export type CaseShowcaseCategory = 'pc' | 'web' | 'miniapp' | 'exe' | 'game' | 'image' | 'video'
+```
+<!-- END GENERATED config-catalog:@deepseek-ai/dsh-client-ui-demands -->
+
 <!-- BEGIN GENERATED config-catalog:@deepseek-ai/dsh-client-ui-plugin-manager -->
 <a id="deepseek-aidsh-client-ui-plugin-manager"></a>
 
@@ -4883,7 +4949,6 @@ export interface Config {
 | `@deepseek-ai/dsh-client-ui-creative` | — | [`packages/client/ui-creative/src/index.ts`](../packages/client/ui-creative/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-credits` | — | [`packages/client/ui-credits/src/index.ts`](../packages/client/ui-credits/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-deliverables` | `systemPrompt` · `connection` · `sessionQuery` · `sessionController` · `workspaceFiles` · `fs` · `sandboxPolicy` · `workspaceChanges` | [`packages/client/ui-deliverables/src/index.ts`](../packages/client/ui-deliverables/src/index.ts) |
-| `@deepseek-ai/dsh-client-ui-demands` | — | [`packages/client/ui-demands/src/index.ts`](../packages/client/ui-demands/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-directory-picker-browse` | — | [`packages/client/ui-directory-picker-browse/src/index.ts`](../packages/client/ui-directory-picker-browse/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-directory-picker-native` | — | [`packages/client/ui-directory-picker-native/src/index.ts`](../packages/client/ui-directory-picker-native/src/index.ts) |
 | `@deepseek-ai/dsh-client-ui-goal` | — | [`packages/client/ui-goal/src/index.ts`](../packages/client/ui-goal/src/index.ts) |

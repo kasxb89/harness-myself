@@ -168,7 +168,9 @@ describe('Credits launch entry', () => {
     const frame = await b.declare()
     expect(b.slots.entries('sidebar.footer.action')).toHaveLength(1)
     expect(b.slots.entries('conversation.input.dock').map(entry => entry.options.id)).toEqual(['workspace-guide'])
-    expect(b.slots.entries('shell.overlay').map(entry => entry.options.id)).toEqual(['onboarding-survey', 'workspace-guide-notice'])
+    expect(b.slots.entries('shell.overlay').map(entry => entry.options.id))
+      .toEqual(['sidebar-login-reminder', 'onboarding-survey', 'workspace-guide-notice'])
+    expect(typeof b.ctx.get('sidebarAccess')?.request).toBe('function')
     expect(b.ctx.locale.bind('credits')('panel')).not.toBe('panel')
 
     await credits.dispose()
@@ -178,6 +180,7 @@ describe('Credits launch entry', () => {
     expect(b.slots.entries('conversation.input.dock')).toEqual([])
     expect(b.slots.entries('shell.overlay')).toEqual([])
     expect(b.ctx.locale.bind('credits')('panel')).toBe('panel')
+    expect(b.ctx.get('sidebarAccess')).toBeUndefined()
     b.select.mockClear()
     await frame.dispose()
     await b.declare()

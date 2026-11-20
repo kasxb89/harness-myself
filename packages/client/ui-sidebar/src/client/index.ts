@@ -29,6 +29,22 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
+/** Optional product-owned policy for user activation of sidebar destinations. */
+export interface SidebarAccess {
+  /**
+   * Ask before dispatching an action.
+   * @returns Whether navigation may proceed; false leaves the current action unexecuted.
+   */
+  request(): boolean
+}
+
+declare module '@deepseek-ai/cordis' {
+  interface Context {
+    /** Optional sidebar activation policy; absent providers leave generic navigation available. */
+    sidebarAccess: SidebarAccess
+  }
+}
+
 /** Dictionary namespace owned by this plugin. */
 const NS = 'sidebar'
 
@@ -62,15 +78,19 @@ export function apply(ctx: ClientContext): void {
   ctx.effect(() => ctx.slots.subscribe('sidebar.panellist', syncPanels), 'ui-sidebar: panel entries')
   ctx.effect(() => ctx.locale.subscribe(syncPanels), 'ui-sidebar: panel labels')
 
+  const requestSidebarAccess = (): boolean => ctx.get('sidebarAccess')?.request() ?? true
+
   const injectProps = (): SidebarRootInjected => ({
     // The shell's New Session button rides the Workspace UI's shared action
     // (current Session Workspace, then recent Workspace).
-    startSession: (workspaceId) => { workspaceNavigation.startSession(workspaceId) },
+    startSession: (workspaceId) => { if (requestSidebarAccess()) workspaceNavigation.startSession(workspaceId) },
     toggleSidebar: () => { ctx.layout.toggleSidebar() },
     selectPanel: (id) => {
+      if (!requestSidebarAccess()) return
       if (id === 'plugins' || id === 'schedules') ctx.get('productAnalytics')?.track('sidebar_menu_click', { menu_name: id === 'plugins' ? 'plugin' : 'cron' })
       ctx.layout.selectPanel(id)
     },
+    requestSidebarAccess,
     hooks: { panels, shortcuts: ctx.shortcuts.catalog },
   })
   ctx.slots.inject('sidebar', () => ctx.slots.register({

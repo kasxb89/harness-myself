@@ -5,6 +5,17 @@ export const NS = 'credits'
 
 /** Simplified Chinese copy for Credits pages and their navigation entries. */
 export const zh = {
+  'sidebarLogin.title': '请先登录',
+  'sidebarLogin.description': '登录后即可使用该功能',
+  'sidebarLogin.checking': '正在确认登录状态',
+  'sidebarLogin.checkingHint': '请稍候，确认后再使用该功能',
+  'sidebarLogin.unconfirmed': '暂无法确认登录状态',
+  'sidebarLogin.unconfirmedHint': '可以重新确认，或前往登录页面查看',
+  'sidebarLogin.later': '暂不登录',
+  'sidebarLogin.signIn': '去登录',
+  'sidebarLogin.account': '查看登录信息',
+  'sidebarLogin.retry': '重新确认',
+  'sidebarLogin.close': '关闭登录提示',
   'media.entry': '创作偏好',
   'media.entryAria': '图片/视频默认偏好',
   'media.title': '创作偏好',
@@ -622,6 +633,17 @@ export const zh = {
 
 /** English copy for every Credits translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'sidebarLogin.title': 'Sign in first',
+  'sidebarLogin.description': 'Sign in to use this feature.',
+  'sidebarLogin.checking': 'Checking sign-in status',
+  'sidebarLogin.checkingHint': 'Please wait while your sign-in status is checked.',
+  'sidebarLogin.unconfirmed': 'Sign-in status is unconfirmed',
+  'sidebarLogin.unconfirmedHint': 'Check again or open the sign-in page to review your account.',
+  'sidebarLogin.later': 'Not now',
+  'sidebarLogin.signIn': 'Sign in',
+  'sidebarLogin.account': 'Review sign-in information',
+  'sidebarLogin.retry': 'Check again',
+  'sidebarLogin.close': 'Close sign-in reminder',
   'media.entry': 'Creation',
   'media.entryAria': 'Image/video defaults',
   'media.title': 'Creation preferences',

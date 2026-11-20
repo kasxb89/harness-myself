@@ -3,7 +3,7 @@ import type { GlobalStandardProps } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ShortcutCatalogEntry, ShortcutCommandId } from '@deepseek-ai/dsh-client-shortcuts/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import { Modal, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import { makeTranslate } from '@deepseek-ai/dsh-client-test-runtime'
 import type { ReactNode } from 'react'
 import type {
@@ -35,7 +35,11 @@ type AttentionSnapshot = Parameters<Parameters<SidebarRootComponentProps['useSes
 const noAttention: AttentionSnapshot = new Map()
 const useSessionStatus: SidebarRootComponentProps['useSessionStatus'] = selector => selector(noAttention)
 
-function mountShell({ collapsed = false, width = 300, shortcuts = [] }: {
+function mountShell({ collapsed = false, width = 300, shortcuts = [], access = () => true, footer, settings, workspace }: {
+  access?: () => boolean
+  footer?: ReactNode
+  settings?: ReactNode
+  workspace?: ReactNode
   collapsed?: boolean
   width?: number
   shortcuts?: readonly ShortcutCatalogEntry[]
@@ -54,7 +58,7 @@ function mountShell({ collapsed = false, width = 300, shortcuts = [] }: {
       useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
       usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector(shortcuts)}
       useResource={useResource} useWorkspaces={neverHook}
-      startSession={startSession} toggleSidebar={toggleSidebar} t={t}
+      startSession={startSession} toggleSidebar={toggleSidebar} requestSidebarAccess={access} t={t}
       renderSlot={((
         key: string,
         owner: SidebarFooterActionOwnerProps | SidebarSectionOwnerProps | SidebarSettingsOwnerProps,
@@ -64,14 +68,14 @@ function mountShell({ collapsed = false, width = 300, shortcuts = [] }: {
         if (key === 'sidebar.toggle.badge') return null
         if (key === 'sidebar.settings') {
           settingsOwner = owner
-          return <div data-testid="settings-seat" data-wide={owner.wide} />
+          return settings ?? <div data-testid="settings-seat" data-wide={owner.wide} />
         }
         if (key === 'sidebar.footer.action') {
           footerActionOwner = owner
-          return <div data-testid="footer-action-seat" data-wide={owner.wide} />
+          return footer ?? <div data-testid="footer-action-seat" data-wide={owner.wide} />
         }
         regionOwner = owner as SidebarSectionOwnerProps
-        return <div data-testid="region" data-wide={owner.wide} />
+        return workspace ?? <div data-testid="region" data-wide={owner.wide} />
       }) as SidebarRootComponentProps['renderSlot']}
     />
   )
@@ -99,6 +103,36 @@ function mountShell({ collapsed = false, width = 300, shortcuts = [] }: {
 }
 
 describe('SidebarRoot shell', () => {
+  it('checks physical footer, settings and workspace activations without intercepting portal controls', () => {
+    let allowed = false
+    const access = vi.fn(() => allowed), footer = vi.fn(), settings = vi.fn(), workspace = vi.fn(), portal = vi.fn()
+    mountShell({ access,
+      footer: <><button onClick={footer}><span>Footer action</span></button>
+        <Modal open title="Slot dialog" closeLabel="Close slot dialog" onClose={portal}><button onClick={portal}>Portal close</button></Modal></>,
+      settings: <button onClick={settings}>Settings action</button>,
+      workspace: <button onClick={workspace}>Workspace action</button>,
+    })
+    fireEvent.click(screen.getByText('Footer action'))
+    fireEvent.click(screen.getByRole('button', { name: 'Settings action' }), { detail: 0 })
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace action' }))
+    expect(access).toHaveBeenCalledTimes(3)
+    expect(footer).not.toHaveBeenCalled()
+    expect(settings).not.toHaveBeenCalled()
+    expect(workspace).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Portal close' }))
+    expect(portal).toHaveBeenCalledOnce()
+    expect(access).toHaveBeenCalledTimes(3)
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse sidebar' }))
+    expect(access).toHaveBeenCalledTimes(3)
+    allowed = true
+    fireEvent.click(screen.getByRole('button', { name: 'Footer action' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Settings action' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace action' }))
+    expect(footer).toHaveBeenCalledOnce()
+    expect(settings).toHaveBeenCalledOnce()
+    expect(workspace).toHaveBeenCalledOnce()
+  })
+
   it('advertises the effective new-session binding', () => {
     const shortcut: ShortcutCatalogEntry = { id: 'session.new' as ShortcutCommandId, label: 'New', aliases: [],
       binding: null, modified: true, conflicts: [], issue: null, keys: ['Ctrl', 'N'], aria: 'Control+N' }
@@ -112,7 +146,8 @@ describe('SidebarRoot shell', () => {
     expect(screen.queryByRole('tooltip')).toBeNull()
     expect(Array.from(expanded.querySelectorAll('kbd'), key => key.textContent)).toEqual(['Ctrl', 'N'])
     cleanup()
-    render(<HeaderLeadingControls toggleSidebar={vi.fn()} startSession={vi.fn()} selectPanel={vi.fn()} t={t}
+    render(<HeaderLeadingControls requestSidebarAccess={() => true}
+      toggleSidebar={vi.fn()} startSession={vi.fn()} selectPanel={vi.fn()} t={t}
       usePanelInfo={neverHook} useSessions={neverHook} useSessionStatus={neverHook}
       useSessionRetainInfo={neverHook} useResource={useResource} useWorkspaces={neverHook}
       usePanels={select => select([])} useShortcuts={select => select([shortcut])} />)
@@ -140,7 +175,7 @@ describe('SidebarRoot shell', () => {
     vi.stubEnv('DSH_CLIENT_VERSION', '1.2.3-rc.4')
     const { container } = render(<SidebarRoot
       collapsed={false} width={300}
-      useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
+      requestSidebarAccess={() => true} useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
       usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector([])}
       useResource={useResource} useWorkspaces={neverHook}
       startSession={vi.fn()} toggleSidebar={vi.fn()} t={t}
@@ -157,7 +192,7 @@ describe('SidebarRoot shell', () => {
   it('renders the same brand without build metadata', () => {
     render(<SidebarRoot
       collapsed={false} width={300}
-      useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
+      requestSidebarAccess={() => true} useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
       usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector([])}
       useResource={useResource} useWorkspaces={neverHook}
       startSession={vi.fn()} toggleSidebar={vi.fn()} t={t}
@@ -206,7 +241,7 @@ describe('SidebarRoot shell', () => {
     vi.useFakeTimers()
     render(<SidebarRoot
       collapsed width={56}
-      useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
+      requestSidebarAccess={() => true} useSessions={neverHook} useSessionStatus={useSessionStatus} useSessionRetainInfo={neverHook}
       usePanelInfo={usePanelInfo} selectPanel={() => {}} usePanels={selector => selector([])} useShortcuts={selector => selector([])}
       useResource={useResource} useWorkspaces={neverHook}
       startSession={vi.fn()} toggleSidebar={vi.fn()} t={t}

@@ -36,19 +36,24 @@ export function parseForumOperation(value: unknown): ForumOperation {
   const body = forumText(row.body, 100_000), payload = forumObject(forumJson(body))
   if (row.version !== 1 || !['post', 'comment', 'like'].includes(String(row.kind))) throw new ForumWireError()
   const kind = row.kind as ForumOperation['kind'], method = kind === 'like' ? 'PUT' : 'POST'
+  const images = payload.attachment_ids === undefined ? [] : payload.attachment_ids
+  if (!Array.isArray(images) || images.length > 100 || new Set(images).size !== images.length) throw new ForumWireError()
+  for (const id of images) forumUuid(id)
   if (row.method !== method) throw new ForumWireError()
   if (kind === 'post') {
     if (postId !== null || path !== '/posts' || payload.client_request_id !== operationId
-      || Object.keys(payload).sort().join(',') !== 'body,client_request_id,title') throw new ForumWireError()
-    forumText(payload.title, 200); forumText(payload.body, 20_000)
+      || Object.keys(payload).some(key => !['body', 'client_request_id', 'title', 'attachment_ids'].includes(key))) throw new ForumWireError()
+    forumText(payload.title, 200); forumText(payload.body, 20_000, images.length > 0)
   } else {
     if (postId === null || scopeKey !== `post:${postId}` || path !== `/posts/${postId}/${kind === 'like' ? 'like' : 'comments'}`) {
       throw new ForumWireError()
     }
     if (kind === 'comment') {
       if (payload.client_request_id !== operationId
-        || Object.keys(payload).sort().join(',') !== 'body,client_request_id') throw new ForumWireError()
-      forumText(payload.body, 4000)
+        || Object.keys(payload).some(key => !['body', 'client_request_id', 'attachment_ids', 'reply_to_comment_id', 'title'].includes(key))
+        || payload.title !== undefined && payload.title !== '') throw new ForumWireError()
+      forumText(payload.body, 4000, images.length > 0)
+      if (payload.reply_to_comment_id !== undefined && payload.reply_to_comment_id !== '') forumUuid(payload.reply_to_comment_id)
     } else {
       if (Object.keys(payload).join(',') !== 'liked') throw new ForumWireError()
       forumBoolean(payload.liked)

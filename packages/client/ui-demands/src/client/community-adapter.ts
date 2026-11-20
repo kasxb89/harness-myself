@@ -268,14 +268,19 @@ export function communityRulesPresentation(rules: CommunityUploadRules | null): 
  * Keep staged upload identity equal to its original operation, including reselect feedback.
  * @param upload - One staged model upload, already selected for its destination.
  * @param t - Existing demand locale translator.
+ * @param contentUrl - Optional owner-authorized lookup for ready attachments.
  * @returns Shared upload presentation without constructing media URLs.
  */
-export function communityUploadPresentation(upload: CommunityUploadView, t: DemandTranslate): DemandAttachment {
+export function communityUploadPresentation(upload: CommunityUploadView, t: DemandTranslate,
+  contentUrl?: CommunityContentLookup): DemandAttachment {
   const error = communityIssueText(upload.error, t) ?? (upload.status === 'reselect' ? t('uploadReselect') : null)
+  const previewUrl = upload.status === 'ready' && upload.attachment?.status === 'ready'
+    && upload.attachment.scope === upload.scope ? contentUrl?.(upload.attachment.id) : null
   return { id: upload.operationId, name: upload.name,
     kind: upload.mimeType.startsWith('image/') ? 'image' : upload.mimeType.startsWith('video/') ? 'video' : 'file',
     sizeBytes: upload.sizeBytes, status: upload.status === 'reselect' ? 'failed' : upload.status,
-    progressPercent: upload.progressPercent, ...(error === null ? {} : { error }) }
+    progressPercent: upload.progressPercent, ...(error === null ? {} : { error }),
+    ...(previewUrl == null ? {} : { previewUrl }) }
 }
 
 /**
@@ -284,10 +289,11 @@ export function communityUploadPresentation(upload: CommunityUploadView, t: Dema
  * @param community - Account-owned operations, uploads and capabilities.
  * @param legacy - Actual published service choices from the existing directory.
  * @param t - Existing demand locale translator.
+ * @param contentUrl - Optional owner-authorized lookup for this publication's ready listing uploads.
  * @returns Controlled public fields, matched listing uploads and original-operation recovery.
  */
 export function communityPublishPresentation(draft: CommunityPublicationDraft, community: CommunityState,
-  legacy: DemandPageState, t: DemandTranslate): CommunityPublishPresentation {
+  legacy: DemandPageState, t: DemandTranslate, contentUrl?: CommunityContentLookup): CommunityPublishPresentation {
   const original = community.pending.find(item => item.kind === 'publication' && item.scopeKey === draft.scopeKey)
   const supported = communityApprovalAvailable(community.config)
   const reason = unavailable(community, t) ?? (!supported ? t('communityApprovalUnavailable') : null)
@@ -298,7 +304,7 @@ export function communityPublishPresentation(draft: CommunityPublicationDraft, c
     ...legacy.serviceProfiles.map(item => ({ id: item.id, label: item.displayName, disabled: !item.canStart }))],
   attachments: community.uploads.filter(item => !item.reserved && item.target.kind === 'publication'
       && item.target.scopeKey === draft.scopeKey
-      && item.scope === 'listing').map(item => communityUploadPresentation(item, t)),
+      && item.scope === 'listing').map(item => communityUploadPresentation(item, t, contentUrl)),
   locked: draft.locked || original !== undefined || draft.orderId !== null, operation: operation(original, draft.error, t),
   operationId: original?.operationId ?? null,
   canPublish: reason === null && supported && community.config?.capabilities.community_orders_v1 === true
