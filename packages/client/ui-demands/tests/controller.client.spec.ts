@@ -468,7 +468,97 @@ const platformConfig = { ...configuration,
 const service = { id: 'service-web', code: 'YS-SVC-001', display_name: 'Original website service',
   service_direction: 'Website requests', introduction: 'Platform evaluates and assigns', category_ids: ['software'],
   avatar_attachment_id: 'service-avatar', intake_mode: 'platform', enabled: true, published: true, can_start: true }
-function servicePage(items = [service], more = false, cursor = '', total = items.length) {
+
+function serviceGallery(owner: DemandOwner, imageId = 'service-image') {
+  const url = (id: string): string => `/credits/api/demand-service-media/${service.id}/${id}/content?${new URLSearchParams({
+    account_id: owner.id, account_owner: owner.owner, disposition: 'inline',
+  })}`
+  return { profile_id: service.id, revision: 1, cover_attachment_id: imageId, cover_url: url(imageId), media: [
+    { id: imageId, kind: 'image', mime_type: 'image/png', size_bytes: 4, sha256: 'b'.repeat(64), url: url(imageId) },
+    { id: 'service-video', kind: 'video', mime_type: 'video/mp4', size_bytes: 8, sha256: 'c'.repeat(64),
+      url: url('service-video'), poster_url: url('service-poster') },
+  ] }
+}
+
+describe('published service gallery reads', () => {
+  it('requests gallery metadata only with its capability and maps local image/video paths without original filenames', async () => {
+    const h = harness({ intercept: (owner, input) => {
+      if (input.path === '/config') return ok({ ...platformConfig,
+        capabilities: { ...platformConfig.capabilities, service_gallery_v1: true } })
+      if (!input.path.startsWith('/service-profiles?')) return undefined
+      expect(new URLSearchParams(input.path.split('?')[1]).get('include_media')).toBe('1')
+      return ok(servicePage([{ ...service, gallery: serviceGallery(owner) }]))
+    } })
+    await h.ready()
+    await vi.waitFor(() => { expect(h.snapshot().serviceProfiles[0]?.media).toHaveLength(2) })
+    const profile = h.snapshot().serviceProfiles[0]
+    expect(profile?.coverUrl).toContain(`/demand-service-media/${service.id}/service-image/content?`)
+    expect(profile?.media?.[0]).toMatchObject({ id: 'service-image', kind: 'image', name: `${service.display_name} · serviceMediaIndex` })
+    expect(profile?.media?.[1]?.kind).toBe('video')
+    expect(profile?.media?.[1]?.posterUrl).toContain('/service-poster/content?')
+    expect(h.request.mock.calls.some(([, input]) => input.method !== 'GET')).toBe(false)
+  })
+
+  it('keeps legacy directory queries unchanged and drops galleries after the backend withdraws the capability', async () => {
+    let enabled = true
+    const h = harness({ intercept: (owner, input) => {
+      if (input.path === '/config') return ok({ ...platformConfig,
+        capabilities: { ...platformConfig.capabilities, service_gallery_v1: enabled } })
+      if (!input.path.startsWith('/service-profiles?')) return undefined
+      expect(new URLSearchParams(input.path.split('?')[1]).has('include_media')).toBe(enabled)
+      return ok(servicePage([{ ...service, ...enabled ? { gallery: serviceGallery(owner) } : {} }]))
+    } })
+    await h.ready()
+    await vi.waitFor(() => { expect(h.snapshot().serviceProfiles[0]?.media).toHaveLength(2) })
+    enabled = false; h.control.refresh()
+    await vi.waitFor(() => { expect(h.snapshot().serviceProfiles[0]).not.toHaveProperty('media') })
+    expect(h.snapshot().serviceProfiles[0]?.displayName).toBe(service.display_name)
+    expect(h.request.mock.calls.some(([, input]) => input.method !== 'GET')).toBe(false)
+  })
+
+  it('rejects stale-owner gallery URLs and preserves the last verified service without creating a request', async () => {
+    let invalid = false
+    const h = harness({ intercept: (owner, input) => {
+      if (input.path === '/config') return ok({ ...platformConfig,
+        capabilities: { ...platformConfig.capabilities, service_gallery_v1: true } })
+      if (!input.path.startsWith('/service-profiles?')) return undefined
+      return ok(servicePage([{ ...service, gallery: serviceGallery(invalid ? { ...owner, owner: 'c'.repeat(64) } : owner) }]))
+    } })
+    await h.ready()
+    await vi.waitFor(() => { expect(h.snapshot().serviceProfiles[0]?.media).toHaveLength(2) })
+    const original = h.snapshot().serviceProfiles[0]
+    invalid = true; h.control.refresh()
+    await vi.waitFor(() => { expect(h.snapshot().servicesStatus).toBe('error') })
+    expect(h.snapshot().serviceProfiles[0]).toEqual(original)
+    expect(h.request.mock.calls.some(([, input]) => input.method !== 'GET')).toBe(false)
+  })
+
+  it('clears old media immediately on account change and ignores its delayed catalogue response', async () => {
+    let release: ((value: DemandResult) => void) | undefined
+    let oldOwner: DemandOwner | undefined
+    const h = harness({ intercept: (owner, input) => {
+      if (input.path === '/config') return ok({ ...platformConfig,
+        capabilities: { ...platformConfig.capabilities, service_gallery_v1: true } })
+      if (!input.path.startsWith('/service-profiles?')) return undefined
+      if (owner.epoch === 1) {
+        oldOwner = owner
+        return new Promise<DemandResult>((resolve) => { release = resolve })
+      }
+      return ok(servicePage([{ ...service, gallery: serviceGallery(owner, 'current-image') }]))
+    } })
+    await vi.waitFor(() => { expect(release).toBeTypeOf('function') })
+    h.source.set(account(2, 'd'.repeat(64)))
+    expect(h.snapshot().serviceProfiles).toEqual([])
+    await h.ready()
+    await vi.waitFor(() => { expect(h.snapshot().serviceProfiles[0]?.media?.[0]?.id).toBe('current-image') })
+    if (oldOwner === undefined) throw new Error('The original catalogue read captured its owner')
+    release?.(ok(servicePage([{ ...service, gallery: serviceGallery(oldOwner) }])))
+    await h.control.dispose()
+    expect(h.request.mock.calls.some(([, input]) => input.method !== 'GET')).toBe(false)
+  })
+})
+function servicePage(items: readonly (typeof service & { gallery?: ReturnType<typeof serviceGallery> })[] = [service],
+  more = false, cursor = '', total = items.length) {
   return { items, next_after_id: cursor, has_more: more, total, server_time: 100 }
 }
 

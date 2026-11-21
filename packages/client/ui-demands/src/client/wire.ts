@@ -131,32 +131,93 @@ export interface WireServiceProfile {
   readonly category_ids: readonly string[]
   readonly avatar_attachment_id: string
   readonly can_start: boolean
+  readonly gallery?: WireServiceGallery
+}
+/** Published gallery metadata containing only account-bound local media URLs. */
+export interface WireServiceGallery {
+  readonly profile_id: string
+  readonly revision: number
+  readonly cover_attachment_id: string
+  readonly cover_url: string
+  readonly media: readonly {
+    readonly id: string
+    readonly kind: 'image' | 'video'
+    readonly mime_type: string
+    readonly size_bytes: number
+    readonly sha256: string
+    readonly url: string
+    readonly poster_url?: string
+  }[]
+}
+function galleryLocalId(value: unknown, profileId: string, account: { readonly id: string; readonly owner: string }): string {
+  const path = text(value, 8192)
+  if (!path.startsWith('/') || path.startsWith('//') || /[\\\s]/u.test(path)) throw new DemandWireError()
+  let url: URL
+  try { url = new URL(path, 'https://service-gallery.invalid') }
+  catch (_invalidURL: unknown) { throw new DemandWireError() }
+  const match = /^\/credits\/api\/demand-service-media\/([A-Za-z0-9_-]+)\/([A-Za-z0-9_-]+)\/content$/u.exec(url.pathname)
+  if (path.split(/[?#]/u)[0] !== url.pathname || url.hash !== '' || match?.[1] !== profileId || match[2] === undefined || url.searchParams.size !== 3
+    || url.searchParams.get('account_id') !== account.id || url.searchParams.get('account_owner') !== account.owner
+    || url.searchParams.get('disposition') !== 'inline') throw new DemandWireError()
+  return id(match[2])
+}
+function serviceGallery(value: unknown, profileId: string,
+  account: { readonly id: string; readonly owner: string } | undefined): WireServiceGallery {
+  if (account === undefined) throw new DemandWireError()
+  const row = object(value), revision = integer(row.revision), coverId = text(row.cover_attachment_id, 128, true)
+  if (id(row.profile_id) !== profileId) throw new DemandWireError()
+  const posters = new Set<string>()
+  const media = array(row.media, 30, (value) => {
+    const item = object(value), mediaId = id(item.id), kind = choice(item.kind, ['image', 'video'])
+    const mime = text(item.mime_type, 128), size = integer(item.size_bytes), digest = text(item.sha256, 64), url = text(item.url, 8192)
+    if (!new RegExp(`^${kind}/[A-Za-z0-9.+-]+$`, 'u').test(mime) || size === 0 || !/^[a-f\d]{64}$/u.test(digest)
+      || galleryLocalId(url, profileId, account) !== mediaId) throw new DemandWireError()
+    const result: WireServiceGallery['media'][number] = { id: mediaId, kind, mime_type: mime, size_bytes: size, sha256: digest, url,
+      ...item.poster_url === undefined ? {} : { poster_url: text(item.poster_url, 8192) } }
+    if (result.poster_url !== undefined) {
+      if (kind !== 'video') throw new DemandWireError()
+      posters.add(galleryLocalId(result.poster_url, profileId, account))
+    }
+    return result
+  })
+  const coverUrl = text(row.cover_url, 8192, true)
+  if (new Set(media.map(item => item.id)).size !== media.length || media.some(item => item.kind === 'video' && posters.has(item.id))) {
+    throw new DemandWireError()
+  }
+  if (media.length === 0) {
+    if (coverId !== '' || coverUrl !== '') throw new DemandWireError()
+  } else if (revision === 0 || coverId === '' || galleryLocalId(coverUrl, profileId, account) !== coverId
+    || !posters.has(coverId) && !media.some(item => item.id === coverId && item.kind === 'image')) throw new DemandWireError()
+  return { profile_id: profileId, revision, cover_attachment_id: coverId, cover_url: coverUrl, media }
 }
 /**
  * Decode a published platform intake entry without live-person presence or private customer fields.
  * @param value - Unknown service-profile JSON.
+ * @param account - Captured login ownership required when gallery media is present.
  * @returns Public service metadata or a protocol error.
  */
-export function serviceProfile(value: unknown): WireServiceProfile {
+export function serviceProfile(value: unknown, account?: { readonly id: string; readonly owner: string }): WireServiceProfile {
   const row = object(value), profileId = id(row.id), code = id(row.code)
   if (profileId.length > 40 || code.length > 80 || row.intake_mode !== 'platform') throw new DemandWireError()
   boolean(row.published); boolean(row.enabled)
   return { id: profileId, code, display_name: text(row.display_name, 200), service_direction: text(row.service_direction, 400),
     introduction: text(row.introduction, 4000, true), category_ids: array(row.category_ids, 30, id),
-    avatar_attachment_id: row.avatar_attachment_id === '' ? '' : id(row.avatar_attachment_id), can_start: boolean(row.can_start) }
+    avatar_attachment_id: row.avatar_attachment_id === '' ? '' : id(row.avatar_attachment_id), can_start: boolean(row.can_start),
+    ...row.gallery === undefined ? {} : { gallery: serviceGallery(row.gallery, profileId, account) } }
 }
 /**
  * Decode a filter-bound service page with opaque continuation state.
  * @param value - Unknown page payload.
+ * @param account - Captured login ownership for optional local gallery paths.
  * @returns Validated profiles, count and continuation, without guessing cursor contents.
  */
-export function serviceDirectory(value: unknown): {
+export function serviceDirectory(value: unknown, account?: { readonly id: string; readonly owner: string }): {
   items: readonly WireServiceProfile[]
   has_more: boolean
   next_after_id: string | null
   total: number
 } {
-  const row = object(value), items = array(row.items, 100, serviceProfile), hasMore = boolean(row.has_more)
+  const row = object(value), items = array(row.items, 100, item => serviceProfile(item, account)), hasMore = boolean(row.has_more)
   const cursor = row.next_after_id === '' ? null : text(row.next_after_id, 1024)
   const total = integer(row.total)
   integer(row.server_time)
@@ -280,6 +341,7 @@ export interface WireConfig {
   readonly enabled: boolean
   readonly service_profiles: boolean
   readonly engineer_pagination: boolean
+  readonly service_gallery_v1: boolean
   readonly categories: readonly { readonly id: string; readonly name: string; readonly enabled: boolean }[]
   readonly upload_rules: {
     readonly max_image_bytes: number
@@ -303,6 +365,7 @@ export function configuration(value: unknown): WireConfig {
   return { enabled: boolean(row.enabled),
     service_profiles: capabilities.service_profiles === undefined ? false : boolean(capabilities.service_profiles),
     engineer_pagination: capabilities.engineer_pagination === undefined ? false : boolean(capabilities.engineer_pagination),
+    service_gallery_v1: capabilities.service_gallery_v1 === undefined ? false : boolean(capabilities.service_gallery_v1),
     categories: array(row.categories, 64, (value) => {
       const item = object(value)
       return { id: id(item.id), name: text(item.name, 200), enabled: boolean(item.enabled) }

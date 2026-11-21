@@ -1,4 +1,6 @@
 /** Strict, credential-free projections for the frozen demand-v1 product contract. */
+import { serviceGalleryContentPath } from './service-gallery-path.ts'
+import { apiUrl } from './api-url.ts'
 
 /** A demand JSON object whose fields still require the operation-specific decoder. */
 export type DemandObject = Record<string, unknown>
@@ -145,7 +147,7 @@ export function demandRequest(kind: string, input: unknown): DemandObject {
 export function demandQuery(kind: string, source: URLSearchParams): URLSearchParams {
   const directory = kind === 'engineers' || kind === 'service-profiles'
   const fields: Record<string, readonly string[]> = { engineers: ['category_id', 'limit', 'after_id', 'q'],
-    'service-profiles': ['category_id', 'limit', 'after_id', 'q'], list: ['status', 'before_id', 'limit'], messages: ['after_seq', 'limit'] }
+    'service-profiles': ['category_id', 'limit', 'after_id', 'q', 'include_media'], list: ['status', 'before_id', 'limit'], messages: ['after_seq', 'limit'] }
   const allowed = fields[kind] ?? []
   const result = new URLSearchParams()
   for (const [key, value] of source) {
@@ -154,7 +156,8 @@ export function demandQuery(kind: string, source: URLSearchParams): URLSearchPar
       if (!/^\d{1,16}$/u.test(value)) throw new DemandProtocolError()
       const numeric = demandInteger(Number(value), key === 'limit' ? 100 : Number.MAX_SAFE_INTEGER)
       if (key === 'limit' && numeric === 0) throw new DemandProtocolError()
-    } else if (directory && key === 'after_id') directoryCursor(value)
+    } else if (key === 'include_media') { if (value !== '1') throw new DemandProtocolError() }
+    else if (directory && key === 'after_id') directoryCursor(value)
     else if (directory && key === 'q') unicodeText(value, 100, true)
     else if (directory && key === 'category_id') profileId(value)
     else if (key === 'status') choice(value, DEMAND_STATUSES)
@@ -172,7 +175,55 @@ function engineer(input: unknown): DemandObject {
     capacity: demandInteger(value.capacity), service_hours: demandText(value.service_hours, 1000, true),
     ...value.avatar_attachment_id === undefined || value.avatar_attachment_id === '' ? {} : { avatar_attachment_id: demandId(value.avatar_attachment_id) } }
 }
-function serviceProfile(input: unknown): DemandObject {
+function gallerySourceId(input: unknown, serviceId: string, baseUrl: string | undefined): string {
+  const value = demandText(input, 8192)
+  if (value.startsWith('//') || baseUrl === undefined && !value.startsWith('/api/')) throw new DemandProtocolError()
+  const base = baseUrl ?? 'https://service-gallery.invalid'
+  let url: URL
+  let family: URL
+  try {
+    url = new URL(value.startsWith('/api/') ? apiUrl(base, value) : value, base + '/')
+    family = new URL(apiUrl(base, `/api/product/demand-service-media/${serviceId}/`))
+  }
+  catch (_invalidURL: unknown) { throw new DemandProtocolError() }
+  const rawPath = value.replace(/^[a-z][a-z\d+.-]*:\/\/[^/?#]*/iu, '').split(/[?#]/u)[0]
+  const suffix = url.pathname.slice(family.pathname.length), match = /^([A-Za-z0-9_-]+)\/content$/u.exec(suffix)
+  if (url.origin !== family.origin || !url.pathname.startsWith(family.pathname) || url.username !== '' || url.password !== '' || url.hash !== ''
+    || !value.startsWith('/api/') && rawPath !== url.pathname || /[\\\s]/u.test(value) || match?.[1] === undefined) throw new DemandProtocolError()
+  return demandId(match[1])
+}
+function serviceGallery(input: unknown, serviceId: string, account: { readonly id: string; readonly owner: string } | undefined,
+  baseUrl: string | undefined): DemandObject {
+  if (account === undefined) throw new DemandProtocolError()
+  const value = demandObject(input), revision = demandInteger(value.revision), coverId = demandText(value.cover_attachment_id, 128, true)
+  if (profileId(value.profile_id) !== serviceId) throw new DemandProtocolError()
+  const posters = new Set<string>()
+  const media = array(value.media, 30, (input) => {
+    const item = demandObject(input), id = demandId(item.id), kind = choice(item.kind, ['image', 'video'])
+    const mime = demandText(item.mime_type, 128), size = demandInteger(item.size_bytes), digest = demandText(item.sha256, 64)
+    if (!new RegExp(`^${kind}/[A-Za-z0-9.+-]+$`, 'u').test(mime) || size === 0 || !/^[a-f\d]{64}$/u.test(digest)
+      || gallerySourceId(item.url, serviceId, baseUrl) !== id) throw new DemandProtocolError()
+    const result: DemandObject = { id, kind, mime_type: mime, size_bytes: size, sha256: digest,
+      url: serviceGalleryContentPath(serviceId, id, account) }
+    if (item.poster_url !== undefined) {
+      if (kind !== 'video') throw new DemandProtocolError()
+      const posterId = gallerySourceId(item.poster_url, serviceId, baseUrl)
+      posters.add(posterId); result.poster_url = serviceGalleryContentPath(serviceId, posterId, account)
+    }
+    return result
+  })
+  if (new Set(media.map(item => item.id)).size !== media.length || media.some(item => item.kind === 'video' && posters.has(demandId(item.id)))) {
+    throw new DemandProtocolError()
+  }
+  if (media.length === 0) {
+    if (coverId !== '' || demandText(value.cover_url, 8192, true) !== '') throw new DemandProtocolError()
+  } else if (revision === 0 || coverId === '' || gallerySourceId(value.cover_url, serviceId, baseUrl) !== coverId
+    || !posters.has(coverId) && !media.some(item => item.id === coverId && item.kind === 'image')) throw new DemandProtocolError()
+  return { profile_id: serviceId, revision, cover_attachment_id: coverId,
+    cover_url: coverId === '' ? '' : serviceGalleryContentPath(serviceId, coverId, account), media }
+}
+function serviceProfile(input: unknown, account: { readonly id: string; readonly owner: string } | undefined,
+  baseUrl: string | undefined): DemandObject {
   const value = demandObject(input), code = demandText(value.code, 80), sort = value.sort, revision = demandInteger(value.revision)
   if (!/^[A-Za-z0-9_-]+$/u.test(code) || typeof sort !== 'number' || !Number.isSafeInteger(sort)
     || sort < -100_000 || sort > 100_000 || revision === 0) throw new DemandProtocolError()
@@ -181,7 +232,8 @@ function serviceProfile(input: unknown): DemandObject {
     category_ids: array(value.category_ids, 30, profileId),
     avatar_attachment_id: value.avatar_attachment_id === '' ? '' : profileId(value.avatar_attachment_id),
     published: bool(value.published), enabled: bool(value.enabled), sort, revision,
-    intake_mode: choice(value.intake_mode, ['platform']), can_start: bool(value.can_start) }
+    intake_mode: choice(value.intake_mode, ['platform']), can_start: bool(value.can_start),
+    ...value.gallery === undefined ? {} : { gallery: serviceGallery(value.gallery, profileId(value.id), account, baseUrl) } }
 }
 function directoryPage(value: DemandObject): DemandObject {
   const more = bool(value.has_more), cursor = directoryCursor(value.next_after_id), total = demandInteger(value.total)
@@ -229,9 +281,12 @@ function message(input: unknown): DemandObject {
  * Retain typed customer-visible fields and exclude private notes, credentials and permanent media URLs.
  * @param kind - Matched operation whose successful response shape is expected.
  * @param input - Complete untrusted upstream success envelope.
+ * @param account - Captured account ownership required for local gallery media paths.
+ * @param baseUrl - Configured API root retained when validating gallery source URLs.
  * @returns The validated public data projection, without the upstream authentication envelope.
  */
-export function demandResponse(kind: string, input: unknown): DemandObject {
+export function demandResponse(kind: string, input: unknown,
+  account?: { readonly id: string; readonly owner: string }, baseUrl?: string): DemandObject {
   const envelope = demandObject(input)
   if (envelope.success !== true) throw new DemandProtocolError()
   const value = demandObject(envelope.data)
@@ -246,9 +301,11 @@ export function demandResponse(kind: string, input: unknown): DemandObject {
       upload_ttl_seconds: demandInteger(rules.upload_ttl_seconds) } }, server_time: demandInteger(value.server_time),
     capabilities: { resumable_upload: bool(capabilities.resumable_upload), polling: bool(capabilities.polling),
       ...capabilities.service_profiles === undefined ? {} : { service_profiles: bool(capabilities.service_profiles) },
+      ...capabilities.service_gallery_v1 === undefined ? {} : { service_gallery_v1: bool(capabilities.service_gallery_v1) },
       ...capabilities.engineer_pagination === undefined ? {} : { engineer_pagination: bool(capabilities.engineer_pagination) } } }
   }
-  if (kind === 'service-profiles') return { items: array(value.items, 100, serviceProfile), ...directoryPage(value), server_time: demandInteger(value.server_time) }
+  if (kind === 'service-profiles') return { items: array(value.items, 100, item => serviceProfile(item, account, baseUrl)),
+    ...directoryPage(value), server_time: demandInteger(value.server_time) }
   if (kind === 'engineers') return { items: array(value.items, 200, engineer), server_time: demandInteger(value.server_time),
     ...value.has_more === undefined && value.next_after_id === undefined && value.total === undefined ? {} : directoryPage(value) }
   if (kind === 'list') return { items: array(value.items, 100, demand), has_more: bool(value.has_more), next_before_id: value.next_before_id === '' || value.next_before_id === null ? value.next_before_id : demandId(value.next_before_id) }

@@ -8,6 +8,9 @@ export interface ForumImageView {
   readonly name: string
   readonly sizeBytes: number
   readonly previewUrl: string | null
+  /** Older image-only owners omit the discriminator. */
+  readonly kind?: 'image' | 'video'
+  readonly mimeType?: string
 }
 
 /** A staged forum image retains its original upload identity until confirmed or explicitly removed. */
@@ -26,6 +29,8 @@ export interface ForumImageComposerView {
   readonly accept: string | null
   readonly maxAttachments: number | null
   readonly maxBytes: number | null
+  /** Video choices remain absent until their owner supplies a verified independent bound. */
+  readonly maxVideoBytes?: number | null
   readonly allowImageOnly: boolean
   readonly onAdd: (files: readonly File[]) => void
   readonly onRemove: (id: string) => void
@@ -51,6 +56,7 @@ export interface ForumPostSummary {
   readonly title: string
   readonly excerpt: string
   readonly authorName: string | null
+  readonly authorAvatarUrl?: string | null
   readonly createdAt: string
   readonly likeCount: number | null
   readonly replyCount: number | null
@@ -61,6 +67,7 @@ export interface ForumPostSummary {
 export interface ForumReplyView {
   readonly id: string
   readonly authorName: string | null
+  readonly authorAvatarUrl?: string | null
   readonly createdAt: string
   readonly body: string
   readonly images?: readonly ForumImageView[]

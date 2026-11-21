@@ -3,6 +3,7 @@ import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type { CommunityFace } from './community-types.ts'
 import type { ForumFace } from './forum-types.ts'
+import type { ShowcaseFace } from './showcase-types.ts'
 import type { CaseShowcaseItem } from './case-showcase-types.ts'
 
 /** Service state without discarding already loaded history. */
@@ -28,12 +29,22 @@ export interface DemandEngineer {
   readonly canStart: boolean
   readonly unavailableReason: string | null
 }
+/** One explicitly published service illustration or recording. */
+export interface DemandServiceMedia {
+  readonly id: string
+  readonly name: string
+  readonly kind: 'image' | 'video'
+  readonly previewUrl: string | null
+  readonly posterUrl?: string | null
+}
 /** A published service capability routed through platform reception, never a live person. */
 export interface DemandServiceProfile {
   readonly id: string
   readonly code: string
   readonly displayName: string
   readonly serviceDirection: string
+  readonly coverUrl?: string | null
+  readonly media?: readonly DemandServiceMedia[]
   readonly introduction: string
   readonly categoryIds: readonly string[]
   readonly avatarUrl: string | null
@@ -195,9 +206,10 @@ export interface DemandPageFace {
 export interface DemandWorkspaceFace extends Omit<DemandPageFace, 'hooks'> {
   /** Explicitly configured public references, never derived from private demand attachments. */
   readonly showcaseItems?: readonly CaseShowcaseItem[]
-  readonly hooks: DemandPageFace['hooks'] & CommunityFace['hooks'] & ForumFace['hooks']
+  readonly hooks: DemandPageFace['hooks'] & CommunityFace['hooks'] & ForumFace['hooks'] & ShowcaseFace['hooks']
   readonly community: Omit<CommunityFace, 'hooks'>
   readonly forum: Omit<ForumFace, 'hooks'>
+  readonly showcases: Omit<ShowcaseFace, 'hooks'>
   readonly setWorkspaceView: (view: 'legacy' | 'community' | 'forum' | 'other') => void
 }
 /** Framework-bound main panel with independent official and community models. */

@@ -50,7 +50,8 @@ export function extendedHarness(options: {
   let notices = [notification('18446744073709551614'), notification('10'), notification('9')]
   let profile = { id: 1, display_name: '论坛用户1', revision: 0 }, nonce = 3000, uuid = 1000
   const uploadDto = (value: (typeof uploads extends Map<string, infer V> ? V : never)) => ({
-    id: value.id, attachment_id: value.id, offset: value.bytes.length, chunk_bytes: options.config?.upload_rules?.chunk_bytes ?? 3,
+    id: value.id, attachment_id: value.id, offset: value.bytes.length,
+    chunk_bytes: (options.config?.upload_rules_v2 ?? options.config?.upload_rules)?.chunk_bytes ?? 3,
     status: value.attachment === null ? 'uploading' : 'ready', expires_at: 2000000000, attachment: value.attachment,
   })
   const base = async (owner: ForumOwner, input: ForumRequest): Promise<ForumResult> => {
@@ -95,7 +96,8 @@ export function extendedHarness(options: {
       if (parts[3] === 'complete') {
         const digest = fileDigest(new Uint8Array(value.bytes))
         if (data.sha256 !== digest || value.bytes.length !== value.size) return { ok: false, code: 'FORUM_ATTACHMENT_INVALID', httpStatus: 400, unknown: false }
-        value.attachment = { id: value.id, name: '论坛图片.png', kind: 'image', mime_type: value.type, size_bytes: value.size,
+        value.attachment = { id: value.id, name: value.type === 'video/mp4' ? 'forum-video.mp4' : '论坛图片.png',
+          kind: value.type === 'video/mp4' ? 'video' : 'image', mime_type: value.type, size_bytes: value.size,
           sha256: digest, status: 'ready', preview_path: `/attachments/${value.id}/link`, download_path: `/attachments/${value.id}/link` }
       }
       return successful(uploadDto(value))
@@ -110,10 +112,13 @@ export function extendedHarness(options: {
       const id = `00000000-0000-4000-8000-${String(++nonce).padStart(12, '0')}`, author = { id: Number(owner.id), display_name: profile.display_name }
       let result: ForumResult
       if (path === '/posts') {
-        const post = forumExamplePost({ id, author, title: String(data.title).trim(), body: String(data.body).trim(), attachments })
+        const post = forumExamplePost({ id, author, title: String(data.title).trim(), body: String(data.body).trim(),
+          attachments: attachments.filter(item => item.kind === 'image'),
+          ...options.config?.capabilities.forum_media_v2 === true ? { media: attachments } : {} })
         rows.unshift(post); result = successful({ post, replayed: false })
       } else {
-        const comment = forumExampleComment({ id, author, post_id: parts[2] ?? '', body: String(data.body).trim(), attachments,
+        const comment = forumExampleComment({ id, author, post_id: parts[2] ?? '', body: String(data.body).trim(), attachments: attachments.filter(item => item.kind === 'image'),
+          ...options.config?.capabilities.forum_media_v2 === true ? { media: attachments } : {},
           reply_to_comment_id: typeof data.reply_to_comment_id === 'string' ? data.reply_to_comment_id : '' })
         replies.unshift(comment); result = successful({ comment, replayed: false })
       }

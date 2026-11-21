@@ -5,6 +5,8 @@
 .count { flex: none; color: var(--dsw-alias-label-secondary); font: var(--dsw-font-xs-13); }
 .filters { display: flex; flex: none; flex-wrap: wrap; gap: 8px; }
 .viewport { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px 2px 24px; }
+.notice { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 20px; padding: 12px 16px; border: 1px solid var(--dsw-alias-border-l2); border-radius: var(--dsw-radius-md); color: var(--dsw-alias-label-secondary); }
+.loadMore { display: flex; justify-content: center; padding-top: 24px; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); gap: 24px; margin: 0; padding: 0; list-style: none; }
 .card { min-width: 0; }
 .open { display: flex; width: 100%; flex-direction: column; gap: 14px; padding: 0; border: 0; border-radius: var(--dsw-radius-lg); background: none; color: inherit; text-align: start; cursor: pointer; }

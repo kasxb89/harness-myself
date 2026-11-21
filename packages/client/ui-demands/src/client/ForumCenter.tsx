@@ -1,5 +1,5 @@
 /** A forum view renders supplied public posts without owning transport or submission identities. */
-import { useId, useLayoutEffect, useRef, type ReactNode } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
   Button, Input, Modal, StateDot, IconCloseOutlineRegular, IconLikeFillRegular,
@@ -40,15 +40,24 @@ function RecoveryAction({ operation, onCheck, t }: {
       onClick={onCheck}>{t(operation.recovering ? 'forumChecking' : 'forumRetryOriginal')}</Button>
 }
 
-function ForumAvatar({ name }: { name: string | null }): ReactNode {
+function ForumAvatar({ name, src }: { name: string | null; src: string | null | undefined }): ReactNode {
+  const [failed, setFailed] = useState(false)
   const author = name?.trim()
-  return <span className={css.avatar} aria-hidden="true">{author ? Array.from(author)[0] : <IconUserOutlineRegular size={16} />}</span>
+  return <span className={css.avatar} aria-hidden="true">
+    {!src || failed ? author ? Array.from(author)[0] : <IconUserOutlineRegular size={16} />
+      : <img src={src} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => { setFailed(true) }} />}
+  </span>
 }
 
-function AuthorTime({ name, createdAt, t }: { name: string | null; createdAt: string; t: DemandTranslate }): ReactNode {
+function AuthorTime({ name, src, createdAt, t }: {
+  name: string | null
+  src: string | null | undefined
+  createdAt: string
+  t: DemandTranslate
+}): ReactNode {
   const author = name?.trim()
   return <div className={css.metadata}>
-    <ForumAvatar name={name} />
+    <ForumAvatar key={src} name={name} src={src} />
     <div className={css.authorDetails}><span>{author || t('forumMember')}</span>
       {createdAt === '' ? null : <time dateTime={createdAt}>{demandTime(createdAt, t)}</time>}</div>
   </div>
@@ -133,7 +142,7 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
       {commentsScope && historyComments.length > 0 ? <ul className={css.postList} aria-label={t('forumMyComments')}
         aria-busy={view.list.status === 'loading'}>{historyComments.map(comment => <li key={comment.id}>
           <article className={css.historyComment}>
-            <AuthorTime name={comment.authorName} createdAt={comment.createdAt} t={t} />
+            <AuthorTime name={comment.authorName} src={comment.authorAvatarUrl} createdAt={comment.createdAt} t={t} />
             <button type="button" className={css.postOpen} aria-haspopup="dialog"
               aria-label={t('forumOpenPost', { title: comment.postTitle })} onClick={() => {
                 if (props.onOpenHistoryComment !== undefined) props.onOpenHistoryComment(comment.postId, comment.id)
@@ -144,7 +153,7 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
           </article></li>)}</ul>
         : !commentsScope && view.list.posts.length > 0 ? <ul className={css.postList} aria-label={t('forumPostList')} aria-busy={view.list.status === 'loading'}>
           {view.list.posts.map(item => <li key={item.id}><article className={css.postRow}>
-            <AuthorTime name={item.authorName} createdAt={item.createdAt} t={t} />
+            <AuthorTime name={item.authorName} src={item.authorAvatarUrl} createdAt={item.createdAt} t={t} />
             <div className={css.postContent}><button type="button" className={css.postOpen} aria-haspopup="dialog"
               aria-label={t('forumOpenPost', { title: item.title })} onClick={() => { props.onOpenPost(item.id) }}>
               <span className={css.postTitle} role="heading" aria-level={3}>{item.title}</span>
@@ -178,7 +187,8 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
         : <div className={css.detail} aria-busy={detail.status === 'loading'}>
           <article className={css.readingPane}>
             <header className={css.postHeader}>
-              <AuthorTime name={post.authorName} createdAt={post.createdAt} t={t} /><h2>{post.title}</h2></header>
+              <AuthorTime name={post.authorName} src={post.authorAvatarUrl} createdAt={post.createdAt} t={t} />
+              <h2>{post.title}</h2></header>
             <p className={css.body}>{post.body}</p>
             {post.images === undefined ? null : <ForumImages images={post.images} t={t} />}
             <div className={css.postActions}>
@@ -206,7 +216,7 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
                       if (element === null) replyNodes.current.delete(reply.id)
                       else replyNodes.current.set(reply.id, element)
                     }}>
-                    <ForumAvatar name={reply.authorName} />
+                    <ForumAvatar key={reply.authorAvatarUrl} name={reply.authorName} src={reply.authorAvatarUrl} />
                     <div className={css.replyContent}>
                       <div className={css.replyAuthor}><span>{reply.authorName?.trim() || t('forumMember')}</span>
                         {reply.createdAt === '' ? null : <time dateTime={reply.createdAt}>{demandTime(reply.createdAt, t)}</time>}</div>
@@ -243,7 +253,7 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
               <ForumEmojiPicker label={t('forumEmoji')} groupLabel={t('forumChooseEmoji')} disabled={replyEditingLocked}
                 onSelect={(emoji) => { insertEmoji('reply', emoji) }} />
               {props.replyMedia === undefined ? null : <ForumImageComposer media={props.replyMedia} disabled={replyEditingLocked} t={t} />}
-              {replyImagesReady ? null : <p className={css.note} role="status">{t('forumImagesPending')}</p>}
+              {replyImagesReady ? null : <p className={css.note} role="status">{t('forumMediaPending')}</p>}
               {post.replyReason === null ? null : <p className={css.note}>{post.replyReason}</p>}
               <OperationNotice operation={replyOperation} t={t} />
               <div className={css.formFooter}>
@@ -278,7 +288,7 @@ export function ForumCenter(props: ForumCenterProps): ReactNode {
         <ForumEmojiPicker label={t('forumEmoji')} groupLabel={t('forumChooseEmoji')} disabled={postEditingLocked}
           onSelect={(emoji) => { insertEmoji('post', emoji) }} />
         {props.postMedia === undefined ? null : <ForumImageComposer media={props.postMedia} disabled={postEditingLocked} t={t} />}
-        {postImagesReady ? null : <p className={css.note} role="status">{t('forumImagesPending')}</p>}
+        {postImagesReady ? null : <p className={css.note} role="status">{t('forumMediaPending')}</p>}
         <p className={css.note}>{t('forumPublicHint')}</p>
         <OperationNotice operation={postOperation} t={t} />
       </form>

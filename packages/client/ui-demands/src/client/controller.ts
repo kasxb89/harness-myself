@@ -123,7 +123,12 @@ export function createDemandController(accountSource: Context['creditsSession'],
   const serviceProfile = (row: wire.WireServiceProfile): DemandServiceProfile => ({ id: row.id, code: row.code,
     displayName: row.display_name, serviceDirection: row.service_direction, introduction: row.introduction,
     categoryIds: row.category_ids, canStart: row.can_start && serverConfig?.enabled === true,
-    avatarUrl: owner === null || row.avatar_attachment_id === '' ? null : demandContentUrl(owner, row.avatar_attachment_id) })
+    avatarUrl: owner === null || row.avatar_attachment_id === '' ? null : demandContentUrl(owner, row.avatar_attachment_id),
+    ...serverConfig?.service_gallery_v1 !== true || row.gallery === undefined ? {} : {
+      coverUrl: row.gallery.cover_url === '' ? null : row.gallery.cover_url,
+      media: row.gallery.media.map((item, index) => ({ id: item.id, kind: item.kind,
+        name: `${row.display_name} · ${t('serviceMediaIndex', { index: index + 1 })}`, previewUrl: item.url,
+        ...item.poster_url === undefined ? {} : { posterUrl: item.poster_url } })) } })
   const routing = (row?: wire.WireDemand, scope?: Scope): DemandRouting => ({
     intakeMode: row?.intake_mode ?? (scope?.serviceProfileId === undefined ? 'direct' : 'platform'),
     assigned: row?.assigned ?? scope?.serviceProfileId === undefined,
@@ -253,13 +258,14 @@ export function createDemandController(accountSource: Context['creditsSession'],
     publish()
     try {
       const params = new URLSearchParams({ limit: '30' })
+      if (serverConfig.service_gallery_v1) params.set('include_media', '1')
       if (cursor !== null) params.set('after_id', cursor)
       if (query !== '') params.set('q', query)
       if (category !== '') params.set('category_id', category)
       const answer = await perform(captured, { method: 'GET', path: `/service-profiles?${params}` }, abort.signal)
       if (!sameOwner(captured) || epoch !== serviceEpoch || abort.signal.aborted) return
       if (!answer.ok) throw new Error(answer.code)
-      const page = wire.serviceDirectory(answer.payload)
+      const page = wire.serviceDirectory(answer.payload, captured)
       if (more && page.has_more && page.next_after_id === cursor) throw new wire.DemandWireError()
       const preserve = periodic && servicesLoaded && (servicesHaveMore || page.total <= services.length)
       const rows = more ? [...services, ...page.items] : preserve ? [...page.items,

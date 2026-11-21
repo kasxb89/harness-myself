@@ -11,6 +11,7 @@ import type { DemandPageProps, DemandPageState } from '../src/client/types.ts'
 import { communityConfig, communityListing, communityOrder, communityState } from './community-fixtures.client.ts'
 import type { CommunityState } from '../src/client/community-types.ts'
 import type { ForumState } from '../src/client/forum-types.ts'
+import type { ShowcaseState } from '../src/client/showcase-types.ts'
 import { attachment, conversation, demandState, draft, draftSummary, exampleEngineers, message, request, serviceProfile } from './fixtures.client.ts'
 
 beforeEach(() => {
@@ -45,6 +46,9 @@ function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityS
     loadMoreMessages: vi.fn(), markRead: vi.fn(), performAction: vi.fn(), retryOperation: vi.fn(),
     addAttachments: vi.fn(), retryUpload: vi.fn(), removeUpload: vi.fn(), contentUrl: vi.fn(() => null), downloadAttachment: vi.fn(),
   }
+  const showcaseStore = createSnapshotStore<ShowcaseState>({ source: 'legacy', status: 'ready', items: showcaseItems, category: null,
+    categories: ['pc', 'web', 'miniapp', 'exe', 'game', 'image', 'video'], total: showcaseItems.length, hasMore: false, loadingMore: false, error: null })
+  const showcases: DemandPageProps['showcases'] = { refreshShowcases: vi.fn(), loadMoreShowcases: vi.fn(), setShowcaseCategory: vi.fn() }
   const actions = {
     refresh: vi.fn<() => void>(), openLogin: vi.fn<() => void>(), startRequest: vi.fn<(id: string) => void>(),
     startServiceRequest: vi.fn<DemandPageProps['startServiceRequest']>(),
@@ -64,6 +68,7 @@ function page(partial: Partial<DemandPageState> = {}, shared: Partial<CommunityS
     usePanelInfo: unusedHook, useSessions: unusedHook, useSessionStatus: unusedHook, useSessionRetainInfo: unusedHook,
     useWorkspaces: unusedHook, useResource: unusedHook, useDemands: bindSnapshotSelector(store),
     useCommunity: bindSnapshotSelector(communityStore), community, useForum: bindSnapshotSelector(forumStore), forum,
+    useShowcases: bindSnapshotSelector(showcaseStore), showcases,
     t: (key, params) => (translations.get(key) ?? key).replace(/\{(\w+)\}/gu, (placeholder: string, name: string) =>
       params !== undefined && name in params ? String(params[name]) : placeholder),
   }
@@ -119,6 +124,24 @@ describe('human-engineer demand page', () => {
       fireEvent.click(screen.getByRole('button', { name: zh.openLogin }))
       expect(actions.openLogin).toHaveBeenCalledOnce()
     }
+  })
+
+  it('shows login on every destination and hides a retained case preview after sign-out', () => {
+    const actions = page({ availability: 'ready' }, {}, {}, [{ id: 'retained-public-case', title: '原公开作品',
+      description: '已读取的公开资料', category: 'web', coverUrl: '/case-media/cover.png',
+      media: [{ kind: 'image', url: '/case-media/cover.png' }], sourceName: '作者' }])
+    fireEvent.click(screen.getByRole('tab', { name: zh.showcaseTab }))
+    fireEvent.click(screen.getByRole('button', { name: zh.showcasePreviewNamed.replace('{title}', '原公开作品') }))
+    expect(screen.getByRole('dialog', { name: '原公开作品' })).toBeTruthy()
+    actions.set({ availability: 'login-required' })
+    expect(screen.queryByRole('dialog', { name: '原公开作品' })).toBeNull()
+    for (const label of [zh.demandSquare, zh.forumTabLabel, zh.showcaseTab, zh.officialCustomization]) {
+      fireEvent.click(screen.getByRole('tab', { name: label }))
+      expect(screen.getByRole('button', { name: zh.openLogin })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: zh.showcasePreviewNamed.replace('{title}', '原公开作品') })).toBeNull()
+    }
+    fireEvent.click(screen.getByRole('button', { name: zh.openLogin }))
+    expect(actions.openLogin).toHaveBeenCalledOnce()
   })
 
   it('checks an original acceptance from My accepted after its public detail disappears and approval capability is absent', () => {

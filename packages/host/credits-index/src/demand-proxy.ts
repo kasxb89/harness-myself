@@ -89,7 +89,11 @@ export interface DemandTransportProtocol {
   readonly response: (kind: string, input: unknown, account: Pick<DemandAccount, 'id' | 'owner'>, route: DemandTransportRoute) => DemandObject
   readonly remoteCodes: ReadonlySet<string>
   readonly mapCode: (code: string) => string
-  readonly contentPath: (id: string, account: Pick<DemandAccount, 'id' | 'owner'>, disposition: string) => string
+  readonly contentPath: (id: string, account: Pick<DemandAccount, 'id' | 'owner'>, disposition: string, route: DemandTransportRoute) => string
+  /** Fixed domain-owned signing route; omitted retains the original attachment route. */
+  readonly contentLinkPath?: (route: DemandTransportRoute) => string
+  /** Fixed domain-owned signed content route, checked against the configured backend origin. */
+  readonly contentAssetPath?: (route: DemandTransportRoute) => string
   readonly httpErrorFallback?: boolean
 }
 function selectRoute(path: string, method: string): DemandTransportRoute | undefined {
@@ -214,12 +218,14 @@ function uploadStream(request: IncomingMessage, length: number, maximum: number,
   })
 }
 
-function attachmentRoute(value: unknown, id: string, baseUrl: string, upstream: string): { path: string; expires: number } {
+function attachmentRoute(
+  value: unknown, id: string, baseUrl: string, upstream: string, assetPath?: string,
+): { path: string; expires: number } {
   const data = demandObject(value), raw = demandText(data.url, 4096)
   let url: URL
-  try { url = new URL(raw.startsWith(upstream + '/') ? apiUrl(baseUrl, raw) : raw, baseUrl + '/') }
+  try { url = new URL(raw.startsWith('/api/') ? apiUrl(baseUrl, raw) : raw, baseUrl + '/') }
   catch (_invalidUrl: unknown) { throw new DemandProtocolError() }
-  const expected = new URL(apiUrl(baseUrl, `${upstream}/attachments/${id}/content`))
+  const expected = new URL(apiUrl(baseUrl, assetPath ?? `${upstream}/attachments/${id}/content`))
   if (url.origin !== expected.origin || url.pathname !== expected.pathname || url.hash !== '' || url.username !== '' || url.password !== ''
     || url.searchParams.size !== 1 || !url.searchParams.has('token') || url.searchParams.get('token') === '') throw new DemandProtocolError()
   const prefix = new URL(baseUrl).pathname.replace(/\/+$/u, '')
@@ -249,7 +255,8 @@ export function createDemandProxy(options: DemandProxyOptions): {
   close(): Promise<void>
 } {
   return createDemandTransport(options, { localBasePath: LOCAL_BASE_PATH, selectRoute, request: demandRequest,
-    query: demandQuery, response: demandResponse, remoteCodes, mapCode: code => code, contentPath: demandContentPath })
+    query: demandQuery, response: (kind, input, account) => demandResponse(kind, input, account, options.baseUrl),
+    remoteCodes, mapCode: code => code, contentPath: demandContentPath })
 }
 
 /**
@@ -307,7 +314,7 @@ export function createDemandTransport(options: DemandProxyOptions, protocol: Dem
         const range = header(request, 'range'), ifRange = header(request, 'if-range')
         if (range !== undefined && (!/^bytes=(?:\d{1,16}-\d{0,16}|-\d{1,16})$/u.test(range) || range === 'bytes=-')) throw new DemandInputError('DEMAND_RANGE_INVALID')
         if (ifRange !== undefined && (ifRange.length > 256 || /[^\x20-\x7e]/u.test(ifRange))) throw new DemandInputError('DEMAND_RANGE_INVALID')
-        const link = await transfer(() => account.fetch(`${upstream}/attachments/${route.attachmentId}/link`, { method: 'POST',
+        const link = await transfer(() => account.fetch(protocol.contentLinkPath?.(route) ?? `${upstream}/attachments/${route.attachmentId}/link`, { method: 'POST',
           headers: { accept: 'application/json', 'content-type': 'application/json' }, body: JSON.stringify({ disposition }), signal }))
         if (!link.ok) {
           await link.body?.cancel()
@@ -315,7 +322,7 @@ export function createDemandTransport(options: DemandProxyOptions, protocol: Dem
         }
         const envelope = demandObject(await readResult(link, limits.maxJsonResponseBytes, signal)), data = demandObject(envelope.data)
         if (envelope.success !== true) throw new DemandProtocolError()
-        const linkRoute = attachmentRoute(data, route.attachmentId ?? '', baseUrl, upstream)
+        const linkRoute = attachmentRoute(data, route.attachmentId ?? '', baseUrl, upstream, protocol.contentAssetPath?.(route))
         if (!await account.isCurrent()) { reply(response, { ok: false, code: 'ACCOUNT_CHANGED' }); return }
         const media = await transfer(() => options.fetchPublic(linkRoute.path, { method: route.method, signal,
           headers: { ...range === undefined ? {} : { range }, ...ifRange === undefined ? {} : { 'if-range': ifRange } } }))
@@ -399,8 +406,8 @@ export function createDemandTransport(options: DemandProxyOptions, protocol: Dem
       if (route.kind === 'link') {
         const value = demandObject(envelope.data)
         if (envelope.success !== true) throw new DemandProtocolError()
-        const valid = attachmentRoute(value, route.attachmentId ?? '', baseUrl, upstream)
-        reply(response, { ok: true, payload: { url: protocol.contentPath(route.attachmentId ?? '', account, linkDisposition),
+        const valid = attachmentRoute(value, route.attachmentId ?? '', baseUrl, upstream, protocol.contentAssetPath?.(route))
+        reply(response, { ok: true, payload: { url: protocol.contentPath(route.attachmentId ?? '', account, linkDisposition, route),
           expires_at: valid.expires }, httpStatus: result.status, ...ownerFields }); return
       }
       reply(response, { ok: true, payload: protocol.response(route.kind, raw, account, route), httpStatus: result.status, ...ownerFields })

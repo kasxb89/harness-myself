@@ -9,6 +9,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { createDemandController } from './controller.ts'
 import { createCommunityController } from './community-controller.ts'
 import { createForumController } from './forum-controller.ts'
+import { createShowcaseController } from './showcase-controller.ts'
 import { DemandPage } from './DemandPage.tsx'
 import { DemandPanelIcon } from './DemandPanelIcon.tsx'
 import { en, NS, zh, type DemandLocaleKey } from './locales.ts'
@@ -57,6 +58,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     hooks: communityHooks, ...community } = createCommunityController(ctx.creditsSession, resolved)
   const { start: startForum, dispose: disposeForum, setVisible: setForumVisible,
     hooks: forumHooks, ...forum } = createForumController(ctx.creditsSession, resolved)
+  const { start: startShowcases, dispose: disposeShowcases, hooks: showcaseHooks, ...showcases } = createShowcaseController(resolved)
   let workspaceView: Parameters<DemandWorkspaceFace['setWorkspaceView']>[0] = 'other'
   const visibility = (): void => {
     const foreground = ctx.layout.panelInfo.getSnapshot().activePanelId === PANEL_ID
@@ -68,7 +70,7 @@ export function apply(ctx: Context, config: Config = {}): void {
   const setWorkspaceView: DemandWorkspaceFace['setWorkspaceView'] = (view) => { workspaceView = view; visibility() }
   ctx.slots.inject('main', () => ctx.slots.register({
     name: 'main', key: PANEL_ID, locale: NS,
-    inject: () => ({ ...face, hooks: { ...face.hooks, ...communityHooks, ...forumHooks }, community, forum,
+    inject: () => ({ ...face, hooks: { ...face.hooks, ...communityHooks, ...forumHooks, ...showcaseHooks }, community, forum, showcases,
       setWorkspaceView, showcaseItems: resolved.showcaseItems }),
   }, DemandPage))
   if (resolved.enabled) ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
@@ -79,6 +81,19 @@ export function apply(ctx: Context, config: Config = {}): void {
     const stop = start()
     const stopCommunity = startCommunity()
     const stopForum = startForum()
+    let stopShowcases: (() => void) | undefined
+    const reconcileShowcases = (): void => {
+      const session = ctx.creditsSession.getSnapshot().session
+      if (session?.signedIn === true && session.account !== undefined
+        && typeof session.accountOwner === 'string' && /^[a-f\d]{64}$/u.test(session.accountOwner)) {
+        stopShowcases ??= startShowcases()
+      } else {
+        stopShowcases?.()
+        stopShowcases = undefined
+      }
+    }
+    const unsubscribeAccount = ctx.creditsSession.subscribe(reconcileShowcases)
+    reconcileShowcases()
     const unsubscribe = ctx.layout.panelInfo.subscribe(visibility)
     document.addEventListener('visibilitychange', visibility)
     window.addEventListener('focus', visibility)
@@ -86,13 +101,15 @@ export function apply(ctx: Context, config: Config = {}): void {
     visibility()
     return async () => {
       unsubscribe()
+      unsubscribeAccount()
       document.removeEventListener('visibilitychange', visibility)
       window.removeEventListener('focus', visibility)
       window.removeEventListener('blur', visibility)
       stop()
       stopCommunity()
       stopForum()
-      await Promise.all([dispose(), disposeCommunity(), disposeForum()])
+      stopShowcases?.()
+      await Promise.all([dispose(), disposeCommunity(), disposeForum(), disposeShowcases()])
     }
   }, 'ui-demands: account-bound message and upload lifecycle')
 }

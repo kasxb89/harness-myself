@@ -83,7 +83,7 @@ describe('forum media and activity protocol additions', () => {
     expect(forumRequest('upload-init', { ...input, target_kind: 'comment', post_id: postId }))
       .toMatchObject({ target_kind: 'comment', post_id: postId })
     for (const fields of [{ target_kind: 'post', post_id: postId }, { target_kind: 'comment', post_id: '' },
-      { mime_type: 'video/mp4' }, { name: '../image.png' }, { size_bytes: 0 }]) {
+      { mime_type: 'video/webm' }, { name: '../image.png' }, { size_bytes: 0 }]) {
       expect(() => forumRequest('upload-init', { ...input, ...fields })).toThrow(DemandProtocolError)
     }
     const uploading = { id: assetId, attachment_id: assetId, offset: 4, chunk_bytes: 4, status: 'uploading', expires_at: 100, attachment: null }

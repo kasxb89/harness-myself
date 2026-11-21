@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** Forum media and account presentation never invent a publication, identity, reply or upload result. */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { ForumCenter } from '../src/client/ForumCenter.tsx'
 import { ForumImageComposer, ForumImages } from '../src/client/ForumImages.tsx'
 import type { ForumCenterProps, ForumImageComposerView, ForumImageUploadView, ForumPostDetail } from '../src/client/forum-view.ts'
@@ -46,6 +46,43 @@ function props(patch: Partial<ForumCenterProps> = {}): ForumCenterProps {
 }
 
 describe('forum image presentation', () => {
+  it('opens a confirmed video only on explicit preview with one native seek control and stops it on close', () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    onTestFinished(() => { pause.mockRestore(); load.mockRestore() })
+    const video = { ...image, id: 'forum-video-original', kind: 'video' as const, name: '工作流.mp4',
+      mimeType: 'video/mp4', previewUrl: 'https://example.invalid/owned-forum-video' }
+    render(<ForumImages images={[image, video]} t={t} />)
+    expect(document.querySelector('video')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '播放工作流.mp4' }))
+    const dialog = screen.getByRole('dialog', { name: zh.forumVideoPreview })
+    const player = within(dialog).getByLabelText(video.name)
+    expect(player).toBeInstanceOf(HTMLVideoElement)
+    expect(player).toHaveProperty('controls', true)
+    expect(player).toHaveProperty('autoplay', false)
+    expect(player.getAttribute('playsinline')).not.toBeNull()
+    expect(player.getAttribute('preload')).toBe('none')
+    expect(player.getAttribute('src')).toBe(video.previewUrl)
+    expect(within(dialog).queryByRole('slider')).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: zh.close }))
+    expect(document.querySelector('video')).toBeNull()
+    expect(pause).toHaveBeenCalledOnce()
+    expect(load).toHaveBeenCalledOnce()
+  })
+
+  it('does not expose an unready video and keeps the original retry identity when video upload is unavailable', () => {
+    const data = media({ canAdd: false, items: [{ ...image, kind: 'video', name: '原片.mp4',
+      previewUrl: null, status: 'failed', requiresFile: true }] })
+    render(<ForumImageComposer media={data} disabled={false} t={t} />)
+    expect(document.querySelector('video')).toBeNull()
+    expect(screen.queryByRole('button', { name: '播放原片.mp4' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.retryAttachment }))
+    const original = new File(['retained video'], '原片.mp4', { type: 'video/mp4' })
+    fireEvent.change(screen.getByLabelText(zh.forumChooseOriginalMedia, { selector: 'input' }), { target: { files: [original] } })
+    expect(data.onRetry).toHaveBeenCalledExactlyOnceWith(image.id, original)
+    expect(data.onAdd).not.toHaveBeenCalled()
+  })
+
   it('previews only confirmed image references in the shared lightbox', () => {
     render(<ForumImages images={[image, { ...image, id: 'unavailable', name: '暂不可预览', previewUrl: null }]} t={t} />)
     expect(screen.getAllByRole('img')).toHaveLength(1)
@@ -110,7 +147,7 @@ describe('forum image presentation', () => {
     expect(screen.getByRole('button', { name: zh.forumPublish })).toHaveProperty('disabled', true)
     fireEvent.submit(input.closest('form')!)
     expect(p.onSubmitPost).toHaveBeenCalledOnce()
-    expect(screen.getByText(zh.forumImagesPending)).toBeTruthy()
+    expect(screen.getByText(zh.forumMediaPending)).toBeTruthy()
     view.rerender(<ForumCenter {...p} postMedia={media({ items: [image], allowImageOnly: false })} />)
     fireEvent.submit(input.closest('form')!)
     expect(p.onSubmitPost).toHaveBeenCalledOnce()

@@ -57,6 +57,19 @@ describe('fixed login-owned forum HTTP transport', () => {
       payload: { items: [], next_cursor: '', has_more: false }, httpStatus: 200, account: { id: accountId }, accountOwner: owner })
     expect(forum.send).toHaveBeenCalledExactlyOnceWith('/api/product/forum/posts', expect.objectContaining({ method: 'GET' }))
   })
+  it('negotiates forum media only through the captured Host account and keeps original mutation bytes', async () => {
+    const forum = await host()
+    forum.send.mockResolvedValueOnce(Response.json({ success: true, data: { post: post(), replayed: false } }, { status: 201 }))
+    expect((await forum.call('/posts', 'POST', body, { 'x-yunshu-forum-media-version': '99',
+      'x-yunshu-forum-profile-avatar-version': '99' })).status).toBe(200)
+    const sent = forum.send.mock.calls[0]?.[1]
+    expect(new Headers(sent?.headers).get('x-yunshu-forum-media-version')).toBe('2')
+    expect(new Headers(sent?.headers).get('x-yunshu-forum-profile-avatar-version')).toBe('1')
+    expect(sent?.body).toBe(JSON.stringify(body))
+    expect(forum.send).toHaveBeenCalledTimes(1)
+    expect((await forum.call('/posts?media_version=2')).status).toBe(200)
+    expect(forum.send).toHaveBeenCalledTimes(1)
+  })
   it('has no admin, media, arbitrary-path or unsupported-method capability', async () => {
     const forum = await host()
     for (const path of ['/admin/posts', '/uploads', '/attachments/' + postId + '/link', '/posts/not-a-uuid', '/comments']) {
@@ -282,7 +295,7 @@ describe('fixed login-owned forum HTTP transport', () => {
     const path = `/attachments/${commentId}/content?account_id=42&account_owner=${'b'.repeat(64)}&disposition=inline`
     expect(await (await forum.raw(path, {})).json()).toMatchObject({ code: 'ACCOUNT_CHANGED' })
     expect(forum.send).toHaveBeenCalledTimes(1)
-    for (const mime_type of ['video/mp4', 'image/svg+xml']) {
+    for (const mime_type of ['video/webm', 'image/svg+xml']) {
       expect(await (await forum.call('/uploads', 'POST', { client_upload_id: operationId, target_kind: 'post', post_id: '',
         name: 'image', mime_type, size_bytes: 4 })).json()).toMatchObject({ code: 'FORUM_INVALID_INPUT' })
     }

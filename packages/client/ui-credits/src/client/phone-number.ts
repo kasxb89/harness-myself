@@ -3,6 +3,7 @@ import { phoneCountries } from './phone-countries.ts'
 
 /** Country calling codes plus a complete-number option for unlisted prefixes. */
 export const phoneCallingCodes = [...phoneCountries.map(country => country.callingCode), 'international'] as const
+/** Country calling-code selector value, including complete international-number entry. */
 export type PhoneCallingCode = typeof phoneCallingCodes[number]
 
 const longestCallingCodes = [...phoneCountries].sort((left, right) => right.callingCode.length - left.callingCode.length)
@@ -32,14 +33,22 @@ export function phoneEntry(input: string, callingCode: PhoneCallingCode): PhoneE
   return { callingCode, number, explicitInternational: false }
 }
 
-/** @param entry - Current editor state. @returns Exact digits with the explicit international prefix. */
+/**
+ * Combine the editable number with its selected calling code or a leading plus sign.
+ * @param entry - Current editor state.
+ * @returns The assembled number without validation or removal of trunk digits.
+ */
 export function phoneE164(entry: PhoneEntry): string {
   return entry.callingCode === 'international'
     ? entry.number.startsWith('+') ? entry.number : '+' + entry.number
     : entry.callingCode + entry.number
 }
 
-/** @param entry - Current editor state. @returns Whether a local trunk prefix needs the user's correction. */
+/**
+ * Detect a leading local trunk zero for calling codes that require its removal.
+ * @param entry - Current editor state.
+ * @returns Whether a non-international entry starts with that local trunk prefix.
+ */
 export function hasLocalTrunkPrefix(entry: PhoneEntry): boolean {
   return !entry.explicitInternational && phoneCountries.some(country => country.callingCode === entry.callingCode
     && country.hasLocalTrunkZero)
@@ -58,6 +67,7 @@ export function validPhoneEntry(entry: PhoneEntry): boolean {
 }
 
 /**
+ * Check six numeric digits for the +86 route, or six or sixteen digits for other prefixes.
  * @param code - Complete entered code; invalid lengths and characters are not rewritten.
  * @param phone - Exact number deciding whether the mainland SMS-only format applies.
  * @returns Whether the existing SMS code or overseas fixed/temporary code can be submitted.
@@ -78,9 +88,10 @@ const manualMessages: Readonly<Record<string, string>> = {
 }
 
 /**
+ * Select manual-code login message keys for numbers outside the +86 route.
  * @param key - Existing phone-flow locale key.
  * @param phone - Exact edited or recovered number.
- * @returns Delivery-neutral overseas copy.
+ * @returns The mapped overseas locale key, or the unchanged key when no mapping applies.
  */
 export function phoneMessageKey(key: string, phone: string): string {
   return phone.startsWith('+86') ? key : manualMessages[key] ?? key

@@ -63,9 +63,20 @@ export function forumContentPath(id: string, account: Pick<DemandAccount, 'id' |
  */
 export function createForumProxy(options: ForumProxyOptions): ReturnType<typeof createDemandTransport> {
   return createDemandTransport({ ...options, upstreamBasePath: FORUM_UPSTREAM_BASE_PATH,
+    captureAccount: async (signal) => {
+      const account = await options.captureAccount(signal)
+      if (account === null) return null
+      return { id: account.id, owner: account.owner, isCurrent: () => account.isCurrent(), fetch: (route, init) => {
+        const headers = new Headers(init.headers)
+        headers.set('X-Yunshu-Forum-Media-Version', '2')
+        headers.set('X-Yunshu-Forum-Profile-Avatar-Version', '1')
+        return account.fetch(route, { ...init, headers })
+      } }
+    },
     limits: () => ({ maxJsonRequestBytes: 131_072, maxJsonResponseBytes: 8_388_608, ...options.limits() }),
   }, {
-    localBasePath: FORUM_LOCAL_BASE_PATH, selectRoute, request: forumRequest, query: forumQuery, response: forumResponse,
+    localBasePath: FORUM_LOCAL_BASE_PATH, selectRoute, request: forumRequest, query: forumQuery,
+    response: (kind, input, account, route) => forumResponse(kind, input, account, route, options.baseUrl),
     remoteCodes: FORUM_ERRORS, mapCode, httpErrorFallback: true,
     contentPath: forumContentPath,
   })

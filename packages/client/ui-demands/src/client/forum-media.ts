@@ -1,5 +1,6 @@
-/** Forum-only resumable images retain their original selection, UUID and verified byte progress. */
+/** Forum-only resumable media retain their original selection, UUID and verified byte progress. */
 import { communityFileDigest, communitySliceDigest } from './community-pending.ts'
+import { forumMediaPolicy, type ForumMediaPolicy } from './forum-media-rules.ts'
 import { forumContentUrl, type ForumOwner } from './forum-api.ts'
 import type { ForumModelContext } from './forum-model-context.ts'
 import type { ForumIssue, ForumUploadTarget, ForumUploadView } from './forum-types.ts'
@@ -77,6 +78,14 @@ export function createForumMedia(ctx: ForumModelContext, options: {
       }
       return false
     }
+    const currentPolicy = (): ForumMediaPolicy => {
+      const policy = forumMediaPolicy(ctx.config())
+      const maximum = record.file.type.startsWith('image/') ? policy?.imageBytes : policy?.videoBytes
+      if (policy === null || !policy.mimeTypes.includes(record.file.type) || maximum == null || record.file.size > maximum) {
+        throw new Error('FORUM_UPLOAD_UNSUPPORTED')
+      }
+      return policy
+    }
     try {
       let status: ForumWireUpload | undefined
       if (record.uploadId !== null) {
@@ -86,6 +95,7 @@ export function createForumMedia(ctx: ForumModelContext, options: {
         status = forumUpload(answer.payload)
         if (accepted(status)) return
       }
+      currentPolicy()
       const file = files.get(operationId)
       if (file === undefined) { failures.set(operationId, issue('FORUM_UPLOAD_RESELECT', false, operationId)); return }
       if (file.name !== record.file.name || file.size !== record.file.size || file.type !== record.file.type
@@ -96,6 +106,7 @@ export function createForumMedia(ctx: ForumModelContext, options: {
       for (const part of record.parts) if (await communitySliceDigest(file, part.offset, part.size) !== part.sha256) throw new Error('FORUM_UPLOAD_FILE_MISMATCH')
       if (record.sha256 === null && !update({ sha256 })) return
       if (status === undefined) {
+        currentPolicy()
         const answer = await ctx.perform(captured, { method: 'POST', path: '/uploads', body: record.body }, abort.signal)
         if (!valid()) return
         if (!answer.ok) { failures.set(operationId, issue(answer.code, answer.unknown, operationId)); return }
@@ -108,12 +119,13 @@ export function createForumMedia(ctx: ForumModelContext, options: {
       while (offset < file.size) {
         const previous = record.parts.find(part => part.offset === offset)
         const bytes = previous?.size ?? Math.min(status.chunk_bytes, file.size - offset)
-        const rules = ctx.config()?.upload_rules
-        if (bytes < 1 || bytes > status.chunk_bytes || rules === undefined || bytes > rules.chunk_bytes) throw new Error('FORUM_PROTOCOL_INVALID')
+        const rules = currentPolicy().rules
+        if (bytes < 1 || bytes > status.chunk_bytes || bytes > rules.chunk_bytes) throw new Error('FORUM_PROTOCOL_INVALID')
         const sha = await communitySliceDigest(file, offset, bytes)
         if (!valid()) return
         if (previous !== undefined && previous.sha256 !== sha) throw new Error('FORUM_UPLOAD_FILE_MISMATCH')
         if (previous === undefined && !update({ parts: [...record.parts, { offset, size: bytes, sha256: sha }] })) return
+        currentPolicy()
         const start = offset
         const part = await ctx.perform(captured, { method: 'PUT', path: `/uploads/${status.id}/chunks`,
           blob: file.slice(offset, offset + bytes), offset, onProgress: (sent) => {
@@ -127,6 +139,7 @@ export function createForumMedia(ctx: ForumModelContext, options: {
       }
       if (record.completeBody === null && !update({ completeBody: JSON.stringify({ sha256: record.sha256 }) })) return
       if (record.completeBody === null) throw new Error('FORUM_PROTOCOL_INVALID')
+      currentPolicy()
       const complete = await ctx.perform(captured, { method: 'POST', path: `/uploads/${status.id}/complete`, body: record.completeBody }, abort.signal)
       if (!valid()) return
       if (!complete.ok) { failures.set(operationId, issue(complete.code, complete.unknown, operationId)); return }
@@ -134,8 +147,11 @@ export function createForumMedia(ctx: ForumModelContext, options: {
       if (ready.status !== 'ready' || ready.attachment === null || ready.offset !== file.size) throw new Error('FORUM_PROTOCOL_INVALID')
       if (update({ attachment: ready.attachment })) files.delete(operationId)
     } catch (failure: unknown) {
-      if (valid()) failures.set(operationId, issue(failure instanceof Error && failure.message === 'FORUM_UPLOAD_FILE_MISMATCH'
-        ? 'FORUM_UPLOAD_FILE_MISMATCH' : 'FORUM_UPLOAD_FAILED', true, operationId))
+      if (valid()) {
+        const code = failure instanceof Error && ['FORUM_UPLOAD_FILE_MISMATCH', 'FORUM_UPLOAD_UNSUPPORTED'].includes(failure.message)
+          ? failure.message : 'FORUM_UPLOAD_FAILED'
+        failures.set(operationId, issue(code, code !== 'FORUM_UPLOAD_UNSUPPORTED', operationId))
+      }
     } finally { if (ctx.valid(captured)) { flights.delete(operationId); ctx.publish() } }
   }
   return {
@@ -161,6 +177,11 @@ export function createForumMedia(ctx: ForumModelContext, options: {
     ids: (target: ForumUploadTarget): readonly string[] => {
       const selected = [...records.values()].filter(record => sameTarget(record.target, target))
       if (selected.some(record => record.attachment === null || options.reserved(record.attachment.id))) throw new Error('FORUM_UPLOAD_PENDING')
+      const policy = forumMediaPolicy(ctx.config())
+      if (selected.some((record) => {
+        const maximum = record.file.type.startsWith('image/') ? policy?.imageBytes : policy?.videoBytes
+        return policy === null || !policy.mimeTypes.includes(record.file.type) || maximum == null || record.file.size > maximum
+      })) throw new Error('FORUM_ATTACHMENT_INVALID')
       return selected.map(record => record.attachment?.id ?? '')
     },
     committed: (captured: ForumOwner, ids: readonly string[]): void => {
@@ -173,14 +194,15 @@ export function createForumMedia(ctx: ForumModelContext, options: {
       }
     },
     add: (target: ForumUploadTarget, selected: readonly File[]): void => {
-      const captured = ctx.owner(), config = ctx.config(), rules = config?.upload_rules
-      if (captured === null || !ctx.valid(captured) || config?.enabled !== true || config.capabilities.image_uploads !== true
-        || rules === undefined || !options.canEdit(target)) return
+      const captured = ctx.owner(), policy = forumMediaPolicy(ctx.config())
+      if (captured === null || !ctx.valid(captured) || policy === null || !options.canEdit(target)) return
+      const rules = policy.rules
       for (const file of selected) {
         if ([...records.values()].filter(record => sameTarget(record.target, target)).length >= rules.max_attachments) {
           options.error(issue('FORUM_UPLOAD_TOO_MANY')); break
         }
-        if (!rules.allowed_mime_types.includes(file.type) || file.size < 1 || file.size > rules.max_image_bytes) {
+        const maximum = file.type.startsWith('image/') ? policy.imageBytes : policy.videoBytes
+        if (!policy.mimeTypes.includes(file.type) || maximum === null || file.size < 1 || file.size > maximum) {
           options.error(issue('FORUM_UPLOAD_INVALID')); continue
         }
         const operationId = options.uuid(), record: ForumUploadRecord = { version: 1, operationId, target,

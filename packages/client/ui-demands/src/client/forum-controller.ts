@@ -240,7 +240,7 @@ export function createForumController(accountSource: Context['creditsSession'], 
           availability = 'error'; error = issue(answer.code); return
         }
         server = wire.forumConfig(answer.payload); unsupported = false
-        if (server.capabilities.image_uploads === true && !mediaRestored) {
+        if (!mediaRestored) {
           try {
             for (const target of media.restore(captured)) if (target.kind === 'post' && !drafts.has(target.scopeKey)) {
               drafts.set(target.scopeKey, { scopeKey: target.scopeKey, title: '', body: '', createdAt: wire.forumInteger(now()),
@@ -310,8 +310,8 @@ export function createForumController(accountSource: Context['creditsSession'], 
       const payload = wire.forumObject(answer.payload), body = wire.forumObject(wire.forumJson(operation.body))
       const imageIds = Array.isArray(body.attachment_ids) ? body.attachment_ids.map(wire.forumUuid) : []
       const checkImages = (value: ForumPost | ForumComment): void => {
-        const actual = value.attachments ?? []
-        if (actual.length !== imageIds.length || actual.some(item => !imageIds.includes(item.id))) throw new wire.ForumWireError()
+        const actual = value.media ?? value.attachments ?? []
+        if (actual.length !== imageIds.length || actual.some((item, index) => imageIds[index] !== item.id)) throw new wire.ForumWireError()
       }
       if (operation.kind === 'comment') {
         const comment = wire.forumComment(payload.comment)
@@ -466,7 +466,6 @@ export function createForumController(accountSource: Context['creditsSession'], 
       try {
         if (server?.enabled !== true || !server.capabilities.immediate_publish) throw new Error('FORUM_CLOSED')
         const images = media.ids({ kind: 'post', scopeKey: scope })
-        if (images.length > 0 && server.capabilities.image_uploads !== true) throw new Error('FORUM_ATTACHMENT_INVALID')
         const title = wire.forumText(draft.title, 200), body = wire.forumText(draft.body, 20_000, images.length > 0), operationId = uuid()
         const operation = newOperation(captured, { operationId, scopeKey: scope, postId: null, kind: 'post', method: 'POST', path: '/posts',
           body: JSON.stringify({ client_request_id: operationId, title, body, ...images.length === 0 ? {} : { attachment_ids: images } }) })
@@ -489,8 +488,10 @@ export function createForumController(accountSource: Context['creditsSession'], 
       const body = commentDrafts.get(id) ?? ''
       let images: readonly string[]
       try { images = media.ids({ kind: 'comment', postId: id }) }
-      catch (_pending: unknown) { commentPage(id).error = issue('FORUM_UPLOAD_PENDING'); publish(); return }
-      if (images.length > 0 && server.capabilities.image_uploads !== true) { commentPage(id).error = issue('FORUM_ATTACHMENT_INVALID'); publish(); return }
+      catch (failure: unknown) {
+        commentPage(id).error = issue(failure instanceof Error && failure.message === 'FORUM_ATTACHMENT_INVALID'
+          ? failure.message : 'FORUM_UPLOAD_PENDING'); publish(); return
+      }
       if (body.trim() === '' && images.length === 0) return
       const target = replyTargets.get(id)
       if (target !== undefined && server.capabilities.comment_replies !== true) { commentPage(id).error = issue('FORUM_INVALID_INPUT'); publish(); return }

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createForumController, type ForumController } from '../src/client/forum-controller.ts'
 import type { ForumOwner, ForumRequest, ForumResult } from '../src/client/forum-api.ts'
 import { createForumJournal, type ForumJournal } from '../src/client/forum-pending.ts'
+import { createForumUploadJournal } from '../src/client/forum-upload-journal.ts'
 import type { ForumComment, ForumPost } from '../src/client/forum-types.ts'
 import { forumExampleComment as comment, forumExampleConfig as configuration,
   forumExamplePost as post, forumMemory } from './forum-model-fixtures.client.ts'
@@ -32,7 +33,8 @@ function harness(options: {
   intercept?: (owner: ForumOwner, input: ForumRequest) => ForumResult | undefined | Promise<ForumResult | undefined>
 } = {}) {
   const source = createSnapshotStore(account()), rows = options.rows ?? [post(), post({ id: otherId, title: 'Second independent post' })]
-  const history = new Map<string, ForumComment[]>(), journal = options.journal ?? createForumJournal(forumMemory())
+  const storage = forumMemory()
+  const history = new Map<string, ForumComment[]>(), journal = options.journal ?? createForumJournal(storage)
   const receipts = new Map<string, ForumResult>(); let nonce = 0, serverNonce = 2000
   const request = vi.fn(async (owner: ForumOwner, input: ForumRequest): Promise<ForumResult> => {
     const intercepted = await options.intercept?.(owner, input)
@@ -66,7 +68,8 @@ function harness(options: {
     return { ok: false, code: 'FORUM_NOT_FOUND', httpStatus: 404, unknown: false }
   })
   const control = createForumController(source, { enabled: true, foregroundPollMs: 60_000, backgroundPollMs: 60_000 }, {
-    request, journal, uuid: () => `00000000-0000-4000-8000-${String(++nonce).padStart(12, '0')}`, isForeground: () => true,
+    request, journal, uploadJournal: createForumUploadJournal(storage),
+    uuid: () => `00000000-0000-4000-8000-${String(++nonce).padStart(12, '0')}`, isForeground: () => true,
   })
   controls.push(control); control.start()
   const snapshot = () => control.hooks.forum.getSnapshot()

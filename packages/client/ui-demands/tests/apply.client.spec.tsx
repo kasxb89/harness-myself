@@ -17,7 +17,7 @@ import type { IndexInjection } from '@deepseek-ai/dsh-host-webserver'
 
 type AccountSnapshot = ReturnType<Context['creditsSession']['getSnapshot']>
 type FixtureFace = Pick<DemandWorkspaceFace, 'hooks' | 'refresh' | 'loadMoreRequests' | 'openRequest' | 'startRequest'
-  | 'startServiceRequest' | 'send' | 'addAttachments' | 'openLogin' | 'showcaseItems'> & {
+  | 'startServiceRequest' | 'send' | 'addAttachments' | 'openLogin' | 'showcaseItems' | 'showcases'> & {
     community: Pick<DemandWorkspaceFace['community'], 'refresh' | 'loadOrders' | 'openOrder' | 'startPublication'
     | 'publish' | 'sendMessage' | 'addAttachments'>
     forum: Pick<DemandWorkspaceFace['forum'], 'refresh' | 'openPost' | 'startPost' | 'publishPost' | 'sendComment' | 'setLiked'>
@@ -39,7 +39,8 @@ function fixtureFace(value: Record<string, unknown>): value is Record<string, un
     'send', 'addAttachments', 'openLogin'])
     && hasFunctions(value.community, ['refresh', 'loadOrders', 'openOrder', 'startPublication', 'publish', 'sendMessage', 'addAttachments'])
     && hasFunctions(value.forum, ['refresh', 'openPost', 'startPost', 'publishPost', 'sendComment', 'setLiked'])
-    && record(hooks) && ['demands', 'community', 'forum'].every(key => hasFunctions(hooks[key], ['getSnapshot', 'subscribe']))
+    && hasFunctions(value.showcases, ['refreshShowcases', 'loadMoreShowcases', 'setShowcaseCategory'])
+    && record(hooks) && ['demands', 'community', 'forum', 'showcases'].every(key => hasFunctions(hooks[key], ['getSnapshot', 'subscribe']))
 }
 
 function FixtureFrame({ renderSlot }: PropsRenderSlots<'main' | 'sidebar.panellist'>) {
@@ -150,6 +151,20 @@ describe('demand navigation registration', () => {
     const disabled = await mount('disabled', false)
     expect(disabled.slots.entries('sidebar.panellist')).toEqual([])
     expect(disabled.fetcher).not.toHaveBeenCalled()
+  })
+
+  it('starts public case reads only after login and stops refresh commands on sign-out', async () => {
+    const h = await mount()
+    expect(h.fetcher).not.toHaveBeenCalled()
+    h.account.set({ accountEpoch: 2, loaded: true, balance: null, failure: null,
+      session: { signedIn: true, creditsPerYuan: 1000, account: { id: '1', phone: '' }, accountOwner: ownerHash } })
+    await vi.waitFor(() => {
+      expect(h.fetcher.mock.calls.filter(([input]) => input === '/credits/api/demand-showcases/config')).toHaveLength(1)
+    })
+    h.account.set({ accountEpoch: 3, loaded: true, session: { signedIn: false, creditsPerYuan: 1000 }, balance: null, failure: null })
+    h.face.showcases.refreshShowcases()
+    await Promise.resolve()
+    expect(h.fetcher.mock.calls.filter(([input]) => input === '/credits/api/demand-showcases/config')).toHaveLength(1)
   })
 
   it('keeps guest private lists, chats, uploads and all three services behind the existing account guard', async () => {

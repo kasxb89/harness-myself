@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CaseShowcase } from '../src/client/CaseShowcase.tsx'
 import type { CaseShowcaseItem } from '../src/client/case-showcase-types.ts'
+import type { ShowcaseState } from '../src/client/showcase-types.ts'
 import type { DemandTranslate } from '../src/client/DemandUI.tsx'
 import { zh } from '../src/client/locales.ts'
 
@@ -29,6 +30,32 @@ function item(patch: Partial<CaseShowcaseItem> = {}): CaseShowcaseItem {
 const previewName = (title: string): string => zh.showcasePreviewNamed.replace('{title}', title)
 
 describe('public case showcase', () => {
+  it('shows backend loading/error honestly instead of rendering configured fallback records', () => {
+    const state: ShowcaseState = { source: 'checking', status: 'loading', items: [], category: null, categories: [], total: 0,
+      hasMore: false, loadingMore: false, error: null }
+    const commands = { refreshShowcases: vi.fn(), loadMoreShowcases: vi.fn(), setShowcaseCategory: vi.fn() }
+    const view = render(<CaseShowcase items={[item()]} state={state} commands={commands} t={translate} />)
+    expect(screen.queryByRole('button', { name: previewName('业务看板') })).toBeNull()
+    expect(screen.queryByRole('heading', { name: zh.showcaseEmpty })).toBeNull()
+    view.rerender(<CaseShowcase items={[item()]} state={{ ...state, status: 'error', error: 'SHOWCASE_UNAUTHORIZED' }} commands={commands} t={translate} />)
+    expect(screen.getByRole('alert').textContent).toContain(zh.showcaseLoadFailed)
+    expect(screen.queryByText(zh.showcaseLoading)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: zh.retry }))
+    expect(commands.refreshShowcases).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: previewName('业务看板') })).toBeNull()
+  })
+
+  it('uses server total and controlled filters/pagination without filtering only the first page', () => {
+    const state: ShowcaseState = { source: 'backend', status: 'ready', items: [item()], category: null, categories: ['web', 'video'],
+      total: 120, hasMore: true, loadingMore: false, error: null }
+    const commands = { refreshShowcases: vi.fn(), loadMoreShowcases: vi.fn(), setShowcaseCategory: vi.fn() }
+    render(<CaseShowcase items={[]} state={state} commands={commands} t={translate} />)
+    expect(screen.getByText(zh.showcaseCount.replace('{count}', '120'))).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: zh.showcaseCategoryVideo }))
+    expect(commands.setShowcaseCategory).toHaveBeenCalledExactlyOnceWith('video')
+    fireEvent.click(screen.getByRole('button', { name: zh.showcaseLoadMore }))
+    expect(commands.loadMoreShowcases).toHaveBeenCalledTimes(1)
+  })
   it('renders only provided cases and filters categories without adding a request or invented entries', () => {
     render(<CaseShowcase items={[item(), item({ id: 'film', title: '产品视频', category: 'video',
       media: [{ kind: 'video', url: '/case-media/product.mp4' }] })]} t={translate} />)

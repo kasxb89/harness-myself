@@ -18,6 +18,8 @@ Each mutation records a stable operation identifier and immutable request body b
 
 Service-target operations occupy a separate journal namespace so an older client does not reject their unsupported fields together with its original direct-engineer operations. The new reader combines both namespaces without rewriting legacy bodies or keys.
 
+Published service galleries use their own profile-and-asset signing paths; private conversation uploads cannot be adopted into that public catalogue. Backend case materials occupy a separate read-only catalogue. Its explicit capability enables cursor reads; an initial missing capability retains configured public references, while failed or revoked reads remain visible failures. Forum video support is negotiated separately from the original image attachment array, preserving existing text and image request bodies and recovery identities.
+
 ## Verification
 
 Controller tests cover identity replacement, durable unknown submissions, multiple recoverable drafts, read cursors, upload offsets and acceptance reconciliation. Host tests cover route and JSON allowlists, owner checks, cancellation, authorized content URLs and Range responses. Assembled browser scenarios exercise the catalog, private chat and media controls; an opt-in synthetic loopback Go fixture checks the actual backend, Host and browser together without customer credentials or production data.

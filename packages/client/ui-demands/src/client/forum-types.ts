@@ -2,12 +2,21 @@
 import type { ObservableSnapshot } from '@deepseek-ai/dsh-client-store'
 
 /** Public forum author without login/contact metadata. */
-export interface ForumAuthor { readonly id: number; readonly display_name: string }
-/** A ready image belongs only to the forum and is read through the current Host authorization. */
+export interface ForumAuthor { readonly id: number; readonly display_name: string; readonly avatar?: ForumAvatar }
+/** Ready profile image metadata; its signed source is kept inside the Host. */
+export interface ForumAvatar {
+  readonly id: string
+  readonly kind: 'image'
+  readonly mime_type: string
+  readonly size_bytes: number
+  readonly sha256: string
+  readonly expires_at: number
+}
+/** A ready image or video belongs only to the forum and is read through the current Host authorization. */
 export interface ForumAttachment {
   readonly id: string
   readonly name: string
-  readonly kind: 'image'
+  readonly kind: 'image' | 'video'
   readonly mime_type: string
   readonly size_bytes: number
   readonly sha256: string
@@ -23,6 +32,8 @@ export interface ForumUploadRules {
   readonly upload_ttl_seconds: number
   readonly allowed_mime_types: readonly string[]
 }
+/** Negotiated media-v2 limits remain separate from the legacy image-only rules. */
+export interface ForumMediaRules extends ForumUploadRules { readonly max_video_bytes: number }
 /** Published post as projected by the user-facing API. */
 export interface ForumPost {
   readonly id: string
@@ -34,6 +45,7 @@ export interface ForumPost {
   readonly comment_count: number
   readonly liked: boolean
   readonly attachments?: readonly ForumAttachment[]
+  readonly media?: readonly ForumAttachment[]
 }
 /** Published comment belonging to one exact post. */
 export interface ForumComment {
@@ -43,6 +55,7 @@ export interface ForumComment {
   readonly author: ForumAuthor
   readonly created_at: number
   readonly attachments?: readonly ForumAttachment[]
+  readonly media?: readonly ForumAttachment[]
   readonly reply_to_comment_id?: string
   readonly reply_to_author?: ForumAuthor | null
   readonly post_title?: string
@@ -56,15 +69,19 @@ export interface ForumConfig {
     readonly likes: boolean
     readonly comments: boolean
     readonly image_uploads?: boolean
+    readonly forum_media_v2?: boolean
+    readonly video_uploads?: boolean
     readonly my_activity?: boolean
     readonly comment_replies?: boolean
     readonly notifications?: boolean
     readonly forum_profile?: boolean
+    readonly forum_profile_avatar_v1?: boolean
     readonly receipt_lookup?: boolean
   }
   readonly upload_rules?: ForumUploadRules
+  readonly upload_rules_v2?: ForumMediaRules
 }
-/** One independent image destination, without sharing demand or chat identifiers. */
+/** One independent media destination, without sharing demand or chat identifiers. */
 export type ForumUploadTarget = { readonly kind: 'post'; readonly scopeKey: string }
   | { readonly kind: 'comment'; readonly postId: string }
 /** A local upload keeps unknown outcomes visible until the original upload is recovered. */
@@ -82,7 +99,12 @@ export interface ForumUploadView {
 /** A selected reply target is verified within the exact post before submission. */
 export interface ForumReplyTarget { readonly id: string; readonly postId: string; readonly author: ForumAuthor; readonly body: string }
 /** Editable forum identity, independent of account login fields. */
-export interface ForumProfile { readonly id: number; readonly display_name: string; readonly revision: number }
+export interface ForumProfile {
+  readonly id: number
+  readonly display_name: string
+  readonly revision: number
+  readonly avatar?: ForumAvatar
+}
 /** A recipient-scoped notification carries forum targets and public authors only. */
 export interface ForumNotification {
   readonly id: string

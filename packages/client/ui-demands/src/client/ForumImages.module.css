@@ -16,4 +16,7 @@
 .fileName { overflow: hidden; color: var(--dsw-alias-label-primary); text-overflow: ellipsis; white-space: nowrap; }
 .uploadCopy progress { width: 100%; max-width: 160px; height: 4px; accent-color: var(--dsw-alias-demand-accent); }
 .error { color: var(--dsw-alias-state-error-primary); overflow-wrap: anywhere; }
+.videoThumbnail { display: flex; flex-direction: column; align-items: center; gap: 8px; max-width: 100%; padding: 8px; overflow-wrap: anywhere; font: var(--dsw-font-xxs-12); }
+.videoDialog { width: min(720px, calc(100vw - 32px)); }
+.videoPlayer { display: block; width: 100%; max-height: 60vh; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-1); }
 @media (width <= 560px) { .preview, .unavailable { width: 88px; height: 88px; } }

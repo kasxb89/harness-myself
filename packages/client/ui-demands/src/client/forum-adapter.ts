@@ -1,6 +1,7 @@
 /** Forum presentation uses confirmed records and frozen operation identities from its account model. */
 import type { DemandTranslate } from './DemandUI.tsx'
 import type { DemandLocaleKey } from './locales.ts'
+import { forumMediaPolicy } from './forum-media-rules.ts'
 import type { ForumAttachment, ForumComment, ForumFace, ForumIssue, ForumPendingView, ForumPost, ForumState, ForumUploadTarget } from './forum-types.ts'
 import type { ForumCenterView, ForumImageComposerView, ForumImageView, ForumOperationView, ForumPostSummary, ForumReplyView } from './forum-view.ts'
 import type { ForumAccountControlLabels, ForumAccountControlsProps, ForumAccountNickname } from './ForumAccountControls.tsx'
@@ -94,17 +95,20 @@ export function forumPublicAuthorName(value: string, id: number): string | null 
 }
 function images(attachments: readonly ForumAttachment[] | undefined, url?: ForumFace['contentUrl']): readonly ForumImageView[] {
   return (attachments ?? []).map(attachment => ({ id: attachment.id, name: attachment.name, sizeBytes: attachment.size_bytes,
+    kind: attachment.kind, mimeType: attachment.mime_type,
     previewUrl: url?.(attachment.id, 'inline') ?? null }))
 }
-function summary(post: ForumPost, url?: ForumFace['contentUrl']): ForumPostSummary {
+function summary(post: ForumPost, url?: ForumFace['contentUrl'], avatars = false): ForumPostSummary {
   return { id: post.id, title: post.title, excerpt: post.body, authorName: forumPublicAuthorName(post.author.display_name, post.author.id),
     createdAt: timestamp(post.created_at), likeCount: post.like_count, replyCount: post.comment_count,
-    images: images(post.attachments, url) }
+    images: images(post.media ?? post.attachments, url),
+    ...!avatars || post.author.avatar === undefined ? {} : { authorAvatarUrl: url?.(post.author.avatar.id, 'inline') ?? null } }
 }
-function reply(comment: ForumComment, url?: ForumFace['contentUrl']): ForumReplyView {
+function reply(comment: ForumComment, url?: ForumFace['contentUrl'], avatars = false): ForumReplyView {
   const author = comment.reply_to_author
   return { id: comment.id, authorName: forumPublicAuthorName(comment.author.display_name, comment.author.id),
-    createdAt: timestamp(comment.created_at), body: comment.body, images: images(comment.attachments, url),
+    createdAt: timestamp(comment.created_at), body: comment.body, images: images(comment.media ?? comment.attachments, url),
+    ...!avatars || comment.author.avatar === undefined ? {} : { authorAvatarUrl: url?.(comment.author.avatar.id, 'inline') ?? null },
     replyTo: !comment.reply_to_comment_id ? null : { id: comment.reply_to_comment_id,
       authorName: author === undefined || author === null ? null : forumPublicAuthorName(author.display_name, author.id), excerpt: '' } }
 }
@@ -157,8 +161,8 @@ export function forumImageComposer(state: ForumState, commands: Omit<ForumFace, 
   const rows = (state.uploads ?? []).filter(row => row.target.kind === target.kind
     && (row.target.kind === 'post' && target.kind === 'post' ? row.target.scopeKey === target.scopeKey
       : row.target.kind === 'comment' && target.kind === 'comment' && row.target.postId === target.postId))
-  const rules = state.config?.upload_rules
-  const supported = state.config?.capabilities.image_uploads === true && rules !== undefined
+  const policy = forumMediaPolicy(state.config)
+  const supported = policy !== null
     && commands.addAttachments !== undefined && commands.removeAttachment !== undefined && commands.retryAttachment !== undefined
   if (!supported && rows.length === 0) return undefined
   return { items: rows.map((row) => {
@@ -167,14 +171,16 @@ export function forumImageComposer(state: ForumState, commands: Omit<ForumFace, 
     const error = row.status !== 'unknown' ? cause : cause === null || row.error?.code === 'FORUM_RESULT_UNKNOWN'
       ? t('forumUploadUnknown') : `${cause} ${t('forumUploadUnknown')}`
     return { id: row.operationId, name: row.name, sizeBytes: row.sizeBytes,
+      kind: row.attachment?.kind ?? (row.mimeType === 'video/mp4' ? 'video' : 'image'), mimeType: row.mimeType,
       previewUrl: row.attachment === null ? null : commands.contentUrl?.(row.attachment.id, 'inline') ?? null,
       status: row.status === 'ready' ? 'ready' : row.status === 'uploading' ? 'uploading' : 'failed',
       progressPercent: row.progress, error, requiresFile,
-      retryLabel: requiresFile ? t('forumChooseOriginalImage') : row.status === 'unknown' ? t('forumCheckUpload') : t('retryAttachment'),
+      retryLabel: requiresFile ? t(row.mimeType === 'video/mp4' ? 'forumChooseOriginalMedia' : 'forumChooseOriginalImage') : row.status === 'unknown' ? t('forumCheckUpload') : t('retryAttachment'),
     }
-  }), canAdd: supported && state.availability === 'ready' && state.config.enabled,
-  accept: supported ? rules.allowed_mime_types.join(',') : null,
-  maxAttachments: supported ? rules.max_attachments : null, maxBytes: supported ? rules.max_image_bytes : null,
+  }), canAdd: supported && state.availability === 'ready',
+  accept: supported ? policy.mimeTypes.join(',') : null,
+  maxAttachments: supported ? policy.rules.max_attachments : null, maxBytes: supported ? policy.imageBytes : null,
+  maxVideoBytes: supported ? policy.videoBytes : null,
   allowImageOnly: supported,
   onAdd: (files) => { commands.addAttachments?.(target, files) },
   onRemove: (id) => { commands.removeAttachment?.(id) }, onRetry: (id, file) => { commands.retryAttachment?.(id, file) },
@@ -198,18 +204,20 @@ export function forumCenterView(state: ForumState, t: DemandTranslate, url?: For
   const scope = state.activity?.scope ?? 'all'
   const page = scope === 'mine' ? state.activity?.myPosts ?? state.posts : scope === 'comments' ? state.activity?.myComments ?? state.comments : state.posts
   const profile = state.activity?.profile.value
+  const avatars = state.config?.capabilities.forum_profile_avatar_v1 === true
   const accountName = profile === undefined || profile === null ? null : forumPublicAuthorName(profile.display_name, profile.id)
   return { availability, reason, accountName,
     canCreate: enabled && state.config.capabilities.immediate_publish,
     list: { kind: scope === 'comments' ? 'comments' : 'posts',
-      posts: scope === 'comments' ? [] : (scope === 'mine' ? state.activity?.myPosts.items ?? state.posts.items : state.posts.items).map(post => summary(post, url)),
-      comments: scope !== 'comments' ? [] : (state.activity?.myComments.items ?? []).map(comment => ({ ...reply(comment, url),
+      posts: scope === 'comments' ? [] : (scope === 'mine' ? state.activity?.myPosts.items ?? state.posts.items : state.posts.items)
+        .map(post => summary(post, url, avatars)),
+      comments: scope !== 'comments' ? [] : (state.activity?.myComments.items ?? []).map(comment => ({ ...reply(comment, url, avatars),
         postId: comment.post_id, postTitle: comment.post_title ?? '' })), status: page.status,
       error: forumIssueText(page.error, t), hasMore: page.hasMore, loadingMore: page.loadingMore },
     detail: { postId: state.selectedPostId, status: state.selectedPostStatus,
       error: forumIssueText(state.selectedPostError, t) ?? forumIssueText(state.comments.error, t),
-      post: selected === null ? null : { ...summary(selected, url), body: selected.body,
-        replies: state.comments.items.filter(comment => comment.post_id === selected.id).map(comment => reply(comment, url)),
+      post: selected === null ? null : { ...summary(selected, url, avatars), body: selected.body,
+        replies: state.comments.items.filter(comment => comment.post_id === selected.id).map(comment => reply(comment, url, avatars)),
         canReply: verifiedDetail && state.config.capabilities.comments,
         replyReason: verifiedDetail ? null : reason ?? t('forumPostUnavailable'),
         hasMoreReplies: state.comments.hasMore, loadingMoreReplies: state.comments.loadingMore,

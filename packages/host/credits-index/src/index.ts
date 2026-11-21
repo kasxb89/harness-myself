@@ -64,6 +64,8 @@ import { readCustomerSupport } from './customer-support.ts'
 import { createDemandProxy, type DemandProxyOptions } from './demand-proxy.ts'
 import { createCommunityProxy } from './community-proxy.ts'
 import { createForumProxy } from './forum-proxy.ts'
+import { createShowcaseProxy } from './showcase-proxy.ts'
+import { createServiceGalleryProxy } from './service-gallery-proxy.ts'
 import { ONBOARDING_SURVEY_RESPONSE_LIMIT, parseSurveyRequest, readOnboardingSurvey } from './onboarding-survey.ts'
 import { ClientToolErrorReporter, type ClientToolErrorAccount } from './client-tool-errors.ts'
 import { parseUsageWindow, readAccountUsage } from './usage.ts'
@@ -2624,6 +2626,10 @@ export function apply(ctx: Context, config: Config): void {
       downloadTimeoutMs: resolved.demandDownloadTimeoutMs, maxJsonRequestBytes: resolved.demandMaxJsonRequestBytes,
       maxJsonResponseBytes: resolved.demandMaxJsonResponseBytes, maxChunkBytes: resolved.demandMaxChunkBytes }),
   }
+  const serviceGalleryProxy = createServiceGalleryProxy(demandProxyOptions)
+  const showcaseProxy = createShowcaseProxy({ ...demandProxyOptions,
+    limits: () => ({ ...demandProxyOptions.limits(), maxJsonResponseBytes: resolved.communityMaxJsonResponseBytes }),
+  })
   const demandProxy = createDemandProxy(demandProxyOptions)
   const communityProxy = createCommunityProxy({ ...demandProxyOptions,
     limits: () => ({ ...demandProxyOptions.limits(), maxJsonRequestBytes: resolved.communityMaxJsonRequestBytes,
@@ -2633,6 +2639,8 @@ export function apply(ctx: Context, config: Config): void {
     limits: () => ({ ...demandProxyOptions.limits(), maxJsonRequestBytes: resolved.communityMaxJsonRequestBytes,
       maxJsonResponseBytes: resolved.communityMaxJsonResponseBytes }),
   })
+  ctx.effect(() => async () => { await serviceGalleryProxy.close() }, 'credits-index: published service media')
+  ctx.effect(() => async () => { await showcaseProxy.close() }, 'credits-index: published case materials')
   ctx.effect(() => async () => { await demandProxy.close() }, 'credits-index: private human-engineer demand requests')
   ctx.effect(() => async () => { await communityProxy.close() }, 'credits-index: ordinary-user community demand requests')
   ctx.effect(() => async () => { await forumProxy.close() }, 'credits-index: ordinary-user public forum requests')
@@ -3335,6 +3343,8 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (await serviceGalleryProxy.handle(request, response, route, method)) return
+        if (await showcaseProxy.handle(request, response, route, method)) return
         if (await forumProxy.handle(request, response, route, method)) return
         if (await communityProxy.handle(request, response, route, method)) return
         if (await demandProxy.handle(request, response, route, method)) return

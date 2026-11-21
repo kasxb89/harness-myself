@@ -1,5 +1,6 @@
 /** Strict public forum projections, separate from private demands and community orders. */
 import { DemandProtocolError, demandInteger, demandObject, demandText, type DemandObject } from './demand-protocol.ts'
+import { apiUrl } from './api-url.ts'
 
 /** Domain error codes may be shown without forwarding upstream diagnostic messages. */
 export const FORUM_ERRORS: ReadonlySet<string> = new Set([
@@ -51,11 +52,31 @@ function publicAuthorName(value: string): string {
     && part.replace(/\D/gu, '').length >= 3) === true
   return phone || masked ? '' : value
 }
-function author(input: unknown): DemandObject {
+function avatar(input: unknown, baseUrl: string | undefined): DemandObject {
+  const value = demandObject(input), id = forumId(value.id), size = positive(value.size_bytes)
+  if (value.kind !== 'image' || size > 20 * 1024 * 1024) throw new DemandProtocolError()
+  const raw = demandText(value.url, 8192), route = `/api/product/forum/attachments/${id}/content`
+  if (raw.startsWith('//') || baseUrl === undefined && !raw.startsWith('/api/')) throw new DemandProtocolError()
+  const base = baseUrl ?? 'https://forum-avatar.invalid'
+  let actual: URL, expected: URL
+  try {
+    actual = new URL(raw.startsWith('/api/') ? apiUrl(base, raw) : raw, base + '/')
+    expected = new URL(apiUrl(base, route))
+  } catch (_invalidURL: unknown) { throw new DemandProtocolError() }
+  const rawPath = raw.replace(/^[a-z][a-z\d+.-]*:\/\/[^/?#]*/iu, '').split(/[?#]/u)[0]
+  if (actual.origin !== expected.origin || actual.pathname !== expected.pathname || actual.username !== '' || actual.password !== ''
+    || actual.hash !== '' || /[\\\s]/u.test(raw) || !raw.startsWith('/api/') && rawPath !== actual.pathname
+    || actual.searchParams.size !== 1 || !actual.searchParams.get('token')) throw new DemandProtocolError()
+  return { id, kind: 'image', mime_type: choice(value.mime_type, imageTypes), size_bytes: size,
+    sha256: digest(value.sha256), expires_at: positive(value.expires_at) }
+}
+function author(input: unknown, baseUrl?: string): DemandObject {
   const value = demandObject(input), id = positive(value.id), name = text(value.display_name, 200, true)
-  return { id, display_name: name === `论坛用户${String(id)}` ? name : publicAuthorName(name) }
+  return { id, display_name: name === `论坛用户${String(id)}` ? name : publicAuthorName(name),
+    ...value.avatar === undefined ? {} : { avatar: avatar(value.avatar, baseUrl) } }
 }
 const imageTypes = ['image/png', 'image/jpeg', 'image/gif', 'image/webp'] as const
+const mediaTypes = [...imageTypes, 'video/mp4'] as const
 function choice(value: unknown, values: readonly string[]): string {
   if (typeof value !== 'string' || !values.includes(value)) throw new DemandProtocolError()
   return value
@@ -85,43 +106,59 @@ function filename(value: unknown): string {
   if (/[\r\n/\\]/u.test(result)) throw new DemandProtocolError()
   return result
 }
-function attachment(input: unknown): DemandObject {
+function attachment(input: unknown, video = false): DemandObject {
   const value = demandObject(input), id = forumId(value.id)
   const linkPath = (input: unknown): string => {
     const result = text(input, 256)
     if (result !== `/attachments/${id}/link` && result !== `/api/product/forum/attachments/${id}/link`) throw new DemandProtocolError()
     return result
   }
-  return { id, name: filename(value.name), kind: choice(value.kind, ['image']), mime_type: choice(value.mime_type, imageTypes),
+  const kind = choice(value.kind, video ? ['image', 'video'] : ['image'])
+  const mime = choice(value.mime_type, kind === 'video' ? ['video/mp4'] : imageTypes)
+  return { id, name: filename(value.name), kind, mime_type: mime,
     size_bytes: positive(value.size_bytes), sha256: digest(value.sha256), status: choice(value.status, ['ready']),
     preview_path: linkPath(value.preview_path), download_path: linkPath(value.download_path) }
 }
 function media(value: DemandObject): DemandObject {
-  if (value.attachments === undefined) return {}
-  const attachments = boundedArray(value.attachments, 8, attachment)
-  if (new Set(attachments.map(item => item.id)).size !== attachments.length) throw new DemandProtocolError()
-  return { attachments }
+  const output: DemandObject = {}
+  for (const key of ['attachments', 'media']) {
+    if (value[key] === undefined) continue
+    const items = boundedArray(value[key], 8, item => attachment(item, key === 'media'))
+    if (new Set(items.map(item => item.id)).size !== items.length) throw new DemandProtocolError()
+    output[key] = items
+  }
+  return output
 }
 function body(value: DemandObject, maximum: number): string {
-  const result = text(value.body, maximum, true)
-  if (result.trim() === '' && (!Array.isArray(value.attachments) || value.attachments.length === 0)) throw new DemandProtocolError()
+  const result = text(value.body, maximum, true), selected = value.media ?? value.attachments
+  if (result.trim() === '' && (!Array.isArray(selected) || selected.length === 0)) throw new DemandProtocolError()
   return result
 }
+function uploadRules(input: unknown, video: boolean): DemandObject {
+  const rules = demandObject(input), chunk = demandInteger(rules.chunk_bytes, 67_108_864)
+  const maximum = demandInteger(rules.max_attachments, 8)
+  const types = boundedArray(rules.allowed_mime_types, video ? mediaTypes.length : imageTypes.length,
+    item => choice(item, video ? mediaTypes : imageTypes))
+  if (chunk === 0 || maximum === 0 || types.length === 0 || new Set(types).size !== types.length) throw new DemandProtocolError()
+  return { max_attachments: maximum, max_image_bytes: positive(rules.max_image_bytes), chunk_bytes: chunk,
+    upload_ttl_seconds: positive(rules.upload_ttl_seconds), allowed_mime_types: types,
+    ...video ? { max_video_bytes: positive(rules.max_video_bytes) } : {} }
+}
 
-function post(input: unknown): DemandObject {
+function post(input: unknown, baseUrl?: string): DemandObject {
   const value = demandObject(input)
   return { id: forumId(value.id), title: content(value.title, 200), body: body(value, 20_000), ...media(value),
-    author: author(value.author), created_at: demandInteger(value.created_at), like_count: demandInteger(value.like_count),
+    author: author(value.author, baseUrl), created_at: demandInteger(value.created_at), like_count: demandInteger(value.like_count),
     comment_count: demandInteger(value.comment_count), liked: bool(value.liked) }
 }
-function comment(input: unknown): DemandObject {
+function comment(input: unknown, baseUrl?: string): DemandObject {
   const value = demandObject(input)
   const reply = value.reply_to_comment_id === undefined ? undefined : value.reply_to_comment_id === '' ? '' : forumId(value.reply_to_comment_id)
   if (value.reply_to_author !== undefined && (reply === undefined || reply === '')) throw new DemandProtocolError()
   return { id: forumId(value.id), post_id: forumId(value.post_id), body: body(value, 4000), ...media(value),
-    author: author(value.author), created_at: demandInteger(value.created_at),
+    author: author(value.author, baseUrl), created_at: demandInteger(value.created_at),
     ...reply === undefined ? {} : { reply_to_comment_id: reply },
-    ...value.reply_to_author === undefined ? {} : { reply_to_author: author(value.reply_to_author) },
+    ...value.reply_to_author === undefined ? {} : { reply_to_author: author(value.reply_to_author, baseUrl) },
     ...value.post_title === undefined ? {} : { post_title: content(value.post_title, 200) } }
 }
 function page(value: DemandObject): DemandObject {
@@ -151,7 +188,7 @@ export function forumRequest(kind: string, input: unknown): DemandObject {
     const target = choice(value.target_kind, ['post', 'comment'])
     const postId = target === 'post' ? text(value.post_id, 0, true) : forumId(value.post_id)
     return { client_upload_id: text(value.client_upload_id, 80), target_kind: target, post_id: postId,
-      name: filename(value.name), mime_type: choice(value.mime_type, imageTypes), size_bytes: positive(value.size_bytes) }
+      name: filename(value.name), mime_type: choice(value.mime_type, mediaTypes), size_bytes: positive(value.size_bytes) }
   }
   if (kind === 'upload-complete') return { sha256: digest(value.sha256) }
   if (kind === 'link') return { disposition: choice(value.disposition, ['inline', 'attachment']) }
@@ -198,18 +235,18 @@ export function forumQuery(kind: string, source: URLSearchParams): URLSearchPara
 }
 
 function upload(input: unknown): DemandObject {
-  const value = demandObject(input), asset = value.attachment === null ? null : attachment(value.attachment)
+  const value = demandObject(input), asset = value.attachment === null ? null : attachment(value.attachment, true)
   const id = forumId(value.id), attachmentId = forumId(value.attachment_id), status = choice(value.status, ['uploading', 'assembling', 'ready'])
   if (asset !== null && asset.id !== attachmentId || status === 'ready' && asset === null || status !== 'ready' && asset !== null) throw new DemandProtocolError()
   return { id, attachment_id: attachmentId, offset: demandInteger(value.offset), chunk_bytes: positive(value.chunk_bytes),
     status, expires_at: demandInteger(value.expires_at), attachment: asset }
 }
-function notification(input: unknown): DemandObject {
+function notification(input: unknown, baseUrl?: string): DemandObject {
   const value = demandObject(input), kind = choice(value.type, ['reply', 'like'])
   const commentId = value.comment_id === '' ? '' : forumId(value.comment_id)
   if (kind === 'like' && commentId !== '' || kind === 'reply' && commentId === '') throw new DemandProtocolError()
   return { id: notificationId(value.id), type: kind, post_id: forumId(value.post_id), comment_id: commentId,
-    actor: author(value.actor), post_title: content(value.post_title, 200), created_at: demandInteger(value.created_at),
+    actor: author(value.actor, baseUrl), post_title: content(value.post_title, 200), created_at: demandInteger(value.created_at),
     read_at: demandInteger(value.read_at) }
 }
 
@@ -219,47 +256,49 @@ function notification(input: unknown): DemandObject {
  * @param input - Untrusted upstream envelope.
  * @param account - Captured current account, used to verify creation authors.
  * @param route - Fixed route identity for detail and parent-bound comments.
+ * @param baseUrl - Configured API root for validating optional signed avatar sources.
  * @returns A public DTO without moderation/private fields, diagnostics or signed URLs.
  */
 export function forumResponse(kind: string, input: unknown, account: { readonly id: string },
-  route: { readonly resourceId?: string; readonly secondaryId?: string } = {}): DemandObject {
+  route: { readonly resourceId?: string; readonly secondaryId?: string } = {}, baseUrl?: string): DemandObject {
   const envelope = demandObject(input)
   if (envelope.success !== true) throw new DemandProtocolError()
   const value = demandObject(envelope.data)
   const boundPost = (input: unknown): DemandObject => {
-    const result = post(input)
+    const result = post(input, baseUrl)
     if (route.resourceId !== undefined && result.id !== route.resourceId) throw new DemandProtocolError()
     return result
   }
   const boundComment = (input: unknown): DemandObject => {
-    const result = comment(input)
+    const result = comment(input, baseUrl)
     if (route.resourceId !== undefined && result.post_id !== route.resourceId
       || route.secondaryId !== undefined && result.id !== route.secondaryId) throw new DemandProtocolError()
     return result
   }
   if (kind === 'config') {
     const capabilities = demandObject(value.capabilities), additions: DemandObject = {}
-    for (const key of ['image_uploads', 'my_activity', 'comment_replies', 'notifications', 'forum_profile', 'receipt_lookup']) {
+    for (const key of ['image_uploads', 'forum_media_v2', 'video_uploads', 'my_activity', 'comment_replies', 'notifications',
+      'forum_profile', 'forum_profile_avatar_v1', 'receipt_lookup']) {
       if (capabilities[key] !== undefined) additions[key] = bool(capabilities[key])
     }
-    if (additions.image_uploads === true && value.upload_rules === undefined) throw new DemandProtocolError()
-    let rules: DemandObject | undefined
-    if (value.upload_rules !== undefined) {
-      const valueRules = demandObject(value.upload_rules), chunk = demandInteger(valueRules.chunk_bytes, 67_108_864)
-      const maximum = demandInteger(valueRules.max_attachments, 8)
-      const types = boundedArray(valueRules.allowed_mime_types, 4, item => choice(item, imageTypes))
-      if (chunk === 0 || additions.image_uploads === true && (maximum === 0 || types.length === 0)
-        || new Set(types).size !== types.length) throw new DemandProtocolError()
-      rules = { max_attachments: maximum, max_image_bytes: positive(valueRules.max_image_bytes), chunk_bytes: chunk,
-        upload_ttl_seconds: positive(valueRules.upload_ttl_seconds), allowed_mime_types: types }
+    const combinedV2 = additions.forum_media_v2 === true && value.upload_rules_v2 === undefined
+    const rules = combinedV2 || value.upload_rules === undefined ? undefined : uploadRules(value.upload_rules, false)
+    const rawV2 = combinedV2 ? value.upload_rules : value.upload_rules_v2
+    const rulesV2 = rawV2 === undefined ? undefined : uploadRules(rawV2, true)
+    if (additions.forum_media_v2 === true && rulesV2 === undefined
+      || additions.video_uploads === true && (additions.forum_media_v2 !== true || rulesV2 === undefined)
+      || additions.image_uploads === true && rules === undefined && (additions.forum_media_v2 !== true || rulesV2 === undefined)) {
+      throw new DemandProtocolError()
     }
+
     return { revision: demandInteger(value.revision), enabled: bool(value.enabled), capabilities: {
       immediate_publish: bool(capabilities.immediate_publish), likes: bool(capabilities.likes), comments: bool(capabilities.comments),
       ...additions,
-    }, ...rules === undefined ? {} : { upload_rules: rules } }
+    }, ...rules === undefined ? {} : { upload_rules: rules }, ...rulesV2 === undefined ? {} : { upload_rules_v2: rulesV2 } }
   }
   if (['posts', 'comments', 'my-posts', 'my-comments', 'notifications'].includes(kind)) {
-    const parse = kind === 'posts' || kind === 'my-posts' ? post : kind === 'notifications' ? notification : boundComment
+    const parse = kind === 'posts' || kind === 'my-posts' ? (input: unknown) => post(input, baseUrl)
+      : kind === 'notifications' ? (input: unknown) => notification(input, baseUrl) : boundComment
     const values = array(value.items, parse)
     if ((kind === 'my-posts' || kind === 'my-comments') && values.some(item => String(demandObject(item.author).id) !== account.id)) throw new DemandProtocolError()
     if (new Set(values.map(item => item.id)).size !== values.length) throw new DemandProtocolError()
@@ -268,7 +307,7 @@ export function forumResponse(kind: string, input: unknown, account: { readonly 
   if (kind === 'post' || kind === 'like') return { post: boundPost(value.post) }
   if (kind === 'comment') return { comment: boundComment(value.comment) }
   if (kind === 'profile' || kind === 'profile-update') {
-    const profile = demandObject(value.profile), current = author(profile)
+    const profile = demandObject(value.profile), current = author(profile, baseUrl)
     if (String(current.id) !== account.id) throw new DemandProtocolError()
     return { profile: { ...current, revision: demandInteger(profile.revision) } }
   }
@@ -281,13 +320,13 @@ export function forumResponse(kind: string, input: unknown, account: { readonly 
   if (kind === 'receipt') {
     const field = value.post === undefined ? 'comment' : 'post'
     if (value.post !== undefined && value.comment !== undefined || value.replayed !== true) throw new DemandProtocolError()
-    const result = field === 'post' ? post(value.post) : comment(value.comment)
+    const result = field === 'post' ? post(value.post, baseUrl) : comment(value.comment, baseUrl)
     if (String(demandObject(result.author).id) !== account.id) throw new DemandProtocolError()
     return { [field]: result, replayed: true }
   }
   if (kind === 'create-post' || kind === 'create-comment') {
     const field = kind === 'create-post' ? 'post' : 'comment'
-    const result = kind === 'create-post' ? post(value.post) : boundComment(value.comment)
+    const result = kind === 'create-post' ? post(value.post, baseUrl) : boundComment(value.comment)
     if (String(demandObject(result.author).id) !== account.id) throw new DemandProtocolError()
     return { [field]: result, replayed: bool(value.replayed) }
   }
