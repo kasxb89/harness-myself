@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 /** Case previews render supplied public material without creating demand or generation operations. */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { CaseShowcase } from '../src/client/CaseShowcase.tsx'
 import type { CaseShowcaseItem } from '../src/client/case-showcase-types.ts'
 import type { ShowcaseState } from '../src/client/showcase-types.ts'
@@ -70,6 +70,9 @@ describe('public case showcase', () => {
   })
 
   it('opens the correct same-title case and uses native video controls without autoplay', () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    onTestFinished(() => { pause.mockRestore(); load.mockRestore() })
     const same = '同名作品'
     render(<CaseShowcase items={[item({ title: same }), item({ id: 'video-case', title: same,
       category: 'video', coverUrl: '/case-media/video-cover.png', media: [
@@ -89,11 +92,20 @@ describe('public case showcase', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: zh.showcaseMediaIndex.replace('{index}', '2') }))
     expect(within(dialog).getByRole('img', { name: same }).getAttribute('src')).toBe('/case-media/still.png')
     expect(dialog.querySelector('video')).toBeNull()
+    expect(pause).toHaveBeenCalledTimes(1)
+    expect(load).toHaveBeenCalledTimes(1)
+    expect(video?.hasAttribute('src')).toBe(false)
     const source = within(dialog).getByRole('link', { name: zh.showcaseSource })
     expect(source.getAttribute('href')).toBe('https://example.com/project')
     expect(source.getAttribute('rel')).toContain('noopener')
     expect(within(dialog).getByText('MIT · Original contributors')).toBeTruthy()
+    fireEvent.click(within(dialog).getByRole('button', { name: zh.showcaseMediaIndex.replace('{index}', '1') }))
+    const reopened = dialog.querySelector('video')
+    expect(reopened?.getAttribute('src')).toBe('/case-media/clip.mp4')
     fireEvent.click(within(dialog).getAllByRole('button', { name: zh.close })[0]!)
+    expect(pause).toHaveBeenCalledTimes(2)
+    expect(load).toHaveBeenCalledTimes(2)
+    expect(reopened?.hasAttribute('src')).toBe(false)
     expect(screen.queryByRole('dialog')).toBeNull()
     expect(document.activeElement).toBe(trigger)
   })

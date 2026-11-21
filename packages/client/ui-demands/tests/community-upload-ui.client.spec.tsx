@@ -2,10 +2,10 @@
 /** Public upload controls expose the real media selection and retain owner commands. */
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import type { ComponentProps } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type {} from '../src/client/index.ts'
 import { CommunityDemandPublish } from '../src/client/CommunityDemandPublish.tsx'
-import { DemandUploads } from '../src/client/DemandAttachments.tsx'
+import { DemandAttachments, DemandUploads } from '../src/client/DemandAttachments.tsx'
 import type { DemandTranslate } from '../src/client/DemandUI.tsx'
 import { zh } from '../src/client/locales.ts'
 
@@ -29,6 +29,22 @@ function publishProps(): ComponentProps<typeof CommunityDemandPublish> {
 }
 
 describe('public media upload presentation', () => {
+  it.each(['confirmed', 'staged'])('stops and releases %s video when its view closes', (kind) => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    onTestFinished(() => { pause.mockRestore(); load.mockRestore() })
+    const attachments = [{ id: 'video', name: '片段.mp4', kind: 'video' as const, sizeBytes: 2048,
+      status: 'ready' as const, previewUrl: '/authorized/video' }]
+    const view = render(kind === 'confirmed' ? <DemandAttachments attachments={attachments} download={vi.fn()} t={t} />
+      : <DemandUploads attachments={attachments} remove={vi.fn()} retry={vi.fn()} t={t} />)
+    const video = screen.getByLabelText('片段.mp4')
+    expect(video.getAttribute('src')).toBe('/authorized/video')
+    view.unmount()
+    expect(pause).toHaveBeenCalledOnce()
+    expect(load).toHaveBeenCalledOnce()
+    expect(video.hasAttribute('src')).toBe(false)
+  })
+
   it.each([
     ['image/png,video/mp4', '上传图片 / 视频'],
     ['image/png,image/jpeg', '上传图片'],
@@ -78,6 +94,9 @@ describe('public media upload presentation', () => {
   })
 
   it('previews only supplied authorized ready media while preserving progress, removal and original retry', () => {
+    const pause = vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {})
+    const load = vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => {})
+    onTestFinished(() => { pause.mockRestore(); load.mockRestore() })
     const remove = vi.fn(), retry = vi.fn()
     render(<DemandUploads attachments={[
       { id: 'image-operation', name: '官网参考.png', kind: 'image', sizeBytes: 1024, status: 'ready', previewUrl: '/authorized/image' },

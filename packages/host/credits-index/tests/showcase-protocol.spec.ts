@@ -11,12 +11,12 @@ function item(patch: Record<string, unknown> = {}) {
     created_at: 1, updated_at: 2, phone: 'not-public', storage_key: 'secret', revision: 3, ...patch }
 }
 describe('public showcase protocol', () => {
-  it.each([undefined, true, false])('accepts absent rev2 provenance or a legacy boolean (%s) without public projection', (synthetic) => {
+  it.each([undefined, true, false])('accepts an absent rev2 synthetic field or a legacy boolean (%s) without public projection', (synthetic) => {
     const result = showcaseResponse('detail', { item: item({ synthetic }) }, base)
     expect(result).toMatchObject({ item: { id: caseId } })
     expect(result.item).not.toHaveProperty('synthetic')
   })
-  it.each([null, 0, 'true', {}])('still rejects invalid optional legacy provenance (%s)', (synthetic) => {
+  it.each([null, 0, 'true', {}])('still rejects invalid optional legacy synthetic values (%s)', (synthetic) => {
     expect(() => showcaseResponse('detail', { item: item({ synthetic }) }, base)).toThrow()
   })
   it('projects capabilities and public cases without admin, login or storage metadata', () => {

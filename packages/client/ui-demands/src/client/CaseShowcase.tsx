@@ -1,7 +1,7 @@
 /** Configured public materials are displayed separately from customer request publications. */
 import { useState, type ReactNode } from 'react'
 import clsx from 'clsx'
-import { appPath, Button, IconPlayOutlineRegular, LinkIconMedium, Modal, Pill } from '@deepseek-ai/dsh-client-ui-primitives'
+import { appPath, Button, IconPlayOutlineRegular, LinkIconMedium, Modal, Pill, VideoPlayer } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CaseShowcaseCategory, CaseShowcaseItem } from './case-showcase-types.ts'
 import type { ShowcaseFace, ShowcaseState } from './showcase-types.ts'
 import { DemandEmpty, DemandSkeleton, type DemandTranslate } from './DemandUI.tsx'
@@ -101,7 +101,7 @@ export function CaseShowcase({ items: supplied, state, commands, t }: {
       {selected === undefined ? null : <>
         <div className={css.preview}>
           {previewUrl === undefined || failedPreview === previewUrl ? <DemandEmpty title={t('showcaseUnavailable')} detail={t('showcaseEmptyHint')} /> : media?.kind === 'video'
-            ? <video key={previewUrl} src={previewUrl} poster={materialUrl(media.posterUrl)} controls playsInline preload="metadata" aria-label={selected.title}
+            ? <VideoPlayer key={previewUrl} src={previewUrl} poster={materialUrl(media.posterUrl)} playsInline preload="metadata" aria-label={selected.title}
               onError={() => { setFailedPreview(previewUrl) }} />
             : <img key={previewUrl} src={previewUrl} alt={selected.title} draggable={false}
               onError={() => { setFailedPreview(previewUrl) }} />}

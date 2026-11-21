@@ -58,7 +58,8 @@ export async function authenticateWebHost(url: string): Promise<string> {
  * Response headers not relayed to the renderer. `set-cookie` would hand the
  * Host's authentication cookie to the page's cookie jar, which the shell owns
  * instead; the rest describe the Node `fetch` connection (its encoding, length,
- * and hop-by-hop transport), which Chromium never sees.
+ * and hop-by-hop transport), which Chromium never sees. Unencoded audio/video
+ * GET/HEAD responses retain their original byte length for native seeking.
  */
 const WITHHELD_RESPONSE_HEADERS = [
   'set-cookie',
@@ -93,6 +94,12 @@ export async function forwardWebRequest(request: Request, host: string, cookie: 
   const response = await fetch(target, init)
   const outgoing = new Headers(response.headers)
   for (const name of WITHHELD_RESPONSE_HEADERS) outgoing.delete(name)
+  const type = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase()
+  const encoding = response.headers.get('content-encoding')?.trim().toLowerCase()
+  const length = response.headers.get('content-length')
+  if (['GET', 'HEAD'].includes(request.method) && [200, 206].includes(response.status)
+    && type !== undefined && /^(?:audio|video)\//u.test(type) && (encoding === undefined || encoding === 'identity')
+    && length !== null && /^\d+$/u.test(length) && Number.isSafeInteger(Number(length))) outgoing.set('content-length', length)
   if (PLUGIN_BUNDLE_PATH.test(source.pathname)) outgoing.set('cache-control', 'no-store')
   return new Response(response.body, { status: response.status, headers: outgoing })
 }

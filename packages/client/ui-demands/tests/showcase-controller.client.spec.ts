@@ -30,7 +30,7 @@ describe('capability-owned readonly backend cases', () => {
       expect(result.items[0]).not.toHaveProperty('synthetic')
     }
   })
-  it('rejects malformed legacy synthetic values rather than loosening provenance validation', () => {
+  it('rejects malformed legacy synthetic values rather than loosening synthetic-field validation', () => {
     for (const synthetic of [null, 0, 'true', {}]) {
       expect(() => showcasePage({ items: [{ ...row(1), synthetic }], next_cursor: '', has_more: false, total_count: 1 })).toThrow()
     }

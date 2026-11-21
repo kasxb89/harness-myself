@@ -2,7 +2,7 @@
 import { useCallback, useState, type ReactNode } from 'react'
 import {
   Button, ImageLightbox, Tooltip, IconDownloadOutlineRegular, IconPaperclipOutlineRegular,
-  IconRefreshOutlineRegular, IconCloseOutlineRegular,
+  IconRefreshOutlineRegular, IconCloseOutlineRegular, VideoPlayer,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { DemandAttachment } from './types.ts'
 import { demandBytes, type DemandTranslate } from './DemandUI.tsx'
@@ -29,7 +29,7 @@ export function DemandAttachments(props: {
         aria-label={t('previewAttachmentNamed', { name: attachment.name })} onClick={() => { setPreviewId(attachment.id) }}>
         <img src={attachment.previewUrl} alt={attachment.name} loading="lazy" draggable={false} />
       </button> : attachment.kind === 'video' && attachment.previewUrl
-        ? <video className={css.videoPreview} src={attachment.previewUrl} controls preload="metadata" aria-label={attachment.name} />
+        ? <VideoPlayer className={css.videoPreview} src={attachment.previewUrl} preload="metadata" aria-label={attachment.name} />
         : <div className={css.filePreview} aria-hidden="true"><IconPaperclipOutlineRegular size={22} /></div>}
       <div className={css.attachmentMeta}>
         <span><span className={css.fileName}>{attachment.name}</span><small>{demandBytes(attachment.sizeBytes, t)}</small></span>
@@ -73,8 +73,8 @@ export function DemandUploads(props: {
             <img src={attachment.previewUrl} alt={attachment.name} loading="lazy" decoding="async" draggable={false} />
           </button>
           : attachment.status === 'ready' && attachment.previewUrl && attachment.kind === 'video'
-            ? <video className={css.uploadVideo} src={attachment.previewUrl} aria-label={attachment.name}
-              controls playsInline preload="metadata" />
+            ? <VideoPlayer className={css.uploadVideo} src={attachment.previewUrl} aria-label={attachment.name}
+              playsInline preload="metadata" />
             : <span className={css.uploadIcon} aria-hidden="true"><IconPaperclipOutlineRegular size={18} /></span>}
         <div className={css.uploadCopy}>
           <span className={css.fileName}>{attachment.name}</span>

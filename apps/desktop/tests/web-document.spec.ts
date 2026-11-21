@@ -72,6 +72,45 @@ it('drops connection-level headers the Host wrote for its own transport', async 
   expect(response.headers.get('etag')).toBe('"1"')
 })
 
+it.each(['GET', 'HEAD'])('preserves the unchanged video byte length for native %s seeking', async (method) => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(method === 'HEAD' ? null : 'clip', { headers: {
+    'content-type': 'video/mp4', 'content-length': '4', 'accept-ranges': 'bytes', 'set-cookie': 'private',
+  } })))
+  const response = await forwardWebRequest(new Request('dsh-app://app/api/video', { method }), 'http://127.0.0.1:1234/', 'session=owned')
+  expect(response.headers.get('content-length')).toBe('4')
+  expect(response.headers.get('accept-ranges')).toBe('bytes')
+  expect(response.headers.get('set-cookie')).toBeNull()
+  expect(await response.text()).toBe(method === 'HEAD' ? '' : 'clip')
+})
+
+it('retains the partial audio response length and original range without changing its bytes', async () => {
+  const fetch = vi.fn().mockResolvedValue(new Response('ip', { status: 206, headers: {
+    'content-type': 'audio/mpeg', 'content-encoding': 'identity', 'content-length': '2', 'content-range': 'bytes 2-3/4',
+  } }))
+  vi.stubGlobal('fetch', fetch)
+  const response = await forwardWebRequest(new Request('dsh-app://app/api/audio', { headers: { range: 'bytes=2-3' } }), 'http://127.0.0.1:1234/', 'session=owned')
+  const [, init] = fetch.mock.calls[0] as [URL, RequestInit]
+  expect(new Headers(init.headers).get('range')).toBe('bytes=2-3')
+  expect(response.status).toBe(206)
+  expect(response.headers.get('content-length')).toBe('2')
+  expect(response.headers.get('content-range')).toBe('bytes 2-3/4')
+  expect(response.headers.get('content-encoding')).toBeNull()
+  expect(await response.text()).toBe('ip')
+})
+
+it.each([
+  ['video/mp4', 'gzip', '4'], ['video/mp4', 'br', '4'], ['application/json', '', '4'],
+  ['image/png', '', '4'], ['video/mp4', '', '-1'], ['video/mp4', '', '9007199254740992'],
+])('withholds transformed or inapplicable lengths (%s, %s, %s)', async (mime, encoding, length) => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('body', { headers: {
+    'content-type': mime, 'content-length': length, ...(encoding === '' ? {} : { 'content-encoding': encoding }),
+  } })))
+  const response = await forwardWebRequest(new Request('dsh-app://app/api/read'), 'http://127.0.0.1:1234/', 'session=owned')
+  expect(response.headers.get('content-length')).toBeNull()
+  expect(response.headers.get('content-encoding')).toBeNull()
+  expect(await response.text()).toBe('body')
+})
+
 it('replaces the immutable cache header of plugin bundles with no-store and leaves other routes alone', async () => {
   const immutable = 'public, max-age=31536000, immutable'
   const fetch = vi.fn().mockImplementation(async () => new Response('js', { headers: { 'cache-control': immutable } }))
