@@ -4,13 +4,17 @@ import { mkdir } from 'node:fs/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import { installModelSelection } from '@deepseek-ai/dsh-agent'
 import type {
-  Agent, AgentOptions, AgentSetup, ModelSelection as AgentModelSelection, ModelSelectionRef,
+  Agent, AgentHandle, AgentOptions, AgentSetup, ModelSelection as AgentModelSelection, ModelSelectionRef,
 } from '@deepseek-ai/dsh-agent'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import type {} from '@deepseek-ai/dsh-agent-preset-registry'
 import { ReasoningEffortId } from '@deepseek-ai/dsh-llm'
 import type { Session, SessionId } from '@deepseek-ai/dsh-session'
 import type { SessionInspection } from '@deepseek-ai/dsh-session-persistence'
+import {
+  SessionAlreadyOwnedError, SessionDeletionCwdConflictError,
+  SessionPersistenceNotFoundError,
+} from '@deepseek-ai/dsh-session-persistence'
 import { SessionQueryError, type SessionObservation } from '@deepseek-ai/dsh-session-query'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type {} from '@deepseek-ai/dsh-typert-registry'
@@ -143,6 +147,8 @@ export class ApiSessionAgentController {
   private readonly creations = new Map<SessionId, Promise<Agent>>()
   private readonly selections = new WeakMap<Agent, InstalledSelection>()
   private readonly imageAdmissionChains = new WeakMap<Agent, Promise<void>>()
+  private readonly ownedHandles = new WeakMap<Agent, AgentHandle>()
+  private readonly deleting = new Set<SessionId>()
 
   /** @param ctx - Host context carrying Agent, model, persistence, and Typert services. */
   constructor(private readonly ctx: Context) {
@@ -169,6 +175,7 @@ export class ApiSessionAgentController {
    * @returns the live Agent or a stable Session-domain failure.
    */
   async resolveAgent(sessionId: SessionId): Promise<ApiSessionAgentResult> {
+    if (this.deleting.has(sessionId)) return { error: new RemoteError('session/agent-busy', 'session deletion is in progress', { reason: 'session deletion is in progress' }) }
     return this.resolve(sessionId)
   }
 
@@ -178,7 +185,89 @@ export class ApiSessionAgentController {
    * @returns the live Agent or a stable Session-domain failure.
    */
   async resolveObservedAgent(observation: SessionObservation): Promise<ApiSessionAgentResult> {
+    this.assertAvailable(observation.header.id)
     return this.resolve(observation.header.id, observation)
+  }
+
+  /** Refuse deletion in progress or a late operation holding a retired Agent. */
+  assertAvailable(sessionId: SessionId, agent?: Agent): void {
+    if (this.deleting.has(sessionId)) throw deleteActive(sessionId)
+    if (agent !== undefined && this.ctx.agents.get(sessionId) !== agent) throw new RemoteError('session/not-found', 'session was removed during this operation', { sessionId })
+  }
+
+  /** Keep a disposal during deletion from publishing a premature list removal. */
+  deletionInProgress(sessionId: SessionId): boolean {
+    return this.deleting.has(sessionId)
+  }
+
+  /**
+   * Delete a cold log or this controller's idle Agent after its writer closes.
+   * The exact-id fence blocks new API activation and late prompt admission.
+   * Maintenance holds the idle phase across asynchronous activity checks;
+   * disposal starts inside it, but is awaited only after maintenance exits.
+   * Consequently no running turn is cancelled to make deletion succeed.
+   */
+  async deleteSession(sessionId: SessionId, cwd: string): Promise<void> {
+    if (this.deleting.has(sessionId) || this.resumes.has(sessionId) || this.creations.has(sessionId)) throw deleteActive(sessionId)
+    this.deleting.add(sessionId)
+    try {
+      const persistence = this.ctx.get('sessionPersistence')
+      if (persistence?.supportsDeletion !== true) throw deleteUnavailable(sessionId)
+      const live = this.ctx.agents.get(sessionId)
+      const attached = this.ctx.sessions.get(sessionId)
+      const stored = await persistence.stat(sessionId)
+      const header = attached?.header ?? stored?.header
+      if (header === undefined) throw new RemoteError('session/not-found', 'session not found', { sessionId })
+      if (header.cwd !== cwd) throw new RemoteError('session/delete-cwd-conflict', 'session workspace has changed', { sessionId })
+      if (header.origin === 'subagent' || (attached !== undefined && live === undefined)) throw deleteUnavailable(sessionId)
+      const checkActivity = async (): Promise<void> => {
+        const activity = await this.ctx.waterfall('workspace/session-activity', { sessionId }, () => Promise.resolve([]))
+        if (activity.length > 0 || live?.status === 'running') throw deleteActive(sessionId)
+      }
+      if (live !== undefined) {
+        const handle = this.ownedHandles.get(live)
+        if (handle === undefined) throw deleteUnavailable(sessionId)
+        if (live.status !== 'idle') throw deleteActive(sessionId)
+        let disposal: Promise<void> | undefined
+        let maintenance: Promise<void>
+        try {
+          maintenance = live.runMaintenance(async () => {
+            await checkActivity()
+            // Starting teardown here aborts only our maintenance, not user work.
+            // Awaiting it here would deadlock on this maintenance's own exit.
+            disposal = handle.dispose()
+          })
+        } catch {
+          // The idle status also covers another maintenance owner. The
+          // operation that takes the phase, rather than a stale status read,
+          // decides whether this deletion may proceed.
+          throw deleteActive(sessionId)
+        }
+        await maintenance
+        await disposal
+        this.ownedHandles.delete(live)
+      } else {
+        await checkActivity()
+      }
+      // The optional derived checkpoint is deleted after detach's final write
+      // was queued, and before the authoritative log commit. Independent files
+      // and other Sessions, including forked/child logs, are untouched.
+      await this.ctx.get('sessionProjectionCache')?.deleteSession(sessionId)
+      await persistence.delete(sessionId, { expectedCwd: cwd })
+      this.ctx.emit('api-session/removed', sessionId)
+    } catch (error: unknown) {
+      if (error instanceof SessionAlreadyOwnedError) throw deleteActive(sessionId)
+      if (error instanceof SessionDeletionCwdConflictError) throw new RemoteError('session/delete-cwd-conflict', error.message, { sessionId })
+      if (error instanceof SessionPersistenceNotFoundError) throw new RemoteError('session/not-found', error.message, { sessionId })
+      throw error
+    } finally {
+      this.deleting.delete(sessionId)
+    }
+  }
+
+  private own(handle: AgentHandle): Agent {
+    this.ownedHandles.set(handle.agent, handle)
+    return handle.agent
   }
 
   private async resolve(
@@ -243,6 +332,7 @@ export class ApiSessionAgentController {
     checkPersistedIdentity: boolean,
     presetId?: string,
   ): Promise<Agent> {
+    this.assertAvailable(sessionId)
     let creation = this.creations.get(sessionId)
     if (creation === undefined) {
       creation = this.createOrAdopt(sessionId, cwd, checkPersistedIdentity, presetId)
@@ -335,6 +425,7 @@ export class ApiSessionAgentController {
    * @param selection - validated selection to record and apply.
    */
   selectForNextRequest(agent: Agent, selection: AgentModelSelection): void {
+    this.assertAvailable(agent.id, agent)
     agent.session.append('model/selection', selection)
     this.selectionFor(agent).current = selection
   }
@@ -438,11 +529,11 @@ export class ApiSessionAgentController {
     if (published !== undefined && hasApiSessionSubagentOwner(this.ctx, published, live)) {
       throw new ApiSessionSubagentOwnership(sessionId)
     }
-    return (await this.ctx.agents.resume({
+    return this.own(await this.ctx.agents.resume({
       resumeSessionId: sessionId,
       agentOptions: this.agentOptions(),
       setup: composition.setup,
-    })).agent
+    }))
   }
 
   private async createOrAdopt(
@@ -470,11 +561,11 @@ export class ApiSessionAgentController {
         const storedPreset = this.presetForObservation(observation)
         this.assertPresetUnchanged(sessionId, presetId, storedPreset)
         const composition = await this.composeAgent(storedPreset)
-        return (await this.ctx.agents.resume({
+        return this.own(await this.ctx.agents.resume({
           resumeSessionId: sessionId,
           agentOptions: this.agentOptions(),
           setup: composition.setup,
-        })).agent
+        }))
       } catch (error: unknown) {
         if (!(error instanceof SessionQueryError)
           || error.code !== 'SESSION_QUERY_SESSION_NOT_FOUND') throw error
@@ -487,7 +578,7 @@ export class ApiSessionAgentController {
       throw new Error(`failed to ensure project directory "${cwd}": ${String(error)}`, { cause: error })
     }
     const composition = await this.composeAgent(presetId)
-    return (await this.ctx.agents.create({
+    return this.own(await this.ctx.agents.create({
       sessionId,
       agentOptions: this.agentOptions(),
       meta: {
@@ -495,7 +586,7 @@ export class ApiSessionAgentController {
         ...(composition.agentPreset === undefined ? {} : { agentPreset: composition.agentPreset }),
       },
       setup: composition.setup,
-    })).agent
+    }))
   }
 
   private agentOptions(): AgentOptions {
@@ -527,6 +618,14 @@ export class ApiSessionAgentController {
     if (requested === undefined || requested === existing) return
     throw new ApiSessionPresetConflict(sessionId, requested, existing)
   }
+}
+
+function deleteActive(sessionId: SessionId): RemoteError<'session/delete-active'> {
+  return new RemoteError('session/delete-active', 'finish running work before deleting this session', { sessionId })
+}
+
+function deleteUnavailable(sessionId: SessionId): RemoteError<'session/delete-unavailable'> {
+  return new RemoteError('session/delete-unavailable', 'this session cannot be deleted by this controller', { sessionId })
 }
 
 function agentModelSelection(selection: ModelSelection): AgentModelSelection {

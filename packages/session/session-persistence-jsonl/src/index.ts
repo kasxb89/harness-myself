@@ -22,6 +22,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import {
   SessionPersistence, SessionPersistenceRevision, SessionFormatUnsupportedError,
   SessionPersistenceCorruptionError,
+  SessionDeletionCwdConflictError,
   SessionAlreadyExistsError, SessionPersistenceNotFoundError,
   assertStoredId, materializeCreateHeader, sessionFormatVersionRefusal, validateStoredEvents,
   type SessionAccess, type SessionHandle,
@@ -29,6 +30,7 @@ import {
   type SessionLocation, type SessionPersistenceCreateOptions,
   type SessionPersistenceListOptions, type SessionPersistenceOpenOptions,
   type SessionPersistenceSnapshot, type SessionPersistenceStatOptions,
+  type SessionPersistenceDeleteOptions,
   type SessionPersistenceRevision as PersistenceRevision,
 } from '@deepseek-ai/dsh-session-persistence'
 import { JsonlBackendTracker, JsonlSessionHandle, type StorageHandleState } from './storage.ts'
@@ -249,6 +251,7 @@ function waitWithAbort<T>(operation: Promise<T>, signal?: AbortSignal): Promise<
  * flush, and never existed if the process crashes before that.
  */
 class JsonlSessionPersistence extends SessionPersistence {
+  override readonly supportsDeletion = true
   static Config: z<Config> = z.object({
     root: z.string().required(),
     compression: JsonlCompressionSchema,
@@ -431,6 +434,70 @@ class JsonlSessionPersistence extends SessionPersistence {
    */
   flush(): Promise<void> {
     return this.tracker.flushAll()
+  }
+
+  /**
+   * Permanently remove every committed log generation under one write lease.
+   * The lock inode and unrelated files remain: unlinking the lock itself would
+   * let another POSIX writer bypass the lease. Earlier generations are removed
+   * and synced before the selected generation, so a crash cannot expose an old
+   * conversation after the current log is gone. No workspace file is visited.
+   */
+  override async delete(id: SessionId, options: SessionPersistenceDeleteOptions): Promise<void> {
+    this.tracker.claimWrite(id)
+    let lease: SessionWriteLease | undefined
+    try {
+      await this.ensureRootEncoding()
+      const selected = await this.findLog(id)
+      if (selected === undefined) return
+      const dir = dirname(selected.sourcePath)
+      lease = await this.acquireLease(id, undefined, dir)
+      // Resolve again after acquiring the cross-process exclusion. Never use
+      // caller-controlled paths or a stale header as deletion authority.
+      const current = await this.findLog(id)
+      if (current === undefined) return
+      if (dirname(current.sourcePath) !== dir) throw new Error('session storage changed during deletion')
+      const metadata = await this.readGenerationHeader(current, id)
+      if (metadata === undefined) throw new SessionPersistenceNotFoundError(id)
+      if (metadata.header.cwd !== options.expectedCwd) throw new SessionDeletionCwdConflictError(id)
+      const entries = await readdir(dir, { withFileTypes: true })
+      const generations = entries.filter(entry => parseGenerationLogFilename(entry.name, this.compression) !== undefined)
+      if (generations.some(entry => !entry.isFile() && !entry.isSymbolicLink())) {
+        throw new Error('session log generation is not a file')
+      }
+      const older = generations.filter(entry =>
+        // rm without recursive unlinks a symlink itself, never its target.
+        // A canonical old symlink must disappear too, or it could become the
+        // next selected generation after the current log is removed.
+        join(dir, entry.name) !== current.sourcePath)
+      for (const entry of older) await this.deleteLogFile(join(dir, entry.name))
+      if (process.platform !== 'win32') await this.syncDirPosix(dir)
+      await this.deleteLogFile(current.sourcePath)
+      if (process.platform !== 'win32') await this.syncDirPosix(dir)
+      this.coldLogMemo.delete(id)
+      // Existing local read handles must not retain a primed historical log
+      // after successful deletion. Their consumers observe a closed handle.
+      await Promise.all([...this.tracker.openHandles]
+        .filter(handle => handle.id === id && handle.access === 'read')
+        .map(handle => handle.close()))
+    } finally {
+      try { await lease?.release() } finally { this.tracker.releaseClaim(id) }
+    }
+  }
+
+  /** Retire the canonical Windows name durably before unlinking its bytes. */
+  private async deleteLogFile(path: string): Promise<void> {
+    if (process.platform === 'win32') {
+      // Node cannot fsync a Windows directory. Reuse the backend's existing
+      // write-through namespace primitive so no old canonical name can
+      // reappear after the current log has been retired. The random suffix
+      // is never a format generation and therefore cannot be selected.
+      const retired = `${path}.deleted-${randomBytes(12).toString('hex')}`
+      await publishNewFileWin32(path, retired)
+      await rm(retired)
+      return
+    }
+    await rm(path)
   }
 
   /**

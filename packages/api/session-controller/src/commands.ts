@@ -207,6 +207,7 @@ export class SessionCommandController {
     if (titles === undefined) {
       throw new RemoteError('gateway/internal', 'renaming is unavailable: this deployment mounts no session-title service', {})
     }
+    this.agents.assertAvailable(agent.id, agent)
     try {
       const accepted = titles.rename(agent.session, request.title)
       return { title: accepted.title, seq: accepted.eventSeq }
@@ -404,6 +405,7 @@ export class SessionCommandController {
             { sessionId: agent.id })
         }
         assertCurrent()
+        this.agents.assertAvailable(agent.id)
         using binding = this.ctx.fileUploads.bindPrompt(agent, admission.receiptIds, request.requestId)
         if (request.mode === 'steer') agent.steer(message)
         else agent.followup(message)

@@ -7,6 +7,7 @@ import type {
 import { SessionForkError } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { WorkspaceId, WorkspaceSnapshot, WorkspaceView } from '@deepseek-ai/dsh-api-workspace-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
+import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { StoredEntry } from '@deepseek-ai/dsh-client-ui-slots'
 import { RemoteError, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
@@ -16,10 +17,12 @@ import type { WorkspaceBrowserInjected, WorkspacePickerInjected } from '@deepsee
 import {
   type ArchiveSessionInjected, type ForkSessionInjected, menuOpenStateFactory, type PinSessionInjected,
   type RenameSessionInjected, type RowToastInjected, type SessionArchiveConfirmInjected, type SessionRenameDialogInjected,
+  type DeleteSessionInjected, type SessionDeleteDialogInjected,
   type WorkspaceViewStoreHandle,
 } from '../src/client/contract/slots.ts'
 import { WorkspaceBrowser } from '../src/client/rows/WorkspaceBrowser.tsx'
 import { ArchiveSessionMenuItem, ArchiveSessionRowButton, SessionArchiveConfirmDialog } from '../src/client/session-actions/ArchiveSession.tsx'
+import { DeleteSessionMenuItem, SessionDeleteDialog } from '../src/client/session-actions/DeleteSession.tsx'
 import { ForkSessionMenuItem } from '../src/client/session-actions/ForkSession.tsx'
 import { PinSessionMenuItem, PinSessionRowButton } from '../src/client/session-actions/PinSession.tsx'
 import { RenameSessionMenuItem, SessionRenameDialog } from '../src/client/session-actions/RenameSession.tsx'
@@ -139,7 +142,10 @@ async function bench() {
   } as never)
   const pickDirectory = vi.fn(() => Promise.resolve({ ok: true as const, value: '/projects/picked' }))
   const directoryPicker = { pick: pickDirectory }
-  Object.assign(new TestRemote(ctx), { directoryPicker })
+  const deleteSession = vi.fn<(request: { sessionId: SessionId; cwd: string }) => Promise<RemoteResult<{ deleted: true }>>>(
+    async () => ({ ok: true, value: { deleted: true } }),
+  )
+  Object.assign(new TestRemote(ctx, { session: { delete: deleteSession } }), { directoryPicker })
   ctx.provide('remote.directoryPicker', directoryPicker as never)
   const locale = new LocaleRuntime(ctx)
   // These specs assert the shipped Chinese copy. There is no jsdom `window`
@@ -151,6 +157,7 @@ async function bench() {
     ctx, slots: ctx.get('slots') as SlotRegistry, locale, create, rename,
     retain, using, selectPanel, search, renameSession, binding, fork, pickDirectory, pinSession, unpinSession,
     workspacesSubscribe, initializeDefault, history, scope, sessionOf,
+    deleteSession,
     setWorkspaces: (snapshot: WorkspaceSnapshot): void => { workspaceSnapshot = snapshot },
     setSessions: (snapshot: SessionListState): void => { sessionSnapshot = snapshot },
   }
@@ -234,9 +241,9 @@ describe('ui-workspace apply', () => {
     await Promise.resolve()
     expect(after.slots.entries('conversation.hero.workspace')[0]!.component).toBe(WorkspacePicker)
     // The row actions follow the browser's own declaration, whenever it lands.
-    expect(after.slots.entries(MENU_ITEM)).toHaveLength(4)
+    expect(after.slots.entries(MENU_ITEM)).toHaveLength(5)
     expect(after.slots.entries(ROW_ACTION)).toHaveLength(2)
-    expect(after.slots.entries('shell.overlay')).toHaveLength(3)
+    expect(after.slots.entries('shell.overlay')).toHaveLength(4)
   })
 
   it('declares the two Session row lists and registers the shipped actions and overlay surfaces into them', async () => {
@@ -257,6 +264,7 @@ describe('ui-workspace apply', () => {
       ['rename', 200, RenameSessionMenuItem, 'workspace'],
       ['fork', 300, ForkSessionMenuItem, 'workspace'],
       ['archive', 400, ArchiveSessionMenuItem, 'workspace'],
+      ['delete', 500, DeleteSessionMenuItem, 'workspace'],
     ])
     expect(rows(ROW_ACTION)).toEqual([
       ['archive', 100, ArchiveSessionRowButton, 'workspace'],
@@ -265,6 +273,7 @@ describe('ui-workspace apply', () => {
     expect(rows('shell.overlay')).toEqual([
       ['workspace.session-rename', undefined, SessionRenameDialog, 'workspace'],
       ['workspace.session-archive', undefined, SessionArchiveConfirmDialog, 'workspace'],
+      ['workspace.session-delete', undefined, SessionDeleteDialog, 'workspace'],
       ['workspace.row-toast', undefined, RowActionToast, 'workspace'],
     ])
     // The browser and the row toast declare the same viewing-store handle,
@@ -373,6 +382,64 @@ describe('ui-workspace apply', () => {
     pin.unpinSession(sid('one'))
     await vi.waitFor(() => { expect(toast.hooks.toast.getSnapshot()).toEqual({ kind: 'unpinFailed', seq: 2 }) })
     expect(view.getSnapshot().sessionOrderByAccount).toEqual({})
+  })
+
+  it('captures deletion Workspace without retaining the Session and forgets the view only after Host success', async () => {
+    const b = await bench()
+    b.setSessions(sessionState([{ ...summary('one', 1), cwd: '/projects/alpha' }]))
+    declare(b.slots, 'sidebar.workspaces', 'shell.overlay')
+    await b.ctx.plugin({ inject: [...inject], apply }).await()
+    const action = faceOf(entry(b.slots, MENU_ITEM, 'delete')) as DeleteSessionInjected
+    const dialog = faceOf(entry(b.slots, 'shell.overlay', 'workspace.session-delete')) as SessionDeleteDialogInjected
+    const forget = vi.spyOn(b.ctx.uiWorkspace, 'forgetDeletedSession')
+    action.requestSessionDelete(sid('one'), 'exact title')
+    expect(dialog.hooks.deleteRequest.getSnapshot()).toEqual({ sessionId: 'one', displayTitle: 'exact title', cwd: '/projects/alpha' })
+    expect(b.deleteSession).not.toHaveBeenCalled()
+    expect(b.retain).not.toHaveBeenCalled()
+    const pending = Promise.withResolvers<RemoteResult<{ deleted: true }>>()
+    b.deleteSession.mockImplementationOnce(() => pending.promise)
+    const deleting = dialog.deleteSession(sid('one'), '/projects/alpha')
+    expect(b.deleteSession).toHaveBeenCalledExactlyOnceWith({ sessionId: 'one', cwd: '/projects/alpha' })
+    expect(forget).not.toHaveBeenCalled()
+    pending.resolve({ ok: true, value: { deleted: true } })
+    await deleting
+    expect(forget).toHaveBeenCalledExactlyOnceWith('one')
+    dialog.settleSessionDelete()
+    expect(dialog.hooks.deleteRequest.getSnapshot()).toBeNull()
+  })
+
+  it.each([
+    { error: new RemoteError('session/delete-active', 'PRIVATE DETAIL', { sessionId: sid('one') }), message: '此会话仍有运行中的任务或操作' },
+    { error: new RemoteError('session/delete-cwd-conflict', 'PRIVATE DETAIL', { sessionId: sid('one') }), message: '此会话所属工作区已变化' },
+    { error: new RemoteError('session/delete-unavailable', 'PRIVATE DETAIL', { sessionId: sid('one') }), message: '此会话当前无法删除' },
+    { error: new RemoteError('session/not-found', 'PRIVATE DETAIL', { sessionId: sid('one') }), message: '此会话记录已不存在' },
+    { error: new RemoteError('gateway/internal', 'PRIVATE DETAIL', {}), message: '删除结果尚未确认' },
+  ])('keeps deletion confirmation on $error.code without clearing or retrying', async ({ error, message }) => {
+    const b = await bench()
+    b.setSessions(sessionState([{ ...summary('one', 1), cwd: '/projects/alpha' }]))
+    declare(b.slots, 'sidebar.workspaces', 'shell.overlay')
+    await b.ctx.plugin({ inject: [...inject], apply }).await()
+    const action = faceOf(entry(b.slots, MENU_ITEM, 'delete')) as DeleteSessionInjected
+    const dialog = faceOf(entry(b.slots, 'shell.overlay', 'workspace.session-delete')) as SessionDeleteDialogInjected
+    const forget = vi.spyOn(b.ctx.uiWorkspace, 'forgetDeletedSession')
+    action.requestSessionDelete(sid('one'), 'exact title')
+    b.deleteSession.mockResolvedValueOnce({ ok: false, error })
+    await expect(dialog.deleteSession(sid('one'), '/projects/alpha')).rejects.toThrow(message)
+    expect(b.deleteSession).toHaveBeenCalledOnce()
+    expect(forget).not.toHaveBeenCalled()
+    expect(dialog.hooks.deleteRequest.getSnapshot()?.sessionId).toBe('one')
+  })
+
+  it('reports transport uncertainty without automatic replay or clearing the view', async () => {
+    const b = await bench()
+    declare(b.slots, 'sidebar.workspaces', 'shell.overlay')
+    await b.ctx.plugin({ inject: [...inject], apply }).await()
+    const dialog = faceOf(entry(b.slots, 'shell.overlay', 'workspace.session-delete')) as SessionDeleteDialogInjected
+    const forget = vi.spyOn(b.ctx.uiWorkspace, 'forgetDeletedSession')
+    b.deleteSession.mockRejectedValueOnce(new Error('PRIVATE URL'))
+    await expect(dialog.deleteSession(sid('one'), '/projects/alpha')).rejects.toThrow('删除结果尚未确认')
+    expect(b.deleteSession).toHaveBeenCalledOnce()
+    expect(forget).not.toHaveBeenCalled()
   })
 
   it('archives through the navigation service and raises the archived notice; Host rejections are console diagnostics', async () => {
@@ -764,9 +831,9 @@ describe('ui-workspace apply', () => {
     declare(b.slots, 'sidebar.workspaces', 'conversation.hero.workspace', 'conversation.empty.workspace', 'shell.overlay')
     const fiber = b.ctx.plugin({ inject: [...inject], apply })
     await fiber.await()
-    expect(b.slots.entries(MENU_ITEM)).toHaveLength(4)
+    expect(b.slots.entries(MENU_ITEM)).toHaveLength(5)
     expect(b.slots.entries(ROW_ACTION)).toHaveLength(2)
-    expect(b.slots.entries('shell.overlay')).toHaveLength(3)
+    expect(b.slots.entries('shell.overlay')).toHaveLength(4)
     await fiber.dispose()
     expect(b.slots.entries('sidebar.workspaces')).toHaveLength(0)
     expect(b.slots.entries('conversation.hero.workspace')).toHaveLength(0)

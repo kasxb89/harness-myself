@@ -51,6 +51,18 @@ export interface SessionListMetadata {
   readonly lastPromptAt: number | null
 }
 
+/** Explicit permanent deletion of one local-operator Session's conversation log. */
+export interface SessionDeleteRequest {
+  readonly sessionId: SessionId
+  /** Exact workspace from the selected catalog row; checked against stored metadata. */
+  readonly cwd: string
+}
+
+/** Returned only after the stored conversation log is removed. */
+export interface SessionDeleteValue {
+  readonly deleted: true
+}
+
 /**
  * Every available wire value a Session-list row carries as partial, possibly
  * stale hints. `kind` and `asOfSeq` are independent facts: `kind` says which
@@ -242,6 +254,9 @@ declare module '@deepseek-ai/dsh-typert-protocol' {
     'session/projections-unavailable': Record<string, never>
     'session/writer-held': { readonly sessionId: SessionId }
     'session/agent-busy': { readonly reason: string }
+    'session/delete-active': { readonly sessionId: SessionId }
+    'session/delete-cwd-conflict': { readonly sessionId: SessionId }
+    'session/delete-unavailable': { readonly sessionId: SessionId }
     'session/invalid-time-zone': { readonly value: string }
     'session/workspace-attach-failed': { readonly sessionId: SessionId; readonly workspaceId: string }
     'agent-preset/conflict': {

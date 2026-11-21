@@ -324,6 +324,8 @@ interface SessionPersistenceSnapshot {
 
 可选的 `eventCount`/`sizeBytes` 字段仍是供明确需要它们的 consumer 使用的低成本 backend observation。Session 列表不借助这两个字段打开冷日志，只读取 header 与经过 identity 校验的 projection cache hint，因此 cache 或 Session format 升级不会把启动变成 body scan。
 
+永久日志删除独立于句柄读取与追加。后端以 `supportsDeletion` 声明支持，并实现 `delete(id, { expectedCwd })`；未支持的后端拒绝调用。工作区凭据必须在排除写入竞争时与不可变已存元数据匹配，且需要移除所有物理 generation，避免旧日志重新出现。Session Controller 先关闭自己拥有且无活动工作的写入者；独立工作区文件及其他 Session 保留。
+
 ## 后端
 
 随产品交付的 provider 实现抽象 `SessionPersistence` 约定（`create`/`open`/`stat`/`list`，逐会话 `SessionHandle` 承载 `read`/`append`/`flush`/`close`，全程可选支持取消），并通过共享的持久化契约套件：
@@ -410,6 +412,18 @@ abstract stat(id: SessionId, options?: SessionPersistenceStatOptions): Promise<S
  * @returns one snapshot per stored session.
  */
 abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+/**
+ * Permanently remove this Session's stored log, retaining independent files
+ * and other Sessions (including forks). Providers must reject write owners,
+ * verify the workspace witness under their write exclusion, and remove all
+ * physical generations so an older log cannot reappear. Unsupported
+ * providers fail closed; callers must not substitute archive or unlink files.
+ * An already absent log resolves without creating a storage artifact.
+ * @param _id - exact stored Session identity.
+ * @param _options - expected immutable workspace, never a deletion path.
+ */
+delete(_id: SessionId, _options: SessionPersistenceDeleteOptions): Promise<void>
 ```
 
 Types: [SessionId](core.zh.md)

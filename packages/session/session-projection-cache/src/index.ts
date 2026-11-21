@@ -308,6 +308,15 @@ export class SessionProjectionCache extends Service {
 
   // --- write-behind (throttle + mandatory points) ---
 
+  /**
+   * Remove the derived record after its Session writer has been detached.
+   * The domain chain drains previously queued checkpoints before this delete.
+   * @param id - exact Session whose authoritative log is being deleted.
+   */
+  async deleteSession(id: SessionId): Promise<void> {
+    await this.requireTable().delete(id)
+  }
+
   private installWritePath(): void {
     // Every committed event advances the dirty counter; turn/end is a
     // mandatory point (the durable value most reads want is the turn-final

@@ -1310,6 +1310,18 @@ describe('UiWorkspaceService', () => {
     expect(b.workspaces.archiveCalls).toEqual([idle, idle])
   })
 
+  it('releases only the selected deleted Session after Host confirmation', () => {
+    const b = bench()
+    b.uiWorkspace.openSession(sid('current'))
+    b.uiWorkspace.forgetDeletedSession(sid('another'))
+    expect(b.sessions.retained[0]!.release).not.toHaveBeenCalled()
+    b.uiWorkspace.forgetDeletedSession(sid('current'))
+    expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
+    expect(b.selectPanel).toHaveBeenLastCalledWith(null)
+    b.uiWorkspace.forgetDeletedSession(sid('current'))
+    expect(b.sessions.retained[0]!.release).toHaveBeenCalledOnce()
+  })
+
   it('forwards unarchive commands and preserves failures', async () => {
     const idle = sid('idle')
     const b = bench()

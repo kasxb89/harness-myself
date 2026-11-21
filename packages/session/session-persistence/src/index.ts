@@ -108,6 +108,28 @@ export interface SessionPersistenceListOptions {
   readonly signal?: AbortSignal
 }
 
+/** Exact workspace witness required before permanently removing a stored log. */
+export interface SessionPersistenceDeleteOptions {
+  /** Must equal the stored immutable header's cwd; no path is supplied for unlinking. */
+  readonly expectedCwd: string
+}
+
+/** A provider that does not implement permanent Session deletion refuses it. */
+export class SessionDeletionUnsupportedError extends Error {
+  constructor() {
+    super('this persistence backend does not support permanent session deletion')
+    this.name = 'SessionDeletionUnsupportedError'
+  }
+}
+
+/** A deletion's workspace witness no longer identifies the stored Session. */
+export class SessionDeletionCwdConflictError extends Error {
+  constructor(readonly id: SessionId) {
+    super(`cannot delete session "${id}": its workspace does not match`)
+    this.name = 'SessionDeletionCwdConflictError'
+  }
+}
+
 declare module '@deepseek-ai/cordis' {
   interface Context {
     sessionPersistence: SessionPersistence
@@ -137,6 +159,9 @@ declare module '@deepseek-ai/cordis' {
 export abstract class SessionPersistence extends Service {
   /** Process-local instance identity, stable through Context proxies and distinct after service replacement. */
   readonly identity: symbol = Symbol('sessionPersistence')
+
+  /** True only when this provider implements the permanent-deletion contract. */
+  readonly supportsDeletion: boolean = false
 
   constructor(ctx: Context) {
     super(ctx, 'sessionPersistence')
@@ -201,6 +226,20 @@ export abstract class SessionPersistence extends Service {
    * @returns one snapshot per stored session.
    */
   abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+  /**
+   * Permanently remove this Session's stored log, retaining independent files
+   * and other Sessions (including forks). Providers must reject write owners,
+   * verify the workspace witness under their write exclusion, and remove all
+   * physical generations so an older log cannot reappear. Unsupported
+   * providers fail closed; callers must not substitute archive or unlink files.
+   * An already absent log resolves without creating a storage artifact.
+   * @param _id - exact stored Session identity.
+   * @param _options - expected immutable workspace, never a deletion path.
+   */
+  delete(_id: SessionId, _options: SessionPersistenceDeleteOptions): Promise<void> {
+    return Promise.reject(new SessionDeletionUnsupportedError())
+  }
 }
 
 export default SessionPersistence

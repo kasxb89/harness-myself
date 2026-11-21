@@ -38,7 +38,7 @@ patchedDependencies:
   '@electron/osx-sign@1.3.3': 280e7b2816caf01423097d24e79107a66afeb563a348630ce9928ae8499a5861
   '@fortune-sheet/core@1.0.4': 8791a230763dbf853fd65d627c68c31de37209992851377855e16cf08ea70532
   '@fortune-sheet/react@1.0.4': 2932e52e79afcd4ced08cfa123b5eded786c85043da32f622f3e80af6fc96c37
-  '@xmanrui/dsh-im@4.38.2': 4c74071c3daf693c5e4270746b964c750e01da2c85cdfc0146ac37dec11af738
+  '@xmanrui/dsh-im@4.38.2': 3909475248774ca6b2d0f462af48bc9a8f6e63efc9e00a333b644d08373775ee
   '@yao-pkg/pkg@6.21.0': 75891fc22b277c145cafeab83e41baf4a70f5b8fe6dc0801c6a0b922d7ee88c7
   deepseek-ivideo@0.5.0: 2c8077e6bd282bca4144510792e3f881d86e4a1ddf72a536a866da0516ef0be7
   dsh-custom-mode@2.2.5: 0051ebad861d4af025941554ef02c6d62c34f2886bea8bb5c51cfd75b6f1219d
@@ -3014,7 +3014,7 @@ importers:
         version: link:../../../vendor/schemastery
       '@xmanrui/dsh-im':
         specifier: 4.38.2
-        version: 4.38.2(patch_hash=4c74071c3daf693c5e4270746b964c750e01da2c85cdfc0146ac37dec11af738)(@types/node@22.20.1)(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)
+        version: 4.38.2(patch_hash=3909475248774ca6b2d0f462af48bc9a8f6e63efc9e00a333b644d08373775ee)(@types/node@22.20.1)(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)
       commander:
         specifier: ^15.0.0
         version: 15.0.0
@@ -28816,7 +28816,7 @@ snapshots:
       - supports-color
       - utf-8-validate
 
-  '@xmanrui/dsh-im@4.38.2(patch_hash=4c74071c3daf693c5e4270746b964c750e01da2c85cdfc0146ac37dec11af738)(@types/node@22.20.1)(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)':
+  '@xmanrui/dsh-im@4.38.2(patch_hash=3909475248774ca6b2d0f462af48bc9a8f6e63efc9e00a333b644d08373775ee)(@types/node@22.20.1)(debug@4.4.3(supports-color@9.4.0))(supports-color@9.4.0)':
     dependencies:
       '@matrix-org/olm': 3.2.15
       '@tencent-connect/qqbot-connector': 1.2.0

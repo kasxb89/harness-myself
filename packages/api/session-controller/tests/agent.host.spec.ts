@@ -309,6 +309,7 @@ describe('ApiSession model selection', () => {
     })
 
     const pending = agent(ctx, header('pending-model'))
+    await ctx.agents.register(pending)
     const selection = agents.selectionFor(pending)
     agents.selectForNextRequest(pending, {
       provider: 'selected-provider',

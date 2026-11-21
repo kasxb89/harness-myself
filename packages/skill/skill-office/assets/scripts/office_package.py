@@ -267,9 +267,44 @@ def cell_coordinates(coordinate):
     return coordinate, col_number, row_number
 
 
-def worksheet_cell(tree, coordinate):
+def worksheet_cell(tree, coordinate, index=None):
     from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
     coordinate, col_number, row_number = cell_coordinates(coordinate)
+    if index is not None:
+        from bisect import bisect_left
+        data = index["data"]
+        if index["rows"] is None:
+            index["rows"] = {int(row.get("r")): row for row in data}
+            index["row_numbers"] = sorted(index["rows"])
+        row = index["rows"].get(row_number)
+        if row is None:
+            row = ET.Element(q("s", "row"), r=str(row_number))
+            position = bisect_left(index["row_numbers"], row_number)
+            if position < len(index["row_numbers"]):
+                index["rows"][index["row_numbers"][position]].addprevious(row)
+            else:
+                data.append(row)
+            index["row_numbers"].insert(position, row_number)
+            index["rows"][row_number] = row
+            index["columns"][row_number] = []
+        cell = ET.Element(q("s", "c"), r=coordinate)
+        inherited = row.get("s")
+        if inherited is None:
+            inherited = next((node.get("style") for node in index["column_styles"]
+                              if int(node.get("min")) <= col_number <= int(node.get("max")) and node.get("style") is not None), None)
+        if inherited is not None:
+            cell.set("s", inherited)
+        if row_number not in index["columns"]:
+            index["columns"][row_number] = [cell_coordinates(node.get("r"))[1] for node in row]
+        columns = index["columns"][row_number]
+        position = bisect_left(columns, col_number)
+        if position < len(columns):
+            from openpyxl.utils.cell import get_column_letter
+            index["cells"][f"{get_column_letter(columns[position])}{row_number}"].addprevious(cell)
+        else:
+            row.append(cell)
+        columns.insert(position, col_number)
+        return cell
     data = tree.find("s:sheetData", NS)
     row = next((node for node in data if int(node.get("r")) == row_number), None)
     if row is None:
@@ -307,7 +342,9 @@ def worksheet_edit_index(tree):
     arrays = [range_boundaries(formula.get("ref", cell.get("r"))) for cell in cells.values()
               if (formula := cell.find("s:f", NS)) is not None and formula.get("t") == "array"]
     merged = [range_boundaries(node.get("ref")) for node in tree.findall("s:mergeCells/s:mergeCell", NS)]
-    return {"cells": cells, "arrays": arrays, "merged": merged}
+    data = tree.find("s:sheetData", NS)
+    return {"cells": cells, "arrays": arrays, "merged": merged, "data": data, "rows": None,
+            "row_numbers": [], "columns": {}, "column_styles": tree.findall("s:cols/s:col", NS)}
 
 
 def edit_cell(package, tree, operation, index):
@@ -322,7 +359,7 @@ def edit_cell(package, tree, operation, index):
                 raise ValueError("this cell belongs to an array result; edit its inputs or use the programmable workflow to replace the whole formula group")
     cell = index["cells"].get(coordinate)
     if cell is None:
-        cell = worksheet_cell(tree, coordinate)
+        cell = worksheet_cell(tree, coordinate, index)
         index["cells"][coordinate] = cell
     original = cell.find("s:f", NS)
     if original is not None and original.get("t") in ("shared", "array", "dataTable") and any(key in operation for key in ("value", "formula")):
@@ -567,6 +604,7 @@ def patch(package, spec, payload, scratch):
     parts = {} if kind == "docx" else dict(document_parts(package))
     paragraphs = paragraph_nodes(package) if kind == "docx" else []
     worksheets = {}
+    slide_indexes = {}
     for operation in spec["operations"]:
         if any(operation.get(key, 0) < 0 for key in ("paragraph_index", "run_index", "slide_number", "shape_id")):
             raise ValueError("edit indices cannot be negative")
@@ -585,7 +623,9 @@ def patch(package, spec, payload, scratch):
                 shape = next(node for node in tree.findall(".//p:sp", NS) if node.find("p:nvSpPr/p:nvPr/p:ph", NS) is not None and node.find("p:nvSpPr/p:nvPr/p:ph", NS).get("type") == "body")
             else:
                 tree = package.xml(part)
-                shape = next(node for node in slide_shapes(tree) if shape_id(node) == operation["shape_id"])
+                if part not in slide_indexes:
+                    slide_indexes[part] = {shape_id(node): node for node in slide_shapes(tree)}
+                shape = slide_indexes[part][operation["shape_id"]]
             replace_text(shape.findall(".//a:t", NS), operation["old_text"], operation["new_text"])
         elif kind == "xlsx" and operation["kind"] == "cell":
             part = parts[operation["sheet"]]

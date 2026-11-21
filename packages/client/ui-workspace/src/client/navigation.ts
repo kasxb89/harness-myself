@@ -79,6 +79,11 @@ export interface UiWorkspace {
    */
   archiveSession(sessionId: SessionId, options?: { readonly stopActivity?: boolean }): Promise<void>
   /**
+   * Release the current view only after the Host confirms permanent deletion.
+   * @param sessionId - successfully deleted Session identity.
+   */
+  forgetDeletedSession(sessionId: SessionId): void
+  /**
    * Unarchive a Session, restoring it to its recorded Workspace position.
    * @param sessionId - Session to unarchive.
    */
@@ -299,6 +304,10 @@ class UiWorkspaceService extends Service implements UiWorkspace {
 
   async archiveSession(sessionId: SessionId, options: { readonly stopActivity?: boolean } = {}): Promise<void> {
     await this.workspaces.archiveSession(sessionId, options)
+    if (this.mainReference?.sessionId === sessionId) this.clearMain()
+  }
+
+  forgetDeletedSession(sessionId: SessionId): void {
     if (this.mainReference?.sessionId === sessionId) this.clearMain()
   }
 

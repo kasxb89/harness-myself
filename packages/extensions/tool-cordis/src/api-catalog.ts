@@ -2024,6 +2024,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Host service backing the generated `ctx.remote.session` namespace.',
     methods: [
       {
+        signature: '@Remote(\'delete\') async delete(request: SessionDeleteRequest): Promise<SessionDeleteValue>',
+        description: 'Permanently delete an inactive local conversation after explicit user confirmation. The workspace witness is validated again at the storage boundary; this never deletes independent workspace or generated files.',
+        parameters: [{ name: 'request', description: 'exact Session id and catalog workspace witness.' }],
+        returns: 'confirmation after durable log deletion.',
+      },
+      {
         signature: 'resolveAgent(sessionId: SessionId): Promise<ApiSessionAgentResult>',
         description: 'Resolve or resume one ordinary Session for another Host API domain.',
         parameters: [{ name: 'sessionId', description: 'Session identity whose Agent owns the operation.' }],
@@ -2226,6 +2232,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'readonly supportsDeletion: boolean = false',
+        description: 'True only when this provider implements the permanent-deletion contract.',
+        parameters: [],
+      },
+      {
         signature: 'abstract create(header: SessionHeader, options?: SessionPersistenceCreateOptions): Promise<SessionHandle>',
         description: 'Create a new stored session and take its write ownership.',
         parameters: [{ name: 'header', description: 'the immutable header (id, version, cwd, lineage) to store.' }, { name: 'options', description: 'optional cancellation.' }],
@@ -2257,6 +2268,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'List every stored session visible to this process, in no promised order.',
         parameters: [{ name: 'options', description: 'optional cancellation.' }],
         returns: 'one snapshot per stored session.',
+      },
+      {
+        signature: 'delete(_id: SessionId, _options: SessionPersistenceDeleteOptions): Promise<void>',
+        description: 'Permanently remove this Session\'s stored log, retaining independent files and other Sessions (including forks). Providers must reject write owners, verify the workspace witness under their write exclusion, and remove all physical generations so an older log cannot reappear. Unsupported providers fail closed; callers must not substitute archive or unlink files. An already absent log resolves without creating a storage artifact.',
+        parameters: [{ name: '_id', description: 'exact stored Session identity.' }, { name: '_options', description: 'expected immutable workspace, never a deletion path.' }],
       },
     ],
   },
@@ -2294,6 +2310,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         description: 'Cold-read one session\'s projections from its complete log. Each unit is seeded from the identity-checked cached rows — the registry skips `apply` for the already-folded prefix (events at or below the row\'s `seq`) — and the refreshed checkpoint is written back (fail-soft, fire-and-forget), so the first cold read creates the cache row and later ones seed from it. The caller supplies the complete log in seq order: this service never consults the persistence layer.',
         parameters: [{ name: 'meta', description: 'the stored session header (identity witness).' }, { name: 'inheritedEventCount', description: 'exact inherited prefix length for projection initialization and identity.' }, { name: 'events', description: 'the session\'s complete log, in seq order.' }],
         returns: 'the projection cut at the log end.',
+      },
+      {
+        signature: 'async deleteSession(id: SessionId): Promise<void>',
+        description: 'Remove the derived record after its Session writer has been detached. The domain chain drains previously queued checkpoints before this delete.',
+        parameters: [{ name: 'id', description: 'exact Session whose authoritative log is being deleted.' }],
       },
     ],
   },
@@ -7021,6 +7042,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
     declaration: 'export interface SessionCreateValue {\n    readonly sessionId: SessionId;\n    readonly agentPreset?: string;\n}',
   },
   {
+    name: 'SessionDeleteRequest',
+    declaration: 'export interface SessionDeleteRequest {\n    readonly sessionId: SessionId;\n    readonly cwd: string;\n}',
+  },
+  {
+    name: 'SessionDeleteValue',
+    declaration: 'export interface SessionDeleteValue {\n    readonly deleted: true;\n}',
+  },
+  {
     name: 'SessionEndInput',
     declaration: 'export interface SessionEndInput {\n    reason: \'clear\' | \'logout\' | \'prompt_input_exit\' | \'resume\' | \'other\';\n    sessionId: string;\n}',
   },
@@ -7247,6 +7276,10 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'SessionPersistenceCreateOptions',
     declaration: 'export interface SessionPersistenceCreateOptions {\n    readonly signal?: AbortSignal;\n    readonly inheritedEventCount?: SessionLogOffset;\n}',
+  },
+  {
+    name: 'SessionPersistenceDeleteOptions',
+    declaration: 'export interface SessionPersistenceDeleteOptions {\n    readonly expectedCwd: string;\n}',
   },
   {
     name: 'SessionPersistenceListOptions',

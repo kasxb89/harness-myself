@@ -883,6 +883,15 @@ Host service backing the generated `ctx.remote.session` namespace.
 
 ```ts cordis-catalog
 /**
+ * Permanently delete an inactive local conversation after explicit user
+ * confirmation. The workspace witness is validated again at the storage
+ * boundary; this never deletes independent workspace or generated files.
+ * @param request - exact Session id and catalog workspace witness.
+ * @returns confirmation after durable log deletion.
+ */
+@Remote('delete') async delete(request: SessionDeleteRequest): Promise<SessionDeleteValue>
+
+/**
  * Resolve or resume one ordinary Session for another Host API domain.
  *
  * @param sessionId - Session identity whose Agent owns the operation.

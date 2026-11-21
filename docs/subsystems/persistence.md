@@ -324,6 +324,8 @@ interface SessionPersistenceSnapshot {
 
 The optional `eventCount`/`sizeBytes` fields remain cheap backend observations for consumers that explicitly need them. Session listing does not use either field to open cold logs: it reads headers plus identity-checked projection-cache hints only, so a cache or Session-format upgrade never turns startup into a body scan.
 
+Permanent log deletion is separate from handle reads and appends. A provider advertises `supportsDeletion` and implements `delete(id, { expectedCwd })`; unsupported providers reject. The workspace witness must match immutable stored metadata under write exclusion, and every physical generation must be removed so an older log cannot reappear. Session Controller closes its own inactive writer first; independent workspace files and other Sessions remain.
+
 ## The backend
 
 The shipped provider implements the abstract `SessionPersistence` contract (`create`/`open`/`stat`/`list`, with per-session `SessionHandle`s carrying `read`/`append`/`flush`/`close` and optional cancellation throughout) and passes the shared persistence contract suite:
@@ -410,6 +412,18 @@ abstract stat(id: SessionId, options?: SessionPersistenceStatOptions): Promise<S
  * @returns one snapshot per stored session.
  */
 abstract list(options?: SessionPersistenceListOptions): Promise<readonly SessionPersistenceSnapshot[]>
+
+/**
+ * Permanently remove this Session's stored log, retaining independent files
+ * and other Sessions (including forks). Providers must reject write owners,
+ * verify the workspace witness under their write exclusion, and remove all
+ * physical generations so an older log cannot reappear. Unsupported
+ * providers fail closed; callers must not substitute archive or unlink files.
+ * An already absent log resolves without creating a storage artifact.
+ * @param _id - exact stored Session identity.
+ * @param _options - expected immutable workspace, never a deletion path.
+ */
+delete(_id: SessionId, _options: SessionPersistenceDeleteOptions): Promise<void>
 ```
 
 Types: [SessionId](core.md)

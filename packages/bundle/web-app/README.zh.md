@@ -48,7 +48,7 @@ Desktop 新建会话默认使用**完全权限**（`danger-full-access`，审批
 
 产品通过**设置 → 皮肤市场**管理皮肤，不随产品分发 Dream Skin。核心[主题服务](../../client/ui-theme/README.zh.md)保留基础配色与字体设置。
 
-**IM 机器人**面板的中英文界面均使用云枢产品名称。npm 包标识、命令、配置名称及第三方署名保留上游值。
+产品默认 agent 在 IM 等会话中以 **云枢助手（Yunshu Assistant）** 自我介绍。IM 连接提示、同步回复署名及新建机器人的显示名称使用云枢品牌。iMessage 同时识别当前回复标记与旧 DSH 标记，避免回流的回复触发新一轮对话。已有机器人名称和用户选择的自定义 agent preset 保持不变；npm 包标识、命令、配置名称及第三方署名保留上游值。
 
 [产物页面](../../client/ui-artifacts/README.zh.md) 将保留输出目录和当前已注册的本机工作区文件合并在同一产物库中。新媒体默认保存在当前 Harness home 的 `plugin-data/credits/media` 目录；更改目录保留旧文件及历史根目录。可信的[产物保存服务](../../deliverables/artifacts-index/README.zh.md) 发布新输出，不改变会话工作区。注册工作区不改变输出偏好，注销工作区会撤销该来源的访问。原生文件操作可用时，在提供服务的 Host 上执行。
 

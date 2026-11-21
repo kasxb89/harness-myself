@@ -392,6 +392,34 @@ export interface RenameSessionInjected {
   requestSessionRename: (sessionId: SessionId, currentTitle: string) => void
 }
 
+/** Permanent deletion entry: opening the confirmation never mutates a Session. */
+export interface DeleteSessionInjected {
+  /** Ask for confirmation against the row's current identity and title. */
+  requestSessionDelete: (sessionId: SessionId, displayTitle: string) => void
+}
+
+/** The exact Session and Workspace captured when deletion was requested. */
+export interface SessionDeleteTarget {
+  /** Session whose records the user is considering deleting. */
+  sessionId: SessionId
+  /** Title named in the confirmation. */
+  displayTitle: string
+  /** Recorded Workspace path; absent metadata cannot authorize deletion. */
+  cwd: string | undefined
+}
+
+/** Confirmation share; the Host remains the authority for deletion admission. */
+export interface SessionDeleteDialogInjected {
+  hooks: {
+    /** Pending user confirmation, not a pending Host mutation. */
+    deleteRequest: HostObservable<SessionDeleteTarget | null>
+  }
+  /** Cancel the confirmation or consume a completed deletion. */
+  settleSessionDelete: () => void
+  /** Permanently delete the confirmed records, retaining independent files. */
+  deleteSession: (sessionId: SessionId, cwd: string) => Promise<void>
+}
+
 /** A Session rename the rename action asked for; the dialog entry opens on it. */
 export interface SessionRenameTarget {
   /** Session to rename. */
@@ -434,6 +462,13 @@ export type SessionRenameDialogProps =
   & PropsLocale<'workspace'>
   & Omit<SessionRenameDialogInjected, 'hooks'>
   & PropsHooks<SessionRenameDialogInjected['hooks']>
+
+/** Props of the permanent-delete confirmation entry in `shell.overlay`. */
+export type SessionDeleteDialogProps =
+  PropsRuntime<'shell.overlay'>
+  & PropsLocale<'workspace'>
+  & Omit<SessionDeleteDialogInjected, 'hooks'>
+  & PropsHooks<SessionDeleteDialogInjected['hooks']>
 
 /** Props of the stop-and-archive dialog entry in `shell.overlay`. */
 export type SessionArchiveConfirmProps =

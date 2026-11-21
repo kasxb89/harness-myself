@@ -48,7 +48,7 @@ The product's Chat area hides the Trajectory and marketplace Video Views through
 
 The product manages skins through **Settings → Skin Market**. Dream Skin is not distributed with the product. The core [theme service](../../client/ui-theme/README.md) retains basic color and font settings.
 
-The **IM bots** panel uses Yunshu product names in both interface languages. Its npm identity, commands, configuration names, and third-party attribution retain their upstream values.
+The default product agent introduces itself as the **Yunshu assistant (云枢助手)**, including in IM conversations. IM connection messages, mirrored replies, and new bot display names use Yunshu branding. iMessage recognizes both the current reply marker and the old DSH marker to prevent echoed replies from starting another turn. Existing bot names and custom agent personas remain unchanged; npm identity, commands, configuration names, and third-party attribution retain their upstream values.
 
 The [Artifacts page](../../client/ui-artifacts/README.md) combines retained output directories and currently registered local workspace files in one library. New media defaults to the active Harness home's `plugin-data/credits/media` directory; changing the directory preserves earlier files and roots. The trusted [artifact storage service](../../deliverables/artifacts-index/README.md) publishes new output without changing the conversation workspace. Workspace registration does not change the output preference; unregistering it revokes that source's access. Native file actions, when available, run on the serving Host.
 

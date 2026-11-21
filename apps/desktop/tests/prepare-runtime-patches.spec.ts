@@ -56,7 +56,8 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
     packages: Record<string, { version?: string }>
   }
   for (const entry of plan.patches) {
-    expect(readFileSync(join(project, entry.path))).toEqual(readFileSync(join(repository, source.patchedDependencies[entry.spec]!)))
+    const expectedPatch = readFileSync(join(repository, source.patchedDependencies[entry.spec]!))
+    expect(readFileSync(join(project, entry.path)).equals(expectedPatch)).toBe(true)
   }
   writeFileSync(join(project, 'pnpm-lock.yaml'), yaml.dump({
     patchedDependencies: Object.fromEntries(plan.patches.map(entry => [entry.spec, lock.patchedDependencies[entry.spec]])),
@@ -72,7 +73,7 @@ it('classifies the current workspace and shares only runtime patch bytes', () =>
     internal: 'file:./internal.tgz', '@earendil-works/pi-ai@^1.0.2': '1.0.2',
     'dsh-custom-mode@2.2.5>@deepseek-ai/dsh': '-',
   })
-  expect(readFileSync(join(repository, 'pnpm-lock.yaml'))).toEqual(before)
+  expect(readFileSync(join(repository, 'pnpm-lock.yaml')).equals(before)).toBe(true)
 })
 
 it('mounts the shipped employee editor beside its patched bundle and retains entry opt-outs', () => {

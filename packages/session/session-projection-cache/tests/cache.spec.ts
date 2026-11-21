@@ -157,6 +157,22 @@ async function harness(options: HarnessOptions = {}) {
 const mark = (session: Session, marks: string[]): SessionEvent =>
   session.append('cache-test/mark', { marks })
 
+it('permanent deletion removes the detached Session checkpoint after queued final writes, retaining other rows', async () => {
+  const { ctx, root, cache } = await harness()
+  const id = SessionId('deleted-checkpoint')
+  const owner = await ctx.plugin({
+    name: 'deleted-checkpoint-owner',
+    inject: ['sessions'],
+    apply(ownerCtx: Context) { ownerCtx.sessions.create(id) },
+  })
+  const retained = ctx.sessions.create(SessionId('retained-checkpoint'))
+  await cache.write(retained)
+  await owner.dispose()
+  await cache.deleteSession(id)
+  expect(await storedRecord(root, id)).toBeUndefined()
+  expect(await storedRecord(root, retained.id)).toBeDefined()
+})
+
 const endTurn = (session: Session): SessionEvent =>
   session.append('turn/end', { turn: 1, reason: { kind: 'completed' } })
 

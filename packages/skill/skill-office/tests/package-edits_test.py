@@ -165,6 +165,97 @@ class PackageEditsTest(unittest.TestCase):
         self.assertEqual(values, list(range(100_000, 101_000)))
         self.unchanged_parts(source, output, {"xl/worksheets/sheet1.xml"})
 
+    def test_new_rows_and_columns_keep_order_and_styles_without_repeated_full_sorts(self):
+        from openpyxl import Workbook, load_workbook
+        from openpyxl.styles import Font
+        source = self.root / "sparse.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "数据"
+        sheet["A2"] = "Preserved"
+        sheet["D20"] = "Last original cell"
+        sheet.row_dimensions[10].font = Font(bold=True)
+        sheet.column_dimensions["F"].font = Font(italic=True)
+        workbook.save(source)
+        workbook.close()
+        operations = [{"kind": "cell", "sheet": "数据", "cell": f"F{row}", "value": row}
+                      for row in [*range(21, 121), 10, 1, 5]]
+        operations += [{"kind": "cell", "sheet": "数据", "cell": "B10", "value": "middle"},
+                       {"kind": "cell", "sheet": "数据", "cell": "A10", "value": "first"},
+                       {"kind": "cell", "sheet": "数据", "cell": "F10", "value": "latest"}]
+        full_sorts = []
+        def tracked_sorted(values, *args, **kwargs):
+            values = list(values)
+            if values and all(getattr(node, "tag", None) in (self.module.q("s", "row"), self.module.q("s", "c")) for node in values):
+                full_sorts.append(len(values))
+            return sorted(values, *args, **kwargs)
+        with patch.object(self.module, "sorted", tracked_sorted, create=True):
+            output, _result = run_patch(self.module, source, operations, self.root / "patched")
+        self.assertLessEqual(len(full_sorts), 1, "new cells must not repeatedly sort all existing rows/cells")
+        edited = load_workbook(output)
+        self.addCleanup(edited.close)
+        sheet = edited["数据"]
+        self.assertEqual(sheet["A2"].value, "Preserved")
+        self.assertEqual(sheet["D20"].value, "Last original cell")
+        self.assertEqual(sheet["F120"].value, 120)
+        self.assertEqual(sheet["F10"].value, "latest")
+        self.assertTrue(sheet["F10"].font.bold)
+        self.assertTrue(sheet["F1"].font.italic)
+        tree = self.module.ET.fromstring(members(output)["xl/worksheets/sheet1.xml"])
+        data = tree.find("s:sheetData", self.module.NS)
+        row_numbers = [int(row.get("r")) for row in data]
+        self.assertEqual(row_numbers, sorted(row_numbers))
+        for row in data:
+            columns = [self.module.cell_coordinates(cell.get("r"))[1] for cell in row]
+            self.assertEqual(columns, sorted(columns))
+        self.unchanged_parts(source, output, {"xl/worksheets/sheet1.xml"})
+
+    def test_repeated_slide_edits_index_the_shapes_once(self):
+        from pptx import Presentation
+        from pptx.util import Inches
+        source = self.root / "many-shapes.pptx"
+        deck = Presentation()
+        slide = deck.slides.add_slide(deck.slide_layouts[6])
+        operations = []
+        for index in range(120):
+            shape = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(2), Inches(1))
+            shape.text = f"Original {index}"
+            operations.append({"kind": "slide_text", "slide_number": 1, "shape_id": shape.shape_id,
+                               "old_text": f"Original {index}", "new_text": f"Revised {index}"})
+        operations.append({**operations[0], "old_text": "Revised 0", "new_text": "Latest 0"})
+        deck.save(source)
+        with patch.object(self.module, "slide_shapes", wraps=self.module.slide_shapes) as scans:
+            output, _result = run_patch(self.module, source, operations, self.root / "patched")
+        self.assertEqual(scans.call_count, 1, "one slide's stable shape IDs need only one scan per patch")
+        texts = [shape.text for shape in Presentation(output).slides[0].shapes]
+        self.assertEqual(texts, ["Latest 0", *[f"Revised {index}" for index in range(1, 120)]])
+        self.unchanged_parts(source, output, {"ppt/slides/slide1.xml"})
+
+    def test_existing_cell_edits_preserve_rows_with_omitted_row_numbers(self):
+        from openpyxl import load_workbook
+        source = self.root / "optional-row-number.xlsx"
+        workbook_fixture(source, rows=3, columns=2)
+        parts = members(source)
+        tree = self.module.ET.fromstring(parts["xl/worksheets/sheet1.xml"])
+        for row in tree.findall("s:sheetData/s:row", self.module.NS):
+            row.attrib.pop("r", None)
+        parts["xl/worksheets/sheet1.xml"] = self.module.ET.tostring(tree)
+        with zipfile.ZipFile(source, "w") as archive:
+            for name, body in parts.items():
+                archive.writestr(name, body)
+        output, _result = run_patch(self.module, source, [
+            {"kind": "cell", "sheet": "数据", "cell": "A1", "value": 999},
+            {"kind": "cell", "sheet": "数据", "cell": "B3", "number_format": "0.00"},
+        ], self.root / "patched")
+        workbook = load_workbook(output)
+        self.addCleanup(workbook.close)
+        self.assertEqual(workbook["数据"]["A1"].value, 999)
+        self.assertEqual(workbook["数据"]["B3"].value, 6)
+        self.assertEqual(workbook["数据"]["B3"].number_format, "0.00")
+        edited = self.module.ET.fromstring(members(output)["xl/worksheets/sheet1.xml"])
+        self.assertTrue(all(row.get("r") is None for row in edited.findall("s:sheetData/s:row", self.module.NS)))
+        self.unchanged_parts(source, output, {"xl/worksheets/sheet1.xml", "xl/styles.xml"})
+
     def test_repeated_same_cell_edits_observe_the_latest_value(self):
         from openpyxl import load_workbook
         source = self.root / "same-cell.xlsx"

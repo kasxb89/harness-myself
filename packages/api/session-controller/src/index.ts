@@ -45,6 +45,8 @@ import type {
   SessionControlFrame,
   SessionCreateRequest,
   SessionCreateValue,
+  SessionDeleteRequest,
+  SessionDeleteValue,
   SessionFollowFrame,
   SessionFollowRequest,
   SessionForkRequest,
@@ -211,7 +213,9 @@ export class SessionController extends TypertRemoteService {
       ctx.emit('api-session/added', this.listState.summaryFor(session))
     })
     ctx.on('session/disposed', (session) => {
-      ctx.emit('api-session/removed', session.id)
+      // Deletion publishes removal only after storage commits. If unlink
+      // fails, the durable conversation remains listed and can be reopened.
+      if (!this.agents.deletionInProgress(session.id)) ctx.emit('api-session/removed', session.id)
     })
     const publishAgentAvailability = ({ agent }: { agent: Agent }): undefined => {
       if (ctx.sessions.get(agent.id) === agent.session) {
@@ -252,6 +256,20 @@ export class SessionController extends TypertRemoteService {
     })
     this.promotions.add(task)
     void task.finally(() => { this.promotions.delete(task) })
+  }
+
+  /**
+   * Permanently delete an inactive local conversation after explicit user
+   * confirmation. The workspace witness is validated again at the storage
+   * boundary; this never deletes independent workspace or generated files.
+   * @param request - exact Session id and catalog workspace witness.
+   * @returns confirmation after durable log deletion.
+   */
+  @Remote('delete')
+  async delete(request: SessionDeleteRequest): Promise<SessionDeleteValue> {
+    if (request.cwd.length === 0) throw new RemoteError('gateway/bad-request', 'Session deletion requires its workspace', {})
+    await this.agents.deleteSession(request.sessionId, request.cwd)
+    return { deleted: true }
   }
 
   /**
