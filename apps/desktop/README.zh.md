@@ -202,6 +202,8 @@ Desktop 启动后通过已认证 Host 的 `/credits/api/session` 读取产品登
 
 ## 打包
 
+Windows x64 到 Mac ARM64／Intel 的可选本地 ZIP 打包流程见 [scripts/MAC-CROSS-WINDOWS.md](scripts/MAC-CROSS-WINDOWS.md)。两个架构的产物都必须在 Mac 上完成实际运行验收，才能通过验收。
+
 <a id="release-versions"></a>
 
 ### 发布版本
@@ -255,9 +257,24 @@ pnpm run package:desktop:mac:x64
 pnpm run package:desktop:win:x64
 ```
 
-macOS arm64 命令要求 Apple Silicon。macOS x64 命令可以在 Intel macOS 或带 Rosetta 的 Apple Silicon 上运行。Windows x64 命令要求 Windows x64。Linux 不是受支持的 Desktop 发布目标。
+macOS arm64 命令要求 Apple Silicon。macOS x64 命令可以在 Intel macOS 或带 Rosetta 的 Apple Silicon 上运行。Windows x64 命令要求 Windows x64。Linux 仅支持下述独立客户专用麒麟包，不属于普通发布目标。
 
 每个目标都在 `apps/desktop/.desktop-build/targets/<target>/` 下持有自己的打包输入、已准备运行时、包集合、dsh 依赖树、pnpm 准备状态、未打包应用、更新元数据和最终产物。Electron 归档缓存继续由 `.desktop-build/downloads` 共享，因为每个归档文件名都包含版本、平台和架构，并且在解包前经过验证。目标构建绝不读取其他目标的可变准备状态。
+
+### 客户专用麒麟 x64 包
+
+客户专用银河麒麟 V10 SP1 2503 包以 Linux x64、glibc 2.31 为目标，在兼容的 Linux x64 构建环境中运行独立命令 `package:kylin:x64`，并提供经确认的完整构建版本。运行时和产物位于 `.desktop-build/targets/linux-x64/`，与普通发布目标隔离。
+
+```sh
+DSH_DESKTOP_PROJECT_URL='<HTTPS project or installation guide URL>' \
+pnpm --dir apps/desktop run package:kylin:x64 --build-version 0.2.1-alpha.2.20261110.1
+```
+
+构建前须设置 `DSH_DESKTOP_PROJECT_URL`，供 Debian 元数据记录项目或安装说明地址。专用 Linux 包使用 `resources/app/dsh` 目录载荷，并按运行时文件清单校验；所选 Electron 在中文安装前缀下无法解析 ASAR 路径。普通 macOS 与 Windows 仍启用原有 ASAR 打包。
+
+命令准备并验证完整运行时、包内 Host 与 Office 载荷后，记录带麒麟后缀的 DEB 和 tar.gz，不执行上传。专用包不包含自动更新服务来源和共用 feed 元数据；只有准确匹配的已安装麒麟包才关闭后台共用更新轮询，手动检查更新会提示该目标不受支持。Windows 与 macOS 的更新发现、安装和上传保持原行为。分发使用独立且带版本的麒麟 OSS 目录，通过 DEB 手动安装，不写入普通更新清单。兼容 glibc 的 Linux 冒烟验证与客户实际麒麟桌面验收分别记录。
+
+专用 DEB 安装到 `/opt/云枢`。仅 Host 与 CLI 使用独立且锁定哈希的 glibc 2.36/GCC 运行库；Electron 窗口和系统仍用 glibc 2.31。专用构建容器须提供 `patchelf`、Debian 许可文本，并将 `/opt/云枢/resources/runtime` 链接到目标暂存运行时；tar.gz 也须安装到这个固定目录。兼容运行时清单保留源码包地址、精确版本、哈希和许可声明；上传前须用安装后的辅助程序验证办公和语音原生绑定。
 
 ### 无发布签名的本地 macOS DMG
 

@@ -11,4 +11,6 @@ while [ -L "$launcher" ]; do
   esac
 done
 resources=$(CDPATH= cd -- "$(dirname -- "$launcher")/../../.." && pwd -P)
-ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/云枢" --expose-internals "$resources/app.asar/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"
+application="$resources/app.asar"
+if [ ! -e "$application" ]; then application="$resources/app"; fi
+ELECTRON_RUN_AS_NODE=1 exec "$resources/../MacOS/云枢" --expose-internals "$application/dsh/node_modules/@deepseek-ai/dsh-desktop-host/lib/cli.js" "$@"

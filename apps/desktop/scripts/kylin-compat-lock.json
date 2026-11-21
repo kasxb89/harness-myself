@@ -1,0 +1,34 @@
+{
+  "installRoot": "/opt/云枢",
+  "glibc": "2.36",
+  "assets": [
+    {
+      "name": "libc6",
+      "version": "2.36-9+deb12u14",
+      "url": "https://deb.debian.org/debian/pool/main/g/glibc/libc6_2.36-9%2bdeb12u14_amd64.deb",
+      "sha256": "ba4f88f73dbc3ae9055f3c20f4523bfdbaf1ad13ff95e258924f77d20b4fbedf",
+      "source": "https://sources.debian.org/src/glibc/2.36-9%2Bdeb12u14/"
+    },
+    {
+      "name": "libstdc++6",
+      "version": "12.2.0-14+deb12u1",
+      "url": "https://deb.debian.org/debian/pool/main/g/gcc-12/libstdc%2b%2b6_12.2.0-14%2bdeb12u1_amd64.deb",
+      "sha256": "5cd3171216d4ab0fc911cfe9c35509bf2dd8f47761c43b7f6a4296701551a24d",
+      "source": "https://sources.debian.org/src/gcc-12/12.2.0-14%2Bdeb12u1/"
+    },
+    {
+      "name": "libgcc-s1",
+      "version": "12.2.0-14+deb12u1",
+      "url": "https://deb.debian.org/debian/pool/main/g/gcc-12/libgcc-s1_12.2.0-14%2bdeb12u1_amd64.deb",
+      "sha256": "3016e62cb4b7cd8038822870601f5ed131befe942774d0f745622cc77d8a88f7",
+      "source": "https://sources.debian.org/src/gcc-12/12.2.0-14%2Bdeb12u1/"
+    },
+    {
+      "name": "gcc-12-base",
+      "version": "12.2.0-14+deb12u1",
+      "url": "https://deb.debian.org/debian/pool/main/g/gcc-12/gcc-12-base_12.2.0-14%2bdeb12u1_amd64.deb",
+      "sha256": "1896a2aacf4ad681ff5eacc24a5b0ca4d5d9c9b9c9e4b6de5197bc1e116ea619",
+      "source": "https://sources.debian.org/src/gcc-12/12.2.0-14%2Bdeb12u1/"
+    }
+  ]
+}

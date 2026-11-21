@@ -89,6 +89,15 @@ it('retains native prebuilds for the selected macOS architecture', () => {
   expect(desktopRuntimeFileExclusion('node-pty/prebuilds/win32-x64/conpty.node', mac, 'darwin-arm64')).toBeDefined()
 })
 
+it('retains Linux glibc binaries and removes unused musl and other ONNX architectures', () => {
+  const linux = { platform: 'linux' as const, arch: 'x64' }
+  expect(desktopRuntimeFileExclusion('onnxruntime-node/bin/napi-v6/linux/arm64/onnxruntime_binding.node', linux, 'wasm')).toBeDefined()
+  expect(desktopRuntimeFileExclusion('onnxruntime-node/bin/napi-v6/linux/x64/onnxruntime_binding.node', linux, 'wasm')).toBeUndefined()
+  expect(desktopRuntimeFileExclusion('@koromix/koffi-linux-x64/musl_x64/koffi.node', linux, 'wasm')).toBeDefined()
+  expect(desktopRuntimeFileExclusion('@koromix/koffi-linux-x64/linux_x64/koffi.node', linux, 'wasm')).toBeUndefined()
+  expect(desktopRuntimeFileExclusion('onnxruntime-node/bin/napi-v6/linux/arm64/onnxruntime_binding.node', windows, 'win32-x64')).toBeUndefined()
+})
+
 it.each([
   ['linux', 'x64', 'linux-x64'],
   ['linux', 'arm64', 'wasm'],

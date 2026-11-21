@@ -200,6 +200,8 @@ The 600 × 700 welcome window follows system light and dark appearance, with nat
 
 ## Package
 
+For the opt-in Windows x64 to Mac ARM64/Intel local ZIP pipeline, see [scripts/MAC-CROSS-WINDOWS.md](scripts/MAC-CROSS-WINDOWS.md). Target execution on a Mac remains required before either cross-built artifact can pass acceptance.
+
 <a id="release-versions"></a>
 
 ### Release versions
@@ -253,9 +255,24 @@ pnpm run package:desktop:mac:x64
 pnpm run package:desktop:win:x64
 ```
 
-The macOS arm64 command requires Apple Silicon. The macOS x64 command runs on Intel macOS or Apple Silicon with Rosetta. The Windows x64 command requires Windows x64. Linux is not a supported Desktop release target.
+The macOS arm64 command requires Apple Silicon. The macOS x64 command runs on Intel macOS or Apple Silicon with Rosetta. The Windows x64 command requires Windows x64. Linux is available only through the separate private Kylin package below, not the ordinary release targets.
 
 Each target owns its packed package inputs, prepared runtime, package set, dsh tree, pnpm preparation state, unpacked application, update metadata, and final artifacts under `apps/desktop/.desktop-build/targets/<target>/`. The Electron archive cache remains shared under `.desktop-build/downloads` because every archive name includes its version, platform, and architecture and is verified before extraction. A target build never consumes another target's mutable preparation state.
+
+### Private Kylin x64 package
+
+The customer-specific Kylin V10 SP1 2503 package targets Linux x64 with glibc 2.31. Run `package:kylin:x64` on a compatible Linux x64 build host with the confirmed complete build version. Its resources and artifacts live under `.desktop-build/targets/linux-x64/`, independently of ordinary release targets.
+
+```sh
+DSH_DESKTOP_PROJECT_URL='<HTTPS project or installation guide URL>' \
+pnpm --dir apps/desktop run package:kylin:x64 --build-version 0.2.1-alpha.2.20261110.1
+```
+
+Set `DSH_DESKTOP_PROJECT_URL` before building so Debian metadata has a project or installation-guide URL. Private Linux packages use a `resources/app/dsh` directory payload, verified against the runtime file inventory, because the selected Electron build cannot resolve ASAR paths beneath a Chinese installation prefix. Ordinary macOS and Windows ASAR packaging remains enabled.
+
+The command prepares and verifies the complete runtime, packaged Host and Office payload before recording DEB and tar.gz artifacts with a Kylin suffix. It never publishes. Private packages omit automatic-update authority and shared feed metadata; only the exact installed Kylin manifest suppresses background shared-feed polling. Manual update checks report that the target is unsupported. Windows and macOS discovery, installation and uploads retain their existing behavior. Distribution uses a separate versioned Kylin OSS directory and manual DEB installation, without writing ordinary feeds. A glibc-compatible Linux smoke is separate from testing on the customer's actual Kylin desktop.
+
+The private DEB installs at `/opt/云枢`. Only its Host and CLI use a separate, hash-pinned glibc 2.36/GCC runtime; Electron windows and the system keep glibc 2.31. The dedicated build container needs `patchelf`, Debian license texts and a staging link from `/opt/云枢/resources/runtime` to its target runtime. The tar.gz must also be installed at that fixed prefix. The compatibility manifest retains source-package URLs, exact versions, hashes and license notices. Verify native Office and speech bindings with the installed helper before upload.
 
 ### Local macOS DMG without release signing
 

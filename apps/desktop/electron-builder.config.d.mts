@@ -5,6 +5,7 @@ export interface DesktopElectronBuilderConfig {
   readonly productName: '云枢'
   readonly appId: string
   readonly artifactName: string
+  readonly asar: boolean
   readonly protocols: readonly [{ readonly name: '云枢'; readonly schemes: readonly ['dsh'] }]
   readonly directories: {
     readonly output: string
@@ -20,7 +21,10 @@ export interface DesktopElectronBuilderConfig {
   readonly extraMetadata: {
     readonly dshDesktopAppId: string
     readonly dshDesktopUnsigned?: true
+    readonly dshDesktopPrivateDistribution?: 'kylin-v10sp1-2503-x64'
     readonly dshDesktopUpdateConfigOrigin?: string
+    readonly homepage?: string
+    readonly desktopName?: 'yunshu-kylin.desktop'
   }
   readonly asarUnpack: readonly string[]
   readonly extraResources: readonly [
@@ -56,7 +60,15 @@ export interface DesktopElectronBuilderConfig {
   readonly linux: {
     readonly icon: string
     readonly category: 'Development'
-    readonly target: readonly ['AppImage']
+    readonly target: readonly ['AppImage'] | readonly ['deb', 'tar.gz']
+    readonly syncDesktopName?: true
+    readonly desktop?: { readonly entry: { readonly Name: '云枢' } }
+  }
+  readonly deb?: {
+    readonly packageName: 'yunshu-kylin'
+    readonly depends: readonly string[]
+    readonly compression: 'gz'
+    readonly fpm: readonly ['--deb-compression-level=1']
   }
   readonly nsis: {
     readonly include: string
