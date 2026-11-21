@@ -19,6 +19,8 @@ import { selectableModelReasoning } from './reasoning-controls.ts'
 export interface ModelDirectoryState {
   /** Saved selection, retained even when its provider or model leaves the catalog. */
   current: ModelSelection | null
+  /** Authorized deployment default from this same catalog, independent of retained Session history. */
+  defaultSelection?: ModelSelection
   /** Saved effort caption retained when the selected model is unavailable. */
   retainedEffort?: string
   /** Whether the current selection is present in the available catalog; null while unresolved. */
@@ -171,6 +173,7 @@ export class ModelDirectory {
     if (this.disposed) return
     const catalog = this.catalog.store.getSnapshot()
     const projected = modelSelectionProjection(this.projected.getSnapshot())
+    const defaultSelection = catalog.value?.policyDefault ?? catalog.value?.default
     const intended = projected?.next ?? catalog.value?.default
     const model = catalog.value?.groups.find(group => group.id === intended?.provider)?.models.find(value => value.id === intended?.model)
     const reasoning = intended === undefined ? undefined : model === undefined
@@ -181,6 +184,7 @@ export class ModelDirectory {
     if (catalog.status !== 'ready' || catalog.value === null || projected === undefined) {
       this.store.set({
         current: catalog.value === null ? null : this.store.getSnapshot().current,
+        ...defaultSelection === undefined ? {} : { defaultSelection: { ...defaultSelection } },
         ...retainedEffort === undefined ? {} : { retainedEffort },
         routable: null,
         groups: catalog.value?.groups ?? [],
@@ -196,6 +200,7 @@ export class ModelDirectory {
       && group.models.some(model => model.id === selection.model))
     this.store.set({
       current: selection,
+      ...defaultSelection === undefined ? {} : { defaultSelection: { ...defaultSelection } },
       ...retainedEffort === undefined ? {} : { retainedEffort },
       routable,
       groups: catalog.value.groups,
@@ -207,6 +212,26 @@ export class ModelDirectory {
       error: null,
     })
   }
+}
+
+/**
+ * Resolve one advertised selection for both picker entries without changing durable intent.
+ * @param state - Session intent and the current Host catalog snapshot.
+ * @returns The available saved selection or backend default for an unset or confirmed
+ * unavailable route; null for unresolved intent.
+ */
+export function effectiveModelSelection(state: ModelDirectoryState): ModelSelection | null {
+  const modelFor = (selection: ModelSelection | null | undefined): ModelProviderGroup['models'][number] | undefined => selection == null
+    || state.failures.some(failure => failure.id === selection.provider) ? undefined
+    : state.groups.find(group => group.id === selection.provider)?.models.find(model => model.id === selection.model)
+  if (state.current !== null) {
+    const current = modelFor(state.current)
+    if (current === undefined) return null
+    if (current.executionCapabilities?.available !== false) return state.current
+  }
+  const fallback = modelFor(state.defaultSelection)
+  return state.status !== 'error' && fallback !== undefined && fallback.executionCapabilities?.available !== false
+    ? state.defaultSelection ?? null : null
 }
 
 function modelSelectionProjection(value: unknown): ModelSelectionProjection | undefined {

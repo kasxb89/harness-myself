@@ -141,7 +141,8 @@ export async function recoverPromptModel(
   const catalog = await buildModelCatalog(ctx)
   assertCurrent()
   const sameProvider = catalog.groups.find(group => group.id === current.provider)
-  const candidates = [catalog.default, ...(sameProvider?.models.map(model => ({ provider: sameProvider.id, model: model.id })) ?? [])]
+  const preferred = catalog.policyDefault ?? catalog.default
+  const candidates = [preferred, ...(sameProvider?.models.map(model => ({ provider: sameProvider.id, model: model.id })) ?? [])]
   const visited = new Set<string>()
   let unresolved: Error | undefined
   for (const candidate of candidates) {
@@ -173,7 +174,7 @@ export async function recoverPromptModel(
   }
   if (unresolved !== undefined) throw unresolved
   const relevantFailure = catalog.failures.find(failure => failure.id === current.provider
-    || failure.id === catalog.default.provider)
+    || failure.id === preferred.provider)
   if (relevantFailure !== undefined) throw new RemoteError('session/provider-models-unavailable',
     '暂时无法读取当前账号的可用模型，请稍后重试；输入和附件已保留。', { provider: relevantFailure.id })
   throw new RemoteError('session/model-unavailable', '当前账号暂无可用的兼容文本模型，请稍后重试；输入和附件已保留。',

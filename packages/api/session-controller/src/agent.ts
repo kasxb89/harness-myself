@@ -189,13 +189,21 @@ export class ApiSessionAgentController {
     return this.resolve(observation.header.id, observation)
   }
 
-  /** Refuse deletion in progress or a late operation holding a retired Agent. */
+  /**
+   * Refuse deletion in progress or a late operation holding a retired Agent.
+   * @param sessionId - exact Session receiving the operation.
+   * @param agent - optional original Agent whose lifetime must still be current.
+   */
   assertAvailable(sessionId: SessionId, agent?: Agent): void {
     if (this.deleting.has(sessionId)) throw deleteActive(sessionId)
     if (agent !== undefined && this.ctx.agents.get(sessionId) !== agent) throw new RemoteError('session/not-found', 'session was removed during this operation', { sessionId })
   }
 
-  /** Keep a disposal during deletion from publishing a premature list removal. */
+  /**
+   * Keep a disposal during deletion from publishing a premature list removal.
+   * @param sessionId - exact Session whose deletion may be in progress.
+   * @returns whether this controller currently holds its deletion fence.
+   */
   deletionInProgress(sessionId: SessionId): boolean {
     return this.deleting.has(sessionId)
   }
@@ -206,6 +214,8 @@ export class ApiSessionAgentController {
    * Maintenance holds the idle phase across asynchronous activity checks;
    * disposal starts inside it, but is awaited only after maintenance exits.
    * Consequently no running turn is cancelled to make deletion succeed.
+   * @param sessionId - exact local Session whose stored conversation is removed.
+   * @param cwd - immutable workspace witness read from the Session catalog.
    */
   async deleteSession(sessionId: SessionId, cwd: string): Promise<void> {
     if (this.deleting.has(sessionId) || this.resumes.has(sessionId) || this.creations.has(sessionId)) throw deleteActive(sessionId)

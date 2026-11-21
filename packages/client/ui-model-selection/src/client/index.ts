@@ -27,7 +27,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type { TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import { IconDataOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ModelDirectoryState } from './directory.ts'
+import { effectiveModelSelection, type ModelDirectoryState } from './directory.ts'
 import { ModelDirectoryResolver } from './service.ts'
 import type { ModelSelectInjected } from './slots.ts'
 import { ModelSelect } from './ModelSelect.tsx'
@@ -59,6 +59,7 @@ function rowId(providerId: string, modelId: string): string {
 /** Flatten the directory into popup rows; failure rows are listed for visibility but never selectable. */
 function optionsOf(directory: ModelDirectoryState, t: TranslateNS<'model'>): SelectOption[] {
   const rows: SelectOption[] = []
+  const current = effectiveModelSelection(directory)
   for (const group of orderModelProviders(directory.groups)) {
     const name = group.id === 'deepseek-account' ? t('provider.account') : group.name
     for (const model of group.models) {
@@ -67,9 +68,9 @@ function optionsOf(directory: ModelDirectoryState, t: TranslateNS<'model'>): Sel
         label: model.name,
         ...modelGuidance(group.id, model, t),
         group: { name: group.id, label: name },
-        ...(directory.current !== null
-          && directory.current.provider === group.id
-          && directory.current.model === model.id
+        ...(current !== null
+          && current.provider === group.id
+          && current.model === model.id
           ? { active: true } : {}),
       })
     }
@@ -92,11 +93,12 @@ function optionsOf(directory: ModelDirectoryState, t: TranslateNS<'model'>): Sel
  * @returns the row's model selection, or undefined for failure rows / stale ids.
  */
 function selectionOf(state: ModelDirectoryState, id: string): ModelSelection | undefined {
+  const current = effectiveModelSelection(state)
   for (const group of state.groups) {
     for (const model of group.models) {
       if (rowId(group.id, model.id) !== id) continue
-      const sameRoute = state.current?.provider === group.id && state.current.model === model.id
-      const saved = state.current?.reasoningEffort
+      const sameRoute = current?.provider === group.id && current.model === model.id
+      const saved = current?.reasoningEffort
       const reasoning = selectableModelReasoning(model)
       const reasoningEffort = sameRoute && saved !== undefined
         && reasoning?.efforts.some(effort => effort.id === saved) === true ? saved : reasoning?.defaultEffort

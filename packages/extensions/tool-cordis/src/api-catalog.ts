@@ -93,8 +93,15 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         returns: 'a detached provider, model, and optional reasoning selection.',
       },
       {
+        signature: 'policySelection(): ModelSelection | undefined',
+        description: 'Read the active deployment\'s available model independently of a saved default. This samples the current policy without changing Config, saving a preference, or retaining the returned selection. Consumers still validate availability.',
+        parameters: [],
+        returns: 'a detached provider/model/reasoning selection, or undefined when no policy is registered or the policy supplies no available selection.',
+        throws: ['the policy reader\'s error without changing Config or retaining a selection.'],
+      },
+      {
         signature: 'registerPolicySelection(read: () => ModelSelection | undefined): () => void',
-        description: 'Contribute the deployment\'s available default without persisting an automatic choice. Only compositions with `followPolicy` enabled read this source; saved user choices opt out.',
+        description: 'Contribute the deployment\'s available default without persisting an automatic choice. `currentSelection` follows this source only with `followPolicy`; recovery readers may inspect it independently.',
         parameters: [{ name: 'read', description: 'synchronous source which returns an available selection or no override.' }],
         returns: 'an owned, idempotent disposer; a second active contribution is rejected.',
       },
@@ -6227,7 +6234,7 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   },
   {
     name: 'ModelCatalog',
-    declaration: 'export interface ModelCatalog {\n    readonly default: ModelSelection;\n    readonly routableProviders: readonly string[];\n    readonly groups: readonly ModelProviderGroup[];\n    readonly failures: readonly ModelCatalogFailure[];\n}',
+    declaration: 'export interface ModelCatalog {\n    readonly default: ModelSelection;\n    readonly policyDefault?: ModelSelection;\n    readonly routableProviders: readonly string[];\n    readonly groups: readonly ModelProviderGroup[];\n    readonly failures: readonly ModelCatalogFailure[];\n}',
   },
   {
     name: 'ModelCatalogFailure',

@@ -3730,6 +3730,7 @@ describe('deployed Harness API through the real product Loader', () => {
     await signIn(base)
     const catalog = await buildModelCatalog(context!)
     expect(catalog.default).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
+    expect(catalog.policyDefault).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
     expect(catalog.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
       .toEqual(['second-chat', 'deepseek-v4-flash', 'new-chat'])
     expect(catalog.groups.flatMap(group => group.models).map(model => model.id)).not.toContain('unauthorized')
@@ -3816,7 +3817,9 @@ describe('deployed Harness API through the real product Loader', () => {
     context!.on('api-session/model-catalog-changed', () => { refreshed.push(buildModelCatalog(context!)) })
     await post(base, '/api/session/logout', {})
     await vi.waitFor(() => { expect(refreshed.length).toBeGreaterThan(0) })
-    expect((await refreshed[0]!).groups.some(group => group.id === 'yunshu-local')).toBe(false)
+    const signedOut = await refreshed[0]!
+    expect(signedOut.groups.some(group => group.id === 'yunshu-local')).toBe(false)
+    expect(signedOut.policyDefault).toBeUndefined()
     selfId = 8
     relayKey = 'sk-account-two'
     relayModels = [{ id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
@@ -3826,6 +3829,7 @@ describe('deployed Harness API through the real product Loader', () => {
     const nextAccount = await refreshed.at(-1)!
     expect(nextAccount.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id)).toEqual(['second-chat'])
     expect(nextAccount.default).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
+    expect(nextAccount.policyDefault).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
     const count = refreshed.length
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(Date.now() + 31 * 24 * 60 * 60_000)
@@ -3834,6 +3838,7 @@ describe('deployed Harness API through the real product Loader', () => {
     expect(refreshed.length).toBeGreaterThan(count)
     const expired = await refreshed.at(-1)!
     expect(expired.groups.some(group => group.id === 'yunshu-local')).toBe(false)
+    expect(expired.policyDefault).toBeUndefined()
   })
 
   it.each(['gpt-image-2', 'unauthorized'])('falls back to an authorized chat when backend default %s is unusable', async (defaultModel) => {
@@ -3847,7 +3852,7 @@ describe('deployed Harness API through the real product Loader', () => {
   })
 
   it('keeps an explicit user default while applying the backend product ordering', async () => {
-    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: ['second-chat'] }
+    clientModelConfig = { schema_version: 1, default_chat_model: 'second-chat', model_order: ['deepseek-v4-flash', 'second-chat'] }
     relayModels = [...initialRelayModels(), { id: 'second-chat', object: 'model', supported_endpoint_types: ['openai'] }]
     const { base } = await boot(undefined, false, false, { provider: 'other-provider', model: 'other-chat' })
     const changes = vi.fn()
@@ -3855,8 +3860,9 @@ describe('deployed Harness API through the real product Loader', () => {
     await signIn(base)
     const catalog = await buildModelCatalog(context!)
     expect(catalog.default).toEqual({ provider: 'other-provider', model: 'other-chat' })
+    expect(catalog.policyDefault).toEqual({ provider: 'yunshu-local', model: 'second-chat' })
     expect(catalog.groups.find(group => group.id === 'yunshu-local')?.models.map(model => model.id))
-      .toEqual(['second-chat', 'deepseek-v4-flash'])
+      .toEqual(['deepseek-v4-flash', 'second-chat'])
     expect(changes).toHaveBeenCalledTimes(2)
   })
 

@@ -43,6 +43,7 @@ import css from './ModelSelect.module.css'
 import { orderModelProviders } from './provider-order.ts'
 import { modelGuidance } from './model-guidance.ts'
 import { reasoningControlsAllowed, selectableModelReasoning } from './reasoning-controls.ts'
+import { effectiveModelSelection } from './directory.ts'
 
 /** Which pane the dropdown shows: the two-row root or one drilled-in list. */
 type Pane = 'root' | 'model' | 'effort'
@@ -93,6 +94,7 @@ export function ModelSelect(
   const id = useId()
 
   const groups = useMemo(() => orderModelProviders(state.groups), [state.groups])
+  const effectiveSelection = effectiveModelSelection(state)
   const choices = useMemo(() => groups.flatMap(group =>
     group.models.map((model) => {
       const defaultEffort = selectableModelReasoning(model)?.defaultEffort
@@ -112,28 +114,28 @@ export function ModelSelect(
     provider: group.id, model: model.id,
   }))), [filteredGroups])
   const currentVisibleIndex = visibleModels.findIndex(model =>
-    model.provider === state.current?.provider && model.model === state.current.model)
+    model.provider === effectiveSelection?.provider && model.model === effectiveSelection.model)
   const activeModelIndex = Math.min(highlightedIndex ?? Math.max(0, currentVisibleIndex), visibleModels.length - 1)
-  const selectedIndex = state.current === null
+  const selectedIndex = effectiveSelection === null
     ? -1
-    : choices.findIndex(c => c.selection.provider === state.current?.provider && c.selection.model === state.current.model)
+    : choices.findIndex(c => c.selection.provider === effectiveSelection.provider && c.selection.model === effectiveSelection.model)
   const currentChoice = choices[selectedIndex]
   const savedSelectionUnlisted = state.status === 'ready' && state.routable === false && state.current !== null
     && !state.failures.some(failure => failure.id === state.current?.provider)
   const currentCapabilities = currentChoice?.model.textCapabilities
   const reasoningDisabled = !reasoningControlsAllowed(currentChoice?.model)
   const reasoning = selectableModelReasoning(currentChoice?.model)
-  const effectiveEffort = state.current?.reasoningEffort ?? reasoning?.defaultEffort
+  const effectiveEffort = effectiveSelection?.reasoningEffort ?? reasoning?.defaultEffort
   const defaultEffortLabel = t(currentCapabilities?.schemaVersion === 2 ? 'effort.providerAuto' : 'effort.providerDefault')
-  const savedEffortUnadvertised = state.current?.reasoningEffort !== undefined
+  const savedEffortUnadvertised = effectiveSelection?.reasoningEffort !== undefined
     && currentChoice !== undefined && (reasoning === undefined
-      || !reasoning.efforts.some(value => value.id === state.current?.reasoningEffort))
+      || !reasoning.efforts.some(value => value.id === effectiveSelection.reasoningEffort))
   const effortLabel = savedEffortUnadvertised
-    ? t('effort.savedUnadvertised', { effort: state.current?.reasoningEffort ?? '' })
+    ? t('effort.savedUnadvertised', { effort: effectiveSelection.reasoningEffort ?? '' })
     : currentChoice === undefined || reasoningDisabled
       ? undefined
       : reasoning === undefined
-        ? state.retainedEffort
+        ? effectiveSelection === state.current ? state.retainedEffort : undefined
         : effectiveEffort === undefined
           ? defaultEffortLabel
           : reasoning.efforts.find(level => level.id === effectiveEffort)?.name ?? effectiveEffort
@@ -413,14 +415,14 @@ export function ModelSelect(
   }
 
   const chooseEffort = (effort: string | undefined): void => {
-    if (state.current === null) return
+    if (effectiveSelection === null) return
     if (effectiveEffort === effort) {
       closeAfterSelection()
       return
     }
     const selection: ModelSelection = {
-      provider: state.current.provider,
-      model: state.current.model,
+      provider: effectiveSelection.provider,
+      model: effectiveSelection.model,
       ...effort === undefined ? {} : { reasoningEffort: effort },
     }
     submit(selection)
@@ -579,7 +581,7 @@ export function ModelSelect(
                     <MenuGroup key={group.id} label={group.id === 'deepseek-account' ? t('provider.account') : group.name}>
                       {group.models.map((model) => {
                         const index = modelIndex++
-                        const selected = state.current?.provider === group.id && state.current.model === model.id
+                        const selected = effectiveSelection?.provider === group.id && effectiveSelection.model === model.id
                         const guidance = modelGuidance(group.id, model, t)
                         return (
                           <button
@@ -656,8 +658,8 @@ export function ModelSelect(
                       <span className={css.modelName}>{level.label}</span>
                     </span>
                     <span className={css.check}>
-                      {pending !== null && pending.provider === state.current?.provider
-                        && pending.model === state.current.model && pending.reasoningEffort === level.effort
+                      {pending !== null && pending.provider === effectiveSelection?.provider
+                        && pending.model === effectiveSelection.model && pending.reasoningEffort === level.effort
                         ? <StateDot state="ongoing" />
                         : effectiveEffort === level.effort ? <IconCheckOutlineRegular /> : null}
                     </span>

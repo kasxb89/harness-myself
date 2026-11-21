@@ -68,6 +68,7 @@ const GROUPS = [{
 async function bench(locale: 'zh' | 'en' = 'zh') {
   const ctx = new Context()
   let defaultSelection: ModelSelection = { provider: 'deepseek-official', model: 'deepseek-v4-flash' }
+  let policyDefault: ModelSelection | undefined
   let selected = defaultSelection
   const calls = { models: 0, select: 0 }
   const projections = new Map<SessionId, SnapshotStore<ModelSelectionProjection | undefined>>()
@@ -84,6 +85,7 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
         ok: true as const,
         value: {
           default: defaultSelection,
+          ...policyDefault === undefined ? {} : { policyDefault },
           routableProviders: routable ? ['deepseek-official'] : [],
           groups: routable ? groups : [],
           failures: [],
@@ -199,6 +201,7 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
       selectionFailure = new RemoteError('session/writer-held', 'writer held', { sessionId: sid('owned') })
     },
     setHostCurrent: (selection: ModelSelection) => { defaultSelection = selection },
+    setPolicyDefault: (selection: ModelSelection) => { policyDefault = selection },
     setProjected: (id: SessionId, value: ModelSelectionProjection) => { projections.get(id)?.set(value) },
     address: (id: SessionId) => { addressed.add(id) },
     setGroups: (next: readonly ModelProviderGroup[]) => { groups = next },
@@ -212,6 +215,43 @@ async function bench(locale: 'zh' | 'en' = 'zh') {
 const projection = (id: string) => ({ sessionId: sid(id) })
 
 describe('ui-model-selection dual entry', () => {
+  it('publishes the backend policy default before projection hydration without rewriting unresolved durable intent', async () => {
+    const b = await bench()
+    try {
+      const preferred = { provider: 'deepseek-official', model: 'deepseek-v4-pro', reasoningEffort: 'max' }
+      b.setPolicyDefault(preferred)
+      const session = b.mint('policy')
+      session.projection.set(undefined)
+      const directory = b.ctx.modelDirectories.directoryFor(sid('policy'))
+      await directory.reload()
+      expect(directory.store.getSnapshot()).toMatchObject({ current: null, defaultSelection: preferred })
+      const saved = { provider: 'deepseek-official', model: 'removed', reasoningEffort: 'off' }
+      session.projection.set({ lastUsed: saved, next: saved })
+      expect(directory.store.getSnapshot()).toMatchObject({ current: saved, defaultSelection: preferred })
+      const options = await b.popup().options(projection('policy'), new AbortController().signal)
+      expect(options.filter(option => option.active)).toEqual([])
+      expect(session.projection.getSnapshot()).toEqual({ lastUsed: saved, next: saved })
+      expect(b.calls.select).toBe(0)
+    } finally { await b.ctx.fiber.dispose() }
+  })
+
+  it('clears the backend policy default and prior groups on an account catalog change before a failed replacement read', async () => {
+    const b = await bench()
+    try {
+      b.setPolicyDefault({ provider: 'deepseek-official', model: 'deepseek-v4-pro' })
+      b.mint('policy')
+      const directory = b.ctx.modelDirectories.directoryFor(sid('policy'))
+      await directory.reload()
+      expect(directory.store.getSnapshot().defaultSelection?.model).toBe('deepseek-v4-pro')
+      b.setCatalogFailure(true)
+      b.remote.emit('api-session/model-catalog-changed', [])
+      expect(directory.store.getSnapshot()).toMatchObject({ current: null, groups: [], status: 'loading' })
+      expect(directory.store.getSnapshot().defaultSelection).toBeUndefined()
+      await vi.waitFor(() => { expect(directory.store.getSnapshot()).toMatchObject({ groups: [], status: 'error', error: 'catalog offline' }) })
+      expect(b.calls.select).toBe(0)
+    } finally { await b.ctx.fiber.dispose() }
+  })
+
   it('refreshes cached defaults for unselected and blank chats while retaining explicit selections', async () => {
     const b = await bench()
     try {

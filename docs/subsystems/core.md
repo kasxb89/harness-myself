@@ -431,8 +431,18 @@ Owns the default model selection independently of any Host or transport. Each op
 currentSelection(): ModelSelection
 
 /**
+ * Read the active deployment's available model independently of a saved default.
+ * This samples the current policy without changing Config, saving a preference,
+ * or retaining the returned selection. Consumers still validate availability.
+ * @returns a detached provider/model/reasoning selection, or undefined when no
+ * policy is registered or the policy supplies no available selection.
+ * @throws the policy reader's error without changing Config or retaining a selection.
+ */
+policySelection(): ModelSelection | undefined
+
+/**
  * Contribute the deployment's available default without persisting an automatic choice.
- * Only compositions with `followPolicy` enabled read this source; saved user choices opt out.
+ * `currentSelection` follows this source only with `followPolicy`; recovery readers may inspect it independently.
  * @param read - synchronous source which returns an available selection or no override.
  * @returns an owned, idempotent disposer; a second active contribution is rejected.
  */

@@ -11,6 +11,7 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type { SessionPromptRequest, SessionRequestId } from '../src/types.ts'
 import { recoverPromptModel } from '../src/prompt-model.ts'
+import { buildModelCatalog } from '../src/catalog.ts'
 import { ApiSessionAgentController } from '../src/agent.ts'
 import { createSessionTestRemote } from './test-remote.ts'
 
@@ -21,8 +22,7 @@ const unknown: LlmTextCapabilities = {
   reasoningMode: 'unknown', operationalStatus: 'available',
 }
 
-async function harness() {
-  const ctx = new Context()
+async function harness(ctx = new Context()) {
   onTestFinished(() => ctx.fiber.dispose())
   await ctx.plugin(SessionStore)
   await ctx.plugin(SystemPrompt, { personaPrefix: '' })
@@ -72,6 +72,41 @@ async function harness() {
 }
 
 describe('pre-admission text model recovery', () => {
+  it('uses the live deployment policy after a saved default disappears, independent of catalog order', async () => {
+    const { configurationFixture } = await import('../../../settings/settings/tests/configuration-fixture.ts')
+    const configured = await configurationFixture({ hmr: false })
+    await configured.ctx.agentDefaultModel.saveSelection({ provider: 'product', model: 'removed' })
+    const f = await harness(configured.ctx)
+    const save = vi.spyOn(f.ctx.agentDefaultModel, 'saveSelection')
+    let preferred = 'preferred'
+    const read = vi.fn(() => ({ provider: 'product', model: preferred }))
+    const release = f.ctx.agentDefaultModel.registerPolicySelection(read)
+    onTestFinished(release)
+    const catalog = await buildModelCatalog(f.ctx)
+    expect(catalog.default).toEqual({ provider: 'product', model: 'removed' })
+    expect(catalog.groups[0]?.models.map(model => model.id)).toEqual(['alternate', 'preferred'])
+    expect(catalog.policyDefault).toEqual({ provider: 'product', model: 'preferred' })
+    expect(await f.remote.prompt(f.request('policy-B'))).toMatchObject({ ok: true, value: { accepted: true } })
+    expect(f.selected()).toEqual({ provider: 'product', model: 'preferred' })
+    f.models.set('third', { provider: 'product', id: 'third', name: 'Third' })
+    preferred = 'third'
+    expect((await buildModelCatalog(f.ctx)).policyDefault).toEqual({ provider: 'product', model: 'third' })
+    expect(await recoverPromptModel(f.ctx, { provider: 'product', model: 'removed' },
+      [{ type: 'text', text: 'another request' }], [], undefined, () => {}))
+      .toEqual({ provider: 'product', model: 'third' })
+    expect(await recoverPromptModel(f.ctx, { provider: 'product', model: 'alternate' },
+      [{ type: 'text', text: 'manual choice' }], [], undefined, () => {})).toBeUndefined()
+    release()
+    expect((await buildModelCatalog(f.ctx)).policyDefault).toBeUndefined()
+    expect(await recoverPromptModel(f.ctx, { provider: 'product', model: 'removed' },
+      [{ type: 'text', text: 'standalone fallback' }], [], undefined, () => {}))
+      .toEqual({ provider: 'product', model: 'alternate' })
+    expect(f.ctx.agentDefaultModel.currentSelection()).toEqual({ provider: 'product', model: 'removed' })
+    expect(f.admitted).toHaveLength(1)
+    expect(save).not.toHaveBeenCalled()
+    expect(f.stream).not.toHaveBeenCalled()
+  })
+
   it.each(['queue', 'steer'] as const)('uses the valid catalog default for %s, retains the request identity and does not save a global preference', async (mode) => {
     const f = await harness()
     const request = f.request('original', mode)

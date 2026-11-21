@@ -109,6 +109,92 @@ function liveDirectory(models: () => Promise<RemoteResult<ModelCatalog>>) {
 }
 
 describe('ModelSelect purpose guidance', () => {
+  it('uses the backend policy default consistently without changing an unavailable saved selection', async () => {
+    const saved = { provider: 'backend', model: 'removed', reasoningEffort: 'max' }
+    const preferred = { provider: 'backend', model: 'preferred', reasoningEffort: 'off' }
+    const directory = createSnapshotStore<ModelDirectoryState>(state({
+      current: saved, routable: true, defaultSelection: preferred,
+      groups: [{ id: 'backend', name: 'Backend', models: [
+        { id: 'first', name: 'First catalog item' },
+        { id: 'preferred', name: 'Admin choice', reasoning },
+        { id: 'removed', name: 'Unavailable saved choice', executionCapabilities: { available: false } },
+      ] }],
+    }))
+    const select = vi.fn().mockResolvedValue({ ok: true, value: undefined })
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    const trigger = screen.getByRole('button', { name: '选择模型，当前 Admin choice，推理等级 Off' })
+    expect(trigger.textContent).toBe('Admin choiceOff')
+    expect(select).not.toHaveBeenCalled()
+    fireEvent.click(trigger)
+    fireEvent.click(screen.getByRole('menuitem', { name: /^模型/ }))
+    expect(screen.getByRole('menuitemradio', { name: 'Admin choice' }).getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByRole('menuitemradio', { name: 'First catalog item' }).getAttribute('aria-checked')).toBe('false')
+    fireEvent.keyDown(screen.getByRole('menuitemradio', { name: 'Admin choice' }), { key: 'Escape' })
+    fireEvent.click(screen.getByRole('menuitem', { name: /推理等级/ }))
+    expect(screen.getByRole('menuitemradio', { name: 'Off' }).getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(screen.getByRole('menuitemradio', { name: 'High' }))
+    await waitFor(() => { expect(select).toHaveBeenCalledWith({ ...preferred, reasoningEffort: 'high' }) })
+    expect(directory.getSnapshot().current).toEqual(saved)
+  })
+
+  it('does not claim the backend default is current for an unlisted saved custom model', () => {
+    const saved = { provider: 'backend', model: 'custom-unlisted', reasoningEffort: 'max' }
+    const directory = createSnapshotStore<ModelDirectoryState>(state({
+      current: saved, routable: false, retainedEffort: 'Max',
+      defaultSelection: { provider: 'backend', model: 'preferred', reasoningEffort: 'off' },
+      groups: [{ id: 'backend', name: 'Backend', models: [{ id: 'preferred', name: 'Admin choice', reasoning }] }],
+    }))
+    const select = vi.fn()
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    const trigger = screen.getByRole('button', { name: '后台默认模型' })
+    expect(trigger.textContent).toBe('后台默认模型')
+    fireEvent.click(trigger)
+    expect(screen.getByRole('menuitemradio', { name: 'Admin choice' }).getAttribute('aria-checked')).toBe('false')
+    expect(screen.queryByRole('menuitem', { name: /推理等级/ })).toBeNull()
+    expect(screen.queryByText('custom-unlisted')).toBeNull()
+    expect(directory.getSnapshot().current).toEqual(saved)
+    expect(select).not.toHaveBeenCalled()
+  })
+
+  it('keeps an available manual selection instead of the backend policy default', () => {
+    const directory = createSnapshotStore<ModelDirectoryState>(state({
+      defaultSelection: { provider: 'backend', model: 'preferred' },
+      groups: [...state().groups, { id: 'backend', name: 'Backend', models: [{ id: 'preferred', name: 'Admin choice' }] }],
+    }))
+    const select = vi.fn()
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    expect(screen.getByRole('button', { name: '选择模型，当前 DeepSeek-V4-Flash，推理等级 High' })).toBeTruthy()
+    expect(select).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('does not display a confirmed unavailable route as the effective model (default unavailable: %s)', (defaultUnavailable) => {
+    const directory = createSnapshotStore<ModelDirectoryState>(state({
+      current: { provider: 'backend', model: 'offline' },
+      defaultSelection: { provider: 'backend', model: 'preferred' },
+      groups: [{ id: 'backend', name: 'Backend', models: [
+        { id: 'offline', name: 'Unavailable manual choice', executionCapabilities: { available: false } },
+        { id: 'preferred', name: 'Admin choice', executionCapabilities: { available: !defaultUnavailable } },
+      ] }],
+    }))
+    const select = vi.fn()
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    expect(screen.getByRole('button', { name: defaultUnavailable ? '后台默认模型' : '选择模型，当前 Admin choice' })).toBeTruthy()
+    expect(select).not.toHaveBeenCalled()
+  })
+
+  it('uses the backend default caption before loading and replaces it only with an advertised default', () => {
+    const directory = createSnapshotStore<ModelDirectoryState>(state({ current: null, groups: [], status: 'loading' }))
+    const select = vi.fn()
+    render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
+    expect(screen.getByRole('button', { name: '后台默认模型' }).textContent).toBe('后台默认模型')
+    act(() => { directory.set(state({ current: null,
+      defaultSelection: { provider: 'deepseek-official', model: 'deepseek-v4-flash', reasoningEffort: 'off' } })) })
+    expect(screen.getByRole('button', { name: '选择模型，当前 DeepSeek-V4-Flash，推理等级 Off' })).toBeTruthy()
+    act(() => { directory.set(state({ current: null, defaultSelection: { provider: 'backend', model: 'missing' } })) })
+    expect(screen.getByRole('button', { name: '后台默认模型' })).toBeTruthy()
+    expect(select).not.toHaveBeenCalled()
+  })
+
   it('renders backend text literally with complete accessible descriptions and independent clearing', () => {
     const badge = '标'.repeat(32)
     const description = '<b>' + '说'.repeat(493) + '</b>'
@@ -314,8 +400,8 @@ describe('ModelSelect reasoning effort', () => {
       t={t}
     />)
 
-    const trigger = screen.getByRole('button', { name: '请选择模型' })
-    expect(trigger.textContent).toBe('请选择模型')
+    const trigger = screen.getByRole('button', { name: '后台默认模型' })
+    expect(trigger.textContent).toBe('后台默认模型')
     fireEvent.click(trigger)
     expect(screen.queryByRole('menuitem', { name: /推理等级/ })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: /模型/ })).toBeNull()
@@ -336,8 +422,8 @@ describe('ModelSelect reasoning effort', () => {
       snapshot.groups = removed === 'provider' ? [] : snapshot.groups.map(group => ({ ...group, models: [] }))
       snapshot.routable = false
     }) })
-    const trigger = screen.getByRole('button', { name: '请选择模型' })
-    expect(trigger.textContent).toBe('请选择模型')
+    const trigger = screen.getByRole('button', { name: '后台默认模型' })
+    expect(trigger.textContent).toBe('后台默认模型')
     expect(directory.getSnapshot().current).toEqual(state().current)
     fireEvent.click(trigger)
     expect(screen.getByRole('status').textContent).toBe(zh['empty.models'])
@@ -345,7 +431,7 @@ describe('ModelSelect reasoning effort', () => {
     expect(screen.queryByRole('group', { name: '模型与推理等级' })).toBeNull()
   })
 
-  it.each([zh, en])('asks for manual selection without replacing a saved unlisted model', (dictionary) => {
+  it.each([zh, en])('retains an unlisted saved model when no advertised default is available', (dictionary) => {
     const saved = { provider: 'deepseek-official', model: 'unlisted-custom' }
     const directory = createSnapshotStore(state({ current: saved, routable: false }))
     const select = vi.fn()
@@ -369,7 +455,7 @@ describe('ModelSelect reasoning effort', () => {
     expect(screen.queryByRole('note')).toBeNull()
   })
 
-  it.each([null, state().current])('shows loading until the catalog and Session projection are both ready (%j)', async (current) => {
+  it.each([null, state().current])('shows the backend default caption until a catalog selection is known (%j)', async (current) => {
     const directory = createSnapshotStore<ModelDirectoryState>(state({
       current,
       routable: null,
@@ -385,8 +471,8 @@ describe('ModelSelect reasoning effort', () => {
       t={t}
     />)
 
-    expect(screen.getByRole('button', { name: '正在加载模型…' }).textContent)
-      .toContain('正在加载模型…')
+    expect(screen.getByRole('button', { name: '后台默认模型' }).textContent)
+      .toContain('后台默认模型')
     directory.set(state())
     await waitFor(() => {
       expect(screen.getByRole('button', {
@@ -681,7 +767,7 @@ describe('ModelSelect keyboard walk', () => {
       select={vi.fn().mockResolvedValue({ ok: true, value: undefined })}
       t={t}
     />)
-    const trigger = screen.getByRole('button', { name: /选择模型/ })
+    const trigger = screen.getByRole('button', { name: '后台默认模型' })
     fireEvent.click(trigger)
     expect(screen.queryByRole('searchbox')).toBeNull()
     expect(document.activeElement).toBe(trigger)
@@ -740,7 +826,7 @@ describe('ModelSelect keyboard walk', () => {
       select={vi.fn().mockResolvedValue({ ok: true, value: undefined })}
       t={t}
     />)
-    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('button', { name: '后台默认模型' }))
     const rows = screen.getAllByRole('menuitemradio')
     expect(rows.every(row => row.getAttribute('aria-checked') === 'false')).toBe(true)
     expect(screen.queryByRole('searchbox')).toBeNull()
@@ -754,7 +840,7 @@ describe('ModelSelect catalog size', () => {
     const current = { provider: 'deepseek-official', model: count > 1 ? 'model-2' : 'deepseek-v4-flash' }
     render(<ModelSelect locked={false} available directory={createSnapshotStore(state({ groups, current }))}
       load={vi.fn()} select={vi.fn()} t={t} />)
-    const trigger = screen.getByRole('button', { name: /选择模型/ })
+    const trigger = screen.getByRole('button', { name: count === 0 ? '后台默认模型' : /选择模型，当前/ })
     fireEvent.click(trigger)
     if (count > 0) fireEvent.click(screen.getByRole('menuitem', { name: /^模型/ }))
     const rows = screen.queryAllByRole('menuitemradio')
@@ -777,7 +863,7 @@ describe('ModelSelect catalog size', () => {
     render(<ModelSelect locked={false} available
       directory={createSnapshotStore(state({ groups: modelGroups(count), current: null }))}
       load={vi.fn()} select={vi.fn()} t={t} />)
-    const trigger = screen.getByRole('button', { name: '请选择模型' })
+    const trigger = screen.getByRole('button', { name: '后台默认模型' })
     fireEvent.click(trigger)
     const rows = screen.queryAllByRole('menuitemradio')
     expect(rows).toHaveLength(count)
@@ -790,7 +876,7 @@ describe('ModelSelect catalog size', () => {
     const current = { provider: 'deepseek-official', model: checked ? 'model-3' : 'removed' }
     const directory = createSnapshotStore(state({ groups: modelGroups(5), current }))
     render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
-    fireEvent.click(screen.getByRole('button', { name: /选择模型/ }))
+    fireEvent.click(screen.getByRole('button', { name: checked ? /选择模型，当前/ : '后台默认模型' }))
     if (checked) fireEvent.click(screen.getByRole('menuitem', { name: /^模型/ }))
     const search = screen.getByRole('searchbox')
     fireEvent.change(search, { target: { value: 'Model 5' } })
@@ -882,7 +968,7 @@ describe('ModelSelect search', () => {
     render(<ModelSelect locked={false} available
       directory={createSnapshotStore(state({ groups: modelGroups(5), current: null }))}
       load={vi.fn()} select={vi.fn()} t={t} />)
-    const trigger = screen.getByRole('button', { name: '请选择模型' })
+    const trigger = screen.getByRole('button', { name: '后台默认模型' })
     fireEvent.click(trigger)
     const search = screen.getByRole('searchbox')
     expect(document.activeElement).toBe(search)
@@ -1038,7 +1124,7 @@ describe('ModelSelect search', () => {
 it('hides the inherited effort until a listed model is selected', async () => {
   const directory = createSnapshotStore<ModelDirectoryState>(state({ current: null, routable: false, retainedEffort: 'High' }))
   render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
-  const trigger = screen.getByRole('button', { name: '请选择模型' })
+  const trigger = screen.getByRole('button', { name: '后台默认模型' })
   expect(trigger.hasAttribute('disabled')).toBe(false)
   await expect(`${trigger.textContent}\n`).toMatchFileSnapshot('./expected/unselected-model.txt')
   expect(trigger.textContent).not.toContain('High')
@@ -1062,7 +1148,7 @@ it('places account and official models before third-party models', async () => {
   }))
   const directory = createSnapshotStore<ModelDirectoryState>(state({ current: null, groups }))
   render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
-  fireEvent.click(screen.getByRole('button', { name: '请选择模型' }))
+  fireEvent.click(screen.getByRole('button', { name: '后台默认模型' }))
   const names = screen.getAllByRole('menuitemradio').map(row => row.getAttribute('aria-label') ?? row.textContent)
   expect(names).toEqual([
     'deepseek-account-1', 'deepseek-account-2', 'deepseek-official-1', 'deepseek-official-2',
@@ -1094,7 +1180,7 @@ it('restores the account model name after login without changing the saved route
   render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
   expect(screen.getByRole('button', { name: /选择模型，当前/ }).textContent).toBe('DeepSeek FlashHigh')
   act(() => { directory.update((snapshot) => { snapshot.groups = []; snapshot.routable = false }) })
-  expect(screen.getByRole('button', { name: '请选择模型' }).textContent).toBe('请选择模型')
+  expect(screen.getByRole('button', { name: '后台默认模型' }).textContent).toBe('后台默认模型')
   act(() => { directory.update((snapshot) => { snapshot.groups = groups; snapshot.routable = true }) })
   expect(screen.getByRole('button', { name: /选择模型，当前/ }).textContent).toBe('DeepSeek FlashHigh')
   expect(directory.getSnapshot().current).toEqual(selected)
@@ -1133,10 +1219,10 @@ describe('declared model capability guidance', () => {
       executionCapabilities: { available: false, vision: true, reasoning: true },
     }] }] }))
     render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={vi.fn()} t={t} />)
-    fireEvent.click(screen.getByRole('button', { name: /选择模型，当前 Mixed/ }))
+    fireEvent.click(screen.getByRole('button', { name: '后台默认模型' }))
     expect(screen.queryByRole('menuitem', { name: /推理等级/ })).toBeNull()
-    fireEvent.click(screen.getByRole('menuitem', { name: /模型/ }))
     const row = screen.getByRole('menuitemradio', { name: 'Mixed' })
+    expect(row.getAttribute('aria-checked')).toBe('false')
     expect(row.textContent).toContain(zh['guidance.tools.unverified'])
     expect(row.textContent).toContain(zh['guidance.vision.supported'])
     expect(row.textContent).toContain(zh['guidance.reasoningAlwaysOn'])
@@ -1166,7 +1252,7 @@ describe('declared model capability guidance', () => {
     const directory = createSnapshotStore(state({ groups: [{ id: 'new', name: 'New', models: [{ id: 'offline', name: 'Offline' }] }] }))
     const select = vi.fn(async () => ({ ok: false as const, error: new RemoteError('session/model-capability-invalid', 'private route details', { reason: 'MODEL_ROUTE_UNAVAILABLE' as const }) }))
     render(<ModelSelect locked={false} available directory={directory} load={vi.fn()} select={select} t={t} />)
-    fireEvent.click(screen.getByRole('button', { name: '请选择模型' }))
+    fireEvent.click(screen.getByRole('button', { name: '后台默认模型' }))
     fireEvent.click(screen.getByRole('menuitemradio', { name: 'Offline' }))
     await waitFor(() => { expect(screen.getByText(zh['error.routeUnavailable'])).toBeTruthy() })
     expect(screen.queryByText(zh['error.action'])).toBeNull()

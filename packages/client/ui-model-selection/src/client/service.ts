@@ -20,7 +20,7 @@ import type { SessionBinding } from '@deepseek-ai/dsh-api-session-controller/cli
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { WeakMapWithValues } from '@deepseek-ai/dsh-util-values'
 import { ModelCatalogDirectory } from './catalog.ts'
-import { ModelDirectory } from './directory.ts'
+import { effectiveModelSelection, ModelDirectory } from './directory.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -62,7 +62,7 @@ export class ModelDirectoryResolver extends Service {
       for (const directory of this.live.directories.values) directory.resetConnected()
     })
     ctx.remote.$on('llm/adapters-updated', () => { this.catalog.refresh() })
-    ctx.remote.$on('api-session/model-catalog-changed', () => { this.catalog.refresh() })
+    ctx.remote.$on('api-session/model-catalog-changed', () => { this.catalog.resetGeneration() })
     ctx.remote.$on('settings/document-updated', () => { this.catalog.refresh() })
     ctx.remote.$on('credentials/record-updated', () => { this.catalog.refresh() })
     ctx.remote.$on('credentials/reference-updated', () => { this.catalog.refresh() })
@@ -97,8 +97,9 @@ export class ModelDirectoryResolver extends Service {
       scope.conversation.input.for(scope)
       const publish = (): void => {
         const state = directory.store.getSnapshot()
-        const group = state.groups.find(value => value.id === state.current?.provider)
-        const model = group?.models.find(value => value.id === state.current?.model)
+        const current = effectiveModelSelection(state)
+        const group = state.groups.find(value => value.id === current?.provider)
+        const model = group?.models.find(value => value.id === current?.model)
         const declared = model?.textCapabilities !== undefined || model?.inputModalities !== undefined
         const legacy = model?.textCapabilities === undefined || model.textCapabilities.schemaVersion === 2 ? {}
           : { tools: model.textCapabilities.tools, vision: model.textCapabilities.vision }

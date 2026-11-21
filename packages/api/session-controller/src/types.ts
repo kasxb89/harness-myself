@@ -197,6 +197,8 @@ export interface ModelCatalogFailure {
 /** Host-generation model catalog and the default used by unconfigured Sessions. */
 export interface ModelCatalog {
   readonly default: ModelSelection
+  /** Current deployment recommendation, independent of saved explicit defaults; not a selection commit. */
+  readonly policyDefault?: ModelSelection
   /** Provider routes with at least one currently available catalog model. */
   readonly routableProviders: readonly string[]
   readonly groups: readonly ModelProviderGroup[]

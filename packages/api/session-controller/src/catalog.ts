@@ -99,8 +99,10 @@ export async function buildModelCatalog(
   }))
   const groups = catalog.flatMap(item => item.kind === 'group' ? [item.group] : [])
     .filter(group => group.models.length > 0)
+  const policyDefault = ctx.get('agentDefaultModel')?.policySelection()
   return {
     default: { ...(defaultSelection ?? ctx.agentDefaultModel.currentSelection()) },
+    ...policyDefault === undefined ? {} : { policyDefault },
     routableProviders: groups.map(group => group.id),
     groups,
     failures: catalog.flatMap(item => item.kind === 'failure' ? [item.failure] : []),

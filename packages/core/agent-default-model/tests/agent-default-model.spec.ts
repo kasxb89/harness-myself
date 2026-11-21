@@ -3,6 +3,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { expect, it, onTestFinished, vi } from 'vitest'
 import DefaultModel from '../src/index.ts'
 import { liveConfig } from '../../../settings/settings/tests/live-config.ts'
+import { configurationFixture } from '../../../settings/settings/tests/configuration-fixture.ts'
 
 it('reads complete selections from volatile config and clears omitted reasoning effort', async () => {
   const ctx = new Context()
@@ -18,7 +19,6 @@ it('reads complete selections from volatile config and clears omitted reasoning 
 })
 
 it('persists complete selections through its owning profile entry', async () => {
-  const { configurationFixture } = await import('../../../settings/settings/tests/configuration-fixture.ts')
   const { ReasoningEffortId } = await import('@deepseek-ai/dsh-llm')
   const { ctx } = await configurationFixture({ hmr: false })
   await ctx.agentDefaultModel.saveSelection({ provider: 'test', model: 'next', reasoningEffort: ReasoningEffortId('high') })
@@ -33,7 +33,6 @@ it('persists complete selections through its owning profile entry', async () => 
 })
 
 it('serializes overlapping saves and continues after a rejected write', async () => {
-  const { configurationFixture } = await import('../../../settings/settings/tests/configuration-fixture.ts')
   const { ctx } = await configurationFixture({ hmr: false })
   const entered = Promise.withResolvers<undefined>()
   const release = Promise.withResolvers<undefined>()
@@ -104,7 +103,6 @@ it('withdraws an owned policy without clearing a later contribution', async () =
 })
 
 it('persists a manual selection as an opt-out and retains policy after a rejected save', async () => {
-  const { configurationFixture } = await import('../../../settings/settings/tests/configuration-fixture.ts')
   const { ctx, start } = await configurationFixture({ hmr: false })
   const entry = [...ctx.loader.entries()].find(row => row.options.id === 'default-model')
   if (entry === undefined) throw new Error('Missing default model fixture')
@@ -121,4 +119,32 @@ it('persists a manual selection as an opt-out and retains policy after a rejecte
   const release = restored.agentDefaultModel.registerPolicySelection(() => ({ provider: 'product', model: 'new-policy' }))
   expect(restored.agentDefaultModel.currentSelection()).toEqual({ provider: 'custom', model: 'manual' })
   release()
+})
+
+
+it('reads a detached deployment policy independently of a saved explicit default and releases it', async () => {
+  const { ctx } = await configurationFixture({ hmr: false })
+  await ctx.agentDefaultModel.saveSelection({ provider: 'product', model: 'removed' })
+  const saved = vi.spyOn(ctx.agentDefaultModel, 'saveSelection')
+  let policy = { provider: 'product', model: 'B' }
+  const read = vi.fn(() => policy)
+  expect(ctx.agentDefaultModel.policySelection()).toBeUndefined()
+  const release = ctx.agentDefaultModel.registerPolicySelection(read)
+  expect(ctx.agentDefaultModel.currentSelection()).toEqual({ provider: 'product', model: 'removed' })
+  const captured = ctx.agentDefaultModel.policySelection()
+  expect(captured).toEqual({ provider: 'product', model: 'B' })
+  expect(captured).not.toBe(policy)
+  if (captured === undefined) throw new Error('Missing deployment policy selection')
+  Reflect.set(captured, 'model', 'consumer-mutation')
+  expect(ctx.agentDefaultModel.policySelection()?.model).toBe('B')
+  policy = { provider: 'product', model: 'C' }
+  expect(ctx.agentDefaultModel.policySelection()?.model).toBe('C')
+  release()
+  expect(ctx.agentDefaultModel.policySelection()).toBeUndefined()
+  const second = ctx.agentDefaultModel.registerPolicySelection(() => ({ provider: 'other', model: 'next' }))
+  release()
+  expect(ctx.agentDefaultModel.policySelection()).toEqual({ provider: 'other', model: 'next' })
+  second()
+  expect(ctx.agentDefaultModel.policySelection()).toBeUndefined()
+  expect(saved).not.toHaveBeenCalled()
 })
