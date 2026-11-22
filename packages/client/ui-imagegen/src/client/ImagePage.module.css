@@ -228,3 +228,6 @@
 }
 
 .templateCover { width: 38%; max-height: 130px; object-fit: cover; border-radius: var(--dsw-radius-md); margin-inline-end: 14px; }
+
+.referenceRole { display: block; box-sizing: border-box; width: 88px; min-height: 28px; margin-top: 6px; padding: 3px 2px; border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-settings-card-fill); color: var(--dsw-alias-label-primary); font: inherit; font-size: 11px; }
+.referenceRole:focus-visible { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 2px; }

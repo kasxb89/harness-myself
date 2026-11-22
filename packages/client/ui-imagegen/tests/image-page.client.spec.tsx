@@ -117,7 +117,7 @@ describe('image creation workspace', () => {
       : await original(input, init))
     const { props, store } = makeProps()
     store.actions.patch({ count: 4, resolution: '2k', quality: 'pro' })
-    store.actions.appendReference({ assetId: 'ma_writing', name: 'writing.png', url: 'blob:writing', bytes: 1 })
+    store.actions.appendReference({ assetId: 'ma_writing', name: 'writing.png', url: 'blob:writing', bytes: 1, role: 'writing' })
     render(<ImagePage {...props} />)
     await screen.findByRole('option', { name: 'Complete image model' })
     expect(screen.queryByRole('combobox', { name: zh.quality })).toBeNull()
@@ -975,7 +975,7 @@ describe('image creation workspace', () => {
     expect(screen.getByRole('button', { name: '添加素材' })).toHaveProperty('disabled', false)
   })
 
-  it('accepts six materials on a text-only model and limits image generation to the selected model inputs', async () => {
+  it('keeps all six text-model materials writing-only after selecting an image-edit model', async () => {
     const { props, store } = makeProps()
     render(<ImagePage {...props} />)
     await ready()
@@ -991,8 +991,9 @@ describe('image creation workspace', () => {
     act(() => { store.actions.patch({ prompt: 'Product' }) })
     fireEvent.click(screen.getByRole('button', { name: '生成图片' }))
     await screen.findByText(zh.done)
-    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')).references).toEqual(['ma_1', 'ma_2'])
+    expect(requestBody(fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')).references).toEqual([])
     expect(store.getSnapshot().references).toHaveLength(6)
+    expect(store.getSnapshot().references.every(item => item.role === 'writing')).toBe(true)
   })
 
   it('uses the converted size for the material budget and reports each oversized original', async () => {
@@ -1105,7 +1106,7 @@ describe('image creation workspace', () => {
     expect(createImageDraftStore().create().getSnapshot().prompt).toBe('')
   })
 
-  it('retains materials across model changes and sends no images to a text-only model', async () => {
+  it('retains generation references on a text-only model and blocks submission until explicitly marked writing-only', async () => {
     const { props, store } = makeProps()
     const view = render(<ImagePage {...props} />)
     await ready()
@@ -1120,11 +1121,77 @@ describe('image creation workspace', () => {
     expect(store.getSnapshot().references).toHaveLength(3)
     expect(props.releaseReferencePreview).not.toHaveBeenCalled()
     expect(store.getSnapshot()).toMatchObject({ seed: '', count: 1, size: '768x768' })
+    expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', true)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(0)
+    for (const name of ['one.png', 'two.png', 'three.png']) {
+      fireEvent.change(screen.getByRole('combobox', { name: zh.referenceRole.replace('{name}', name) }), { target: { value: 'writing' } })
+    }
     fireEvent.click(screen.getByRole('button', { name: '生成图片' }))
     await screen.findByText(zh.done)
     const request = fetchMock.mock.calls.find(([url]) => url === '/credits/api/image/generate')
     expect(requestBody(request)).toEqual({ session_id: 'session-a', account_id: 'account-a', prompt: 'Product photo', model: 'text-model', count: 1, size: '768x768', generation_mode: 'text-to-image', references: [] })
     expect(view.container.textContent).not.toContain('plugin:')
+  })
+
+  it('retains all generation references when the same model ID lowers its live reference limit', async () => {
+    const original = fetchMock.getMockImplementation()!
+    let cap = 2
+    fetchMock.mockImplementation(async (input, init) => requestUrl(input) === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ ...models[0], params: { ...models[0]!.params, maxEdits: cap } }] } })
+      : await original(input, init))
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: 'Keep both references', references: [
+      { assetId: 'ma_first', name: 'first.png', url: 'blob:first', bytes: 1 },
+      { assetId: 'ma_second', name: 'second.png', url: 'blob:second', bytes: 1 },
+    ] })
+    const first = render(<ImagePage {...props} />); await ready()
+    expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', false)
+    first.unmount(); cap = 1
+    render(<ImagePage {...props} />); await ready()
+    expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', true)
+    expect(store.getSnapshot().references.map(item => item.assetId)).toEqual(['ma_first', 'ma_second'])
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(0)
+  })
+
+  it('never truncates an excessive legacy generation reference selection', async () => {
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: 'Every reference matters', references: Array.from({ length: 3 }, (_, index) => ({
+      assetId: `ma_${index}`, name: `${index}.png`, url: `blob:${index}`, bytes: 1,
+    })) })
+    render(<ImagePage {...props} />); await ready()
+    expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', true)
+    expect(store.getSnapshot().references).toHaveLength(3)
+    expect(screen.getByRole('alert').textContent).toBe(zh.generationOverflow.replace('{n}', '2'))
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(0)
+  })
+
+  it('sends every generation reference in order and excludes only explicitly writing-only materials', async () => {
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: 'Use both product references', references: [
+      { assetId: 'ma_first', name: 'first.png', url: 'blob:first', bytes: 1 },
+      { assetId: 'ma_writing', name: 'writing.png', url: 'blob:writing', bytes: 1, role: 'writing' },
+      { assetId: 'ma_second', name: 'second.png', url: 'blob:second', bytes: 1, role: 'generation' },
+    ] })
+    render(<ImagePage {...props} />); await ready()
+    fireEvent.click(screen.getByRole('button', { name: '生成图片' })); await screen.findByText(zh.done)
+    const requests = fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')
+    expect(requests).toHaveLength(1)
+    expect(requestBody(requests[0])).toMatchObject({ generation_mode: 'image-to-image', references: ['ma_first', 'ma_second'] })
+    expect(store.getSnapshot().references).toHaveLength(3)
+  })
+
+  it('does not treat a writing-only image as the required input for an edits-only route', async () => {
+    const original = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation(async (input, init) => requestUrl(input) === '/credits/api/media/catalog'
+      ? json({ ok: true, payload: { image: [{ ...models[0], route: '/v1/images/edits' }] } }) : await original(input, init))
+    const { props, store } = makeProps()
+    store.actions.patch({ prompt: 'Edit the source', references: [
+      { assetId: 'ma_writing', name: 'writing.png', url: 'blob:writing', bytes: 1, role: 'writing' },
+    ] })
+    render(<ImagePage {...props} />); await ready()
+    expect(screen.getByRole('button', { name: '生成图片' })).toHaveProperty('disabled', true)
+    expect(screen.getByRole('alert').textContent).toBe(zh.referenceRequired)
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/credits/api/image/generate')).toHaveLength(0)
   })
 
   it('clears uploaded references and releases their previews', async () => {

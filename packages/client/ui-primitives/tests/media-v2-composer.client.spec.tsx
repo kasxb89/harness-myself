@@ -1,0 +1,351 @@
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MediaV2Composer } from '../src/MediaV2Composer.tsx'
+import { mediaV2FormIssues } from '../src/media-v2-form.ts'
+import type { MediaV2Asset, MediaV2Model, MediaV2Record, MediaV2Request, MediaV2Transport } from '../src/media-v2-types.ts'
+
+const prefix = '/credits/api/media-v2'
+const envelope = (data: unknown): unknown => ({ success: true, data })
+function readBody(init?: RequestInit): unknown {
+  if (typeof init?.body !== 'string') throw new Error('Expected JSON request body')
+  const value: unknown = JSON.parse(init.body)
+  return value
+}
+const source: MediaV2Model = {
+  id: 'model-a', display_name: 'Image A（图生图都可）', kind: 'image', model_version: 'v1', enabled: true,
+  parameters_schema: { type: 'object', additionalProperties: false, properties: {
+    prompt: { type: 'string', 'x-ycapi-contract': { label: { zh: '描述' } } },
+    mode: { type: 'string', enum: ['std', 'pro'], default: 'std', 'x-ycapi-contract': { label: { zh: '质量模式' } } },
+    count: { type: 'integer', minimum: 1, maximum: 4, default: 1, 'x-ycapi-contract': { label: { zh: '数量' } } },
+    transparent: { type: 'boolean', default: false, 'x-ycapi-contract': { label: { zh: '透明' } } },
+    kinds: { type: 'array', 'x-ycapi-contract': { type: 'multi_enum', enum: ['a', 'b'], label: { zh: '标签' } } },
+    images: { type: 'array', 'x-ycapi-contract': { label: { zh: '参考图' }, max_items_by_mode: { std: 2, pro: 1 } } },
+  } },
+  asset_fields: [{ name: 'images', media_kind: 'image', native_shape: 'multiple', min_items: 0, max_items: 2,
+    mime_types: ['image/png'], constraints: { max_items_by_mode: { std: 2, pro: 1 } } }],
+  intents: [{ id: 'text', label: '文生图', requires_assets: false }, { id: 'reference', label: '图生图', requires_assets: true }],
+  pricing: { display: '按实际规格报价', credits_per_yuan: 1000, quote_required: true },
+}
+const asset = (id: string, model = source.id): MediaV2Asset => ({ asset_id: `ma2_${id}`, client_asset_id: id, model, state: 'ready', media_kind: 'image', mime_type: 'image/png', bytes: 1024, sha256: 'a'.repeat(64), expires_at: Date.now() / 1000 + 1000 })
+function quoted(request: MediaV2Request): MediaV2Record {
+  return { version: 1, owner: 'nonsecret-account', request, state: 'quoted', updated_at: Date.now() / 1000,
+    quote: { quote_id: 'quote-a', client_operation_id: request.client_operation_id, request_sha256: 'b'.repeat(64), retail_cny: '0.25', credits: 250, credits_per_yuan: 1000, expires_at: Date.now() / 1000 + 120 } }
+}
+function backend(models: readonly MediaV2Model[] = [source], initial: readonly MediaV2Record[] = []) {
+  let records = [...initial]
+  const uploaded = new Map<string, MediaV2Asset>()
+  const transport = vi.fn<MediaV2Transport>(async (path, init) => {
+    if (path === `${prefix}/models`) return envelope({ models, credits_per_yuan: 1000 })
+    if (path === `${prefix}/operations`) return envelope({ operations: records })
+    if (path.startsWith(`${prefix}/assets?`)) {
+      const url = new URL(path, 'http://localhost'), id = url.searchParams.get('client_asset_id') ?? '', model = url.searchParams.get('model') ?? ''
+      const field = models.find(item => item.id === model)?.asset_fields[0]
+      const value = { ...asset(id, model), media_kind: field?.media_kind ?? 'image' as const, mime_type: field?.mime_types[0] ?? 'image/png', ...field?.media_kind === 'video' ? { duration_seconds: 5.2 } : {} }; uploaded.set(id, value); return envelope(value)
+    }
+    if (path.startsWith(`${prefix}/assets/by-client-id/`)) {
+      const id = path.slice(`${prefix}/assets/by-client-id/`.length).split('?')[0] ?? ''
+      return envelope(uploaded.get(id) ?? asset(id))
+    }
+    if (path === `${prefix}/quotes`) {
+      const request = readBody(init) as MediaV2Request
+      const value = quoted(request)
+      records = [...records.filter(item => item.request.client_operation_id !== request.client_operation_id), value]
+      return envelope(value)
+    }
+    if (path === `${prefix}/tasks`) {
+      const body = readBody(init) as { client_operation_id: string }
+      const original = records.find(item => item.request.client_operation_id === body.client_operation_id)
+      if (original === undefined) throw new Error('Unexpected operation')
+      const accepted: MediaV2Record = { ...original, state: 'accepted', task: { id: 'task-a', model: original.request.model, kind: models.find(item => item.id === original.request.model)?.kind ?? 'image', status: 'pending', is_final: false, artifacts: [] } }
+      records = records.map(item => item === original ? accepted : item); return envelope(accepted)
+    }
+    if (path.startsWith(`${prefix}/operations/`)) return envelope(records.find(item => item.request.client_operation_id === path.slice(`${prefix}/operations/`.length)))
+    if (path === `${prefix}/save`) {
+      const body = readBody(init) as { client_operation_id: string }
+      const value = records.find(item => item.request.client_operation_id === body.client_operation_id)
+      return envelope({ ...value, saved: value?.task?.artifacts.map(item => ({ key: item.key, path: `/artifacts/${item.key}` })) })
+    }
+    throw new Error(`Unexpected path ${path}`)
+  })
+  return { transport, records: () => records }
+}
+const calls = (transport: ReturnType<typeof backend>['transport'], path: string): number => transport.mock.calls.filter(call => call[0] === path).length
+async function opened(transport: MediaV2Transport, kind: 'image' | 'video' = 'image') {
+  const view = render(<MediaV2Composer kind={kind} accountKey="account-a" transport={transport} onExit={() => undefined} />)
+  await screen.findByRole('combobox', { name: '模型' })
+  return view
+}
+async function upload(transport: ReturnType<typeof backend>['transport'], names = ['one.png']): Promise<void> {
+  const before = transport.mock.calls.filter(call => call[0].startsWith(`${prefix}/assets?`)).length
+  fireEvent.change(screen.getByLabelText('添加素材: 参考图'), { target: { files: names.map(name => new File(['png'], name, { type: 'image/png' })) } })
+  await waitFor(() => { expect(transport.mock.calls.filter(call => call[0].startsWith(`${prefix}/assets?`))).toHaveLength(before + names.length) })
+  await waitFor(() => { expect(screen.getByRole('combobox', { name: '模型' })).toHaveProperty('disabled', false) })
+}
+beforeEach(() => { sessionStorage.clear(); vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => undefined); vi.spyOn(HTMLMediaElement.prototype, 'load').mockImplementation(() => undefined) })
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.useRealTimers() })
+
+describe('MediaV2Composer', () => {
+  it('renders declared primitive controls and keeps vendor quality separate from input intent', async () => {
+    const api = backend(); await opened(api.transport)
+    expect(screen.getByLabelText('数量')).toHaveProperty('type', 'number')
+    expect(screen.getByLabelText('透明')).toHaveProperty('type', 'checkbox')
+    expect(screen.getByLabelText('a')).toHaveProperty('type', 'checkbox')
+    fireEvent.change(screen.getByLabelText('质量模式'), { target: { value: 'pro' } })
+    expect(screen.getByRole('combobox', { name: '使用方式' })).toHaveProperty('value', 'text')
+    expect(screen.queryByRole('textbox', { name: /json/iu })).toBeNull()
+  })
+  it('supports a source processor without a manufactured prompt field', async () => {
+    const processor: MediaV2Model = { ...source, parameters_schema: { properties: { images: { type: 'array' } } },
+      intents: [{ id: 'transform', label: '图片处理', requires_assets: true }], asset_fields: [{ ...source.asset_fields[0]!, min_items: 1 }] }
+    const api = backend([processor]); await opened(api.transport)
+    expect(screen.queryByLabelText('描述')).toBeNull()
+    fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'transform' } })
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  })
+  it('quotes a no-prompt video processor using its real source asset and decimal controls', async () => {
+    const processor: MediaV2Model = { ...source, id: 'video-processor', kind: 'video', display_name: '视频超分',
+      parameters_schema: { properties: { source_video: { type: 'array', 'x-ycapi-contract': { label: { zh: '原视频' } } },
+        strength: { type: 'number', minimum: 0.1, maximum: 2, default: 1.8, 'x-ycapi-contract': { label: { zh: '强度' } } } } },
+      asset_fields: [{ name: 'source_video', media_kind: 'video', native_shape: 'single', min_items: 1, max_items: 1, mime_types: ['video/mp4'], constraints: {} }],
+      intents: [{ id: 'transform', label: '视频处理', requires_assets: true }] }
+    const api = backend([processor]); await opened(api.transport, 'video')
+    expect(screen.getByLabelText('强度')).toHaveProperty('value', '1.8')
+    expect(screen.getByLabelText('强度').getAttribute('step')).toBe('any')
+    expect(screen.queryByLabelText('描述')).toBeNull()
+    fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'transform' } })
+    fireEvent.change(screen.getByLabelText('添加素材: 原视频'), { target: { files: [new File(['mp4'], 'clip.mp4', { type: 'video/mp4' })] } })
+    await waitFor(() => { expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false) })
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+    expect(api.records()[0]?.request.parameters).toEqual({ strength: 1.8 })
+    expect(api.records()[0]?.request.assets.source_video).toHaveLength(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+  it('starts a jpeg draft without GIF-only defaults and preserves explicit conflicting values across format changes and restore', async () => {
+    const flare: MediaV2Model = { ...source, id: 'flare-image', display_name: 'Flare', asset_fields: [], parameters_schema: { properties: {
+      output_format: { type: 'string', enum: ['jpeg', 'gif'], default: 'jpeg', 'x-ycapi-contract': { label: { zh: '输出格式' } } },
+      frame_count: { type: 'integer', minimum: 1, default: 9, 'x-ycapi-contract': { label: { zh: '帧数' }, available_when: { output_format: ['gif'] } } },
+      frame_duration_ms: { type: 'integer', minimum: 1, default: 200, 'x-ycapi-contract': { label: { zh: '每帧时长' }, available_when: { output_format: ['gif'] } } },
+    } } }
+    const api = backend([flare]); const first = await opened(api.transport)
+    expect(screen.getByLabelText('帧数')).toHaveProperty('value', '')
+    expect(screen.getByLabelText('每帧时长')).toHaveProperty('value', '')
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+    expect(api.records()[0]?.request.parameters).toEqual({ output_format: 'jpeg' })
+    fireEvent.change(screen.getByLabelText('输出格式'), { target: { value: 'gif' } })
+    fireEvent.change(screen.getByLabelText('帧数'), { target: { value: '9' } })
+    fireEvent.change(screen.getByLabelText('每帧时长'), { target: { value: '200' } })
+    fireEvent.change(screen.getByLabelText('输出格式'), { target: { value: 'jpeg' } })
+    expect(screen.getByLabelText('帧数')).toHaveProperty('value', '9')
+    expect(screen.getByLabelText('每帧时长')).toHaveProperty('value', '200')
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+    first.unmount(); await opened(api.transport)
+    expect(screen.getByLabelText('帧数')).toHaveProperty('value', '9')
+    expect(screen.getByLabelText('每帧时长')).toHaveProperty('value', '200')
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+  it('retains every uploaded asset and blocks an over-limit quality change without quote or generation', async () => {
+    const api = backend(); await opened(api.transport); await upload(api.transport, ['one.png', 'two.png'])
+    fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+    fireEvent.change(screen.getByLabelText('质量模式'), { target: { value: 'pro' } })
+    expect(screen.getByText('one.png')).toBeTruthy(); expect(screen.getByText('two.png')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+  it('preserves reference intent and old assets on a text-only model switch', async () => {
+    const other: MediaV2Model = { ...source, id: 'text-only', display_name: 'Text only', asset_fields: [], intents: [source.intents[0]!] }
+    const api = backend([source, other]); await opened(api.transport); await upload(api.transport)
+    fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+    fireEvent.change(screen.getByRole('combobox', { name: '模型' }), { target: { value: other.id } })
+    expect(screen.getByText('one.png')).toBeTruthy()
+    expect(screen.getByRole('combobox', { name: '使用方式' })).toHaveProperty('value', 'reference')
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  })
+  it('keeps writing-only media explicit and leaves it out of the frozen generation body', async () => {
+    const api = backend(); await opened(api.transport); await upload(api.transport)
+    fireEvent.change(screen.getByLabelText('one.png: 使用方式'), { target: { value: 'writing' } })
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await screen.findByText('本次费用: 250 积分')
+    expect(api.records()[0]?.request.assets).toEqual({})
+    expect(screen.getByText('one.png')).toBeTruthy()
+    expect(screen.getByText('¥0.25')).toBeTruthy()
+  })
+  it('does not re-quote after a lost quote response and recovers the same operation UUID', async () => {
+    const api = backend(), base = api.transport.getMockImplementation()!
+    api.transport.mockImplementation(async (path, init) => { const response = await base(path, init); if (path === `${prefix}/quotes`) throw new Error('lost'); return response })
+    await opened(api.transport); fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await screen.findByText('本次费用: 250 积分')
+    expect(calls(api.transport, `${prefix}/operations/${api.records()[0]!.request.client_operation_id}`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+  it('allows explicit draft correction only after a confirmed free-quote rejection and retains the rejected original', async () => {
+    const api = backend(), base = api.transport.getMockImplementation()!
+    let first = true
+    api.transport.mockImplementation(async (path, init) => {
+      const answer = await base(path, init)
+      if (path === `${prefix}/quotes` && first) {
+        first = false
+        const original = api.records()[0]!
+        const { quote: _quote, ...retained } = original
+        api.records()[0] = { ...retained, state: 'quote-rejected', quote_failure: { code: 'invalid_parameters', message: '请缩短参考视频后重新报价；尚未提交生成。' } }
+        return { success: false, error: { code: 'invalid_parameters', message: '请缩短参考视频后重新报价；尚未提交生成。' } }
+      }
+      return answer
+    })
+    await opened(api.transport)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('请缩短参考视频后重新报价；尚未提交生成。')
+    expect(screen.getByLabelText('描述')).toHaveProperty('disabled', true)
+    const originalId = api.records()[0]!.request.client_operation_id
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑新草稿' }))
+    expect(screen.getByLabelText('描述')).toHaveProperty('disabled', false)
+    expect(screen.getByText(`操作编号: ${originalId}`)).toBeTruthy()
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: 'Explicitly corrected draft' } })
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await screen.findByText('本次费用: 250 积分')
+    expect(api.records()).toHaveLength(2)
+    expect(api.records()[0]?.state).toBe('quote-rejected')
+    expect(api.records()[0]?.request.client_operation_id).toBe(originalId)
+    expect(api.records()[1]?.request.client_operation_id).not.toBe(originalId)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+  it('keeps an unknown free-quote response locked when the original lookup returns 404 instead of inferring rejection', async () => {
+    const api = backend(), base = api.transport.getMockImplementation()!
+    api.transport.mockImplementation(async (path, init) => {
+      if (path.startsWith(`${prefix}/operations/`)) return { success: false, error: { code: 'operation_unknown', message: 'not found' } }
+      const answer = await base(path, init)
+      if (path === `${prefix}/quotes`) throw new Error('response lost')
+      return answer
+    })
+    await opened(api.transport)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await screen.findByRole('alert')
+    expect(screen.getByLabelText('描述')).toHaveProperty('disabled', true)
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: '继续编辑新草稿' })).toBeNull()
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+  it('renews an expired unchanged quote using the same original operation UUID', async () => {
+    const request: MediaV2Request = { client_operation_id: 'original-expired', model: source.id, model_version: source.model_version, intent: 'text', parameters: { mode: 'std', count: 1, transparent: false }, assets: {} }
+    const original = quoted(request)
+    const expired: MediaV2Record = { ...original, quote: { ...original.quote!, expires_at: Date.now() / 1000 - 10 } }
+    sessionStorage.setItem('dsh:media-v2:draft-v1:image:account-a', JSON.stringify({ modelId: source.id, intent: 'text', parameters: request.parameters, assets: [], currentId: request.client_operation_id }))
+    const api = backend([source], [expired]); await opened(api.transport)
+    expect(await screen.findByText('报价已过期，请重新报价')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await waitFor(() => { expect(screen.queryByText('报价已过期，请重新报价')).toBeNull() })
+    expect(api.records()).toHaveLength(1)
+    expect(api.records()[0]?.request.client_operation_id).toBe(request.client_operation_id)
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+  it('allows only original-operation GET recovery after an accepted submit loses its response', async () => {
+    const api = backend(), base = api.transport.getMockImplementation()!
+    api.transport.mockImplementation(async (path, init) => { const response = await base(path, init); if (path === `${prefix}/tasks`) throw new Error('lost'); return response })
+    await opened(api.transport); fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+    fireEvent.click(screen.getByRole('button', { name: '确认生成' })); await screen.findByRole('alert')
+    expect(screen.queryByRole('button', { name: '确认生成' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '更新原任务' })); await screen.findByText('等待处理')
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(1)
+    expect(api.records()).toHaveLength(1)
+  })
+  it('recovers an unresolved asset by its original upload key without a second upload POST', async () => {
+    const api = backend(), base = api.transport.getMockImplementation()!
+    api.transport.mockImplementation(async (path, init) => { const response = await base(path, init); if (path.startsWith(`${prefix}/assets?`)) throw new Error('lost'); return response })
+    await opened(api.transport); await upload(api.transport)
+    await screen.findByRole('button', { name: '核对原上传' })
+    fireEvent.click(screen.getByRole('button', { name: '核对原上传' }))
+    await waitFor(() => { expect(screen.queryByRole('button', { name: '核对原上传' })).toBeNull() })
+    expect(api.transport.mock.calls.filter(call => call[0].startsWith(`${prefix}/assets?`))).toHaveLength(1)
+  })
+  it('remounts an accepted original operation without another submit', async () => {
+    const api = backend(); const first = await opened(api.transport)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+    fireEvent.click(screen.getByRole('button', { name: '确认生成' })); await screen.findByText('等待处理')
+    first.unmount(); await opened(api.transport)
+    expect(await screen.findByText('等待处理')).toBeTruthy()
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(1)
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  })
+  it('automatically reads a retained operation using the advertised interval and shows all completed outputs without POST', async () => {
+    vi.useFakeTimers()
+    const request: MediaV2Request = { client_operation_id: 'retained-operation', model: source.id, model_version: source.model_version, intent: 'text', parameters: {}, assets: {} }
+    const initial: MediaV2Record = { ...quoted(request), state: 'accepted', task: { id: 'retained-task', model: source.id, kind: 'image', status: 'pending', is_final: false, artifacts: [] } }
+    const api = backend([source], [initial]), base = api.transport.getMockImplementation()!
+    api.transport.mockImplementation(async (path, init) => {
+      if (path === `${prefix}/models`) return envelope({ models: [source], credits_per_yuan: 1000, poll_after_ms: 1000 })
+      if (path === `${prefix}/operations/retained-operation`) return envelope({ ...initial, task: { ...initial.task!, status: 'succeeded', is_final: true,
+        artifacts: [{ key: 'done', type: 'image', mime_type: 'image/png', order: 0, filename: 'arrived.png' }] } })
+      return await base(path, init)
+    })
+    await act(async () => { render(<MediaV2Composer kind="image" accountKey="account-a" transport={api.transport} onExit={() => undefined} />) })
+    expect(screen.getByText('等待处理')).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    expect(screen.getByRole('img', { name: 'arrived.png' })).toBeTruthy()
+    expect(calls(api.transport, `${prefix}/operations/retained-operation`)).toBe(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(calls(api.transport, `${prefix}/operations/retained-operation`)).toBe(1)
+    expect(api.transport.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(0)
+  })
+  it.each(['unmount', 'account'] as const)('stops automatic original-operation reads after %s', async (exit) => {
+    vi.useFakeTimers()
+    const request: MediaV2Request = { client_operation_id: 'retained-operation', model: source.id, model_version: source.model_version, intent: 'text', parameters: {}, assets: {} }
+    const initial: MediaV2Record = { ...quoted(request), state: 'accepted', task: { id: 'retained-task', model: source.id, kind: 'image', status: 'pending', is_final: false, artifacts: [] } }
+    const api = backend([source], [initial]), base = api.transport.getMockImplementation()!
+    api.transport.mockImplementation(async (path, init) => path === `${prefix}/models`
+      ? envelope({ models: [source], credits_per_yuan: 1000, poll_after_ms: 1000 }) : await base(path, init))
+    let view: ReturnType<typeof render> | undefined
+    await act(async () => { view = render(<MediaV2Composer kind="image" accountKey="account-a" transport={api.transport} onExit={() => undefined} />) })
+    expect(screen.getByText('等待处理')).toBeTruthy()
+    await act(async () => {
+      if (exit === 'unmount') view?.unmount()
+      else view?.rerender(<MediaV2Composer kind="image" accountKey={null} transport={api.transport} onExit={() => undefined} />)
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(calls(api.transport, `${prefix}/operations/retained-operation`)).toBe(0)
+  })
+  it('does not invent a polling interval when the capability is absent', async () => {
+    vi.useFakeTimers()
+    const request: MediaV2Request = { client_operation_id: 'retained-operation', model: source.id, model_version: source.model_version, intent: 'text', parameters: {}, assets: {} }
+    const initial: MediaV2Record = { ...quoted(request), state: 'accepted', task: { id: 'retained-task', model: source.id, kind: 'image', status: 'pending', is_final: false, artifacts: [] } }
+    const api = backend([source], [initial])
+    await act(async () => { render(<MediaV2Composer kind="image" accountKey="account-a" transport={api.transport} onExit={() => undefined} />) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000) })
+    expect(calls(api.transport, `${prefix}/operations/retained-operation`)).toBe(0)
+    expect(screen.getByRole('button', { name: '更新原任务' })).toBeTruthy()
+  })
+  it('shows every artifact, keeps GIF animated and SVG download-only, and saves all original keys', async () => {
+    const request: MediaV2Request = { client_operation_id: 'original', model: source.id, model_version: source.model_version, intent: 'text', parameters: {}, assets: {} }
+    const record: MediaV2Record = { ...quoted(request), state: 'accepted', task: { id: 'task-original', model: source.id, kind: 'image', status: 'succeeded', is_final: true, artifacts: [
+      { key: 'vector', type: 'file', mime_type: 'image/svg+xml', order: 2, filename: 'vector.svg' },
+      { key: 'layer', type: 'image', mime_type: 'image/png', order: 1, filename: 'layer.png' },
+      { key: 'animation', type: 'image', mime_type: 'image/gif', order: 0, filename: 'animation.gif' },
+    ] } }
+    const api = backend([source], [record]); const view = await opened(api.transport)
+    const results = screen.getByLabelText('全部产物')
+    expect(within(results).getAllByRole('link', { name: '下载原文件' })).toHaveLength(3)
+    expect(within(results).getAllByRole('img')).toHaveLength(2)
+    expect(within(results).getAllByRole('img')[0]?.getAttribute('src')).toBe(`${prefix}/tasks/task-original/artifacts/animation/content`)
+    expect(view.container.querySelector('svg')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '保存全部产物' }))
+    await screen.findByText('/artifacts/vector')
+    expect(calls(api.transport, `${prefix}/save`)).toBe(1); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+})
+
+describe('media-v2 conditional field validation', () => {
+  it('rejects option conditions and expired or wrong-model assets without dropping them', () => {
+    const model: MediaV2Model = { ...source, parameters_schema: { properties: { quality: { type: 'string', enum: ['1080p'], 'x-ycapi-contract': { options: [{ value: '1080p', available_when: { mode: ['std'] } }] } } } } }
+    const selected = [{ clientId: 'original-asset', model: 'another', field: 'images', name: 'one.png', state: 'ready' as const, role: 'generation' as const, asset: asset('original-asset', 'another') }]
+    expect(mediaV2FormIssues(model, 'reference', { quality: '1080p', mode: 'pro' }, selected, Date.now() / 1000)).toContainEqual({ field: 'quality', reason: 'unavailable' })
+    expect(mediaV2FormIssues(model, 'reference', {}, selected, Date.now() / 1000)).toContainEqual({ field: 'images', reason: 'binding' })
+    expect(selected).toHaveLength(1)
+  })
+})

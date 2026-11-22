@@ -37,6 +37,7 @@ export const VIDEO_DIRECTOR_PROMPT = [
 const VIDEO_WORKFLOW = [
   '# Yunshu video direction and execution',
   '',
+  'Native media-generation-v2 processors use list_media_models_v2, upload_media_asset, quote_media_operation, generate_media_operation and query_media_operation. When the requested motion replication, lip-sync, avatar, upscaling, layer decomposition or other operation is advertised there, preserve its exact typed controls and use that same V2 operation throughout. Never send a V2-only model to the legacy text/video generator. Keep the original operation ID after acceptance or an unknown response; query and save every original output rather than generating again. Existing ordinary creation workflows below remain unchanged for their supported models.',
   VIDEO_DIRECTOR_PROMPT,
   '',
   '## Use the native workflow',

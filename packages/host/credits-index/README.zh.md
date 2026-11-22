@@ -11,6 +11,7 @@ kind: "package-reference"
 
 使用当前登录的产品账号查询余额、充值、分析用量并生成媒体。提示词帮写准备可编辑的图片或视频描述，不提交媒体生成。工作区视频项目规划模型支持的片段，依序生成，再发布经本地验证的成片。付费请求使用当前账号；取消不能保证已被上游接受的任务停止计费。
 
+
 ## 目录
 
 - [使用本包](#use-this-package)
@@ -349,6 +350,14 @@ H3 原任务查询固定使用 canonical `/v1/tasks/:id` 路由。失败或取�
 可配置 `videoProjectMaxSeconds`（默认 300）、`videoProjectMaxSegments`（32）、`videoProjectConcurrency`（省略时自动调度，后备值为 4；显式接受 1 至 64 的整数）、`videoProjectPollIntervalMs`（6000）、`videoProjectTaskTimeoutMs`（900000）、`videoProjectDownloadMaxBytes`（536870912），`videoProjectReferenceMaxBytes`（每个本地引用 20971520），以及相对于工作区的 `videoProjectOutputDirectory`（`artifacts/videos`）。任务期限分别约束单次提交、原任务查询和保存，不是生成总时限。队列查询也遵守服务器声明的最短间隔。原任务 GET 瞬时失败按 `videoQueryRetryLimit` 有界重试，耗尽后暂停观察并保留原任务，不认定上游失败或重新提交。视频内容下载的完整传输期限至少为 300000 ms，提交期限至少为 180000 ms，模型目录与状态请求仍使用 `timeoutMs`。内容读取中断返回 `VIDEO_DOWNLOAD_UNAVAILABLE`，清除未完成文件，保留已知任务供显式恢复，不再次提交。生成前，完整记录连同任务与路径元数据的预留空间必须不超过 64 MiB。这些限制在计费前生效。镜头连贯性仍取决于提供方；管线提供有序分镜说明与共享参考素材，不会承诺模型尚未生成的主体一致性或转场画面。
 
 图片生成、单段视频提交、长视频项目和 AI 帮写仅在实际 HTTP 403 响应含网关精确错误码 `insufficient_user_quota` 时返回 `INSUFFICIENT_BALANCE`；OpenAI 错误封装还须具有网关的 `new_api_error` 或图片协议的 `invalid_request_error` 类型。上游额度不足、渠道欠费、令牌额度、普通 403 和传输故障均不表示用户余额不足。明确资金拒绝会停止固定视频流程并保留已保存片段。网关也可能在上游受理后因追加费用而返回此错误，因此未确认的提交继续保持未知状态，即使充值也不能自动重发。原生任务插件若已把错误码改为 `permission_denied`，产品无法恢复原始原因，因此仍显示通用错误。不另发余额估算或付费探测请求。
+
+### 原生模型处理
+
+原生图片、视频处理器通过独立声明的 `media-generation-v2` 协议接入 `/credits/api/media-v2`。中转密钥只保存在 Host；上传保留不超过 50 MiB 的原始字节，服务端实际探测文件、尺寸和时长。素材角色、输入意图和参数均明确传递；缺少或不兼容的参考素材会阻止报价，不会变成文生请求。已有普通图片、视频接口继续使用。
+
+原操作 UUID、完整请求、报价和任务回执保存在 `media-v2` 下的私有版本 1 记录中。Host 在报价前保存请求，在任务提交前保存提交围栏。报价或提交失答后只 GET 原操作恢复；404、未知状态都不允许自动再次提交。用户积分沿用本插件已有的 `creditsPerYuan`，按 `Math.round(retail_cny * creditsPerYuan)` 换算，不使用上游 quota 冒充积分。过期但未提交的报价可明确沿同一操作重新核价。
+
+内置工具通过 `list_media_models_v2`、`upload_media_asset`、`quote_media_operation`、`generate_media_operation` 和 `query_media_operation` 使用相同参数与回执。生成由当前账号的后台任务执行；查询和部分下载恢复只读取原任务，保存所有分层图片、GIF 和矢量文件。SVG 作为文件下载，不插入应用 DOM。停止本地等待不代表取消已被上游接受的任务。
 
 <a id="understand-the-implementation"></a>
 ## 理解实现

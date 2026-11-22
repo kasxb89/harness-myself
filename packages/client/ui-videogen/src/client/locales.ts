@@ -5,6 +5,7 @@ export const NS = 'videogen'
 
 /** Simplified Chinese copy for the video composer. */
 export const zh = {
+  'modelsAndProcessing': '模型与处理',
   'quality': '质量',
   'specification': '完整规格',
   'specificationHint': '以下为可用的完整组合，切换会同时更新质量、尺寸和时长',
@@ -223,6 +224,7 @@ export const zh = {
 
 /** English copy for every video composer translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'modelsAndProcessing': 'Models and processing',
   'quality': 'Quality',
   'specification': 'Complete specification',
   'specificationHint': 'Choose a complete combination. Quality, size and duration change together.',

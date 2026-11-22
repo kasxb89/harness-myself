@@ -842,8 +842,8 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
       id,
       ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
       kind,
-      displayName: id === 'MiniMax-H3' ? 'mt-MiniMax-H3'
-        : typeof record.display_name === 'string' && record.display_name.trim() !== '' ? record.display_name : id,
+      displayName: typeof record.display_name === 'string' && record.display_name.trim() !== '' ? record.display_name
+        : id === 'MiniMax-H3' ? 'mt-MiniMax-H3' : id,
       groups,
       route,
       params: built.params,

@@ -3,7 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   appPath, IconCloseOutlineRegular,
   IconPlusOutlineRegular, IconSearchOutlineRegular, IconSendOutlineRegular,
-  IconSparkleRegular, ImageLightbox, productFailureKind, SegmentedTabs, Tooltip,
+  IconSparkleRegular, ImageLightbox, MediaV2Composer, productFailureKind, SegmentedTabs, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, PropsStore, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
@@ -184,6 +184,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const { t, openVideo, openAudio, createReferencePreview, releaseReferencePreview, readDraft, actions } = props
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
+  const [mediaV2, setMediaV2] = useState(false)
   const {
     prompt, modelId, size, resolution, quality, background, format, compression, moderation, seed, count,
     references, uploading, uploadResult, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
@@ -240,15 +241,17 @@ export function ImagePage(props: ImagePageProps): ReactNode {
 
   const model = useMemo(() => models.find(entry => entry.id === modelId) ?? models[0] ?? null, [modelId, models])
   const params = model?.params ?? null
-  const specifications = useMemo(() => params === null ? undefined : generationSpecifications(params, references.length),
-    [params, references.length])
+  const generationReferences = useMemo(() => references.filter(item => item.role !== 'writing'), [references])
+  const specifications = useMemo(() => params === null ? undefined : generationSpecifications(params, generationReferences.length),
+    [params, generationReferences.length])
   const specificationIndex = specifications?.findIndex(item => (item.size ?? item.ratio ?? '') === size
     && (item.resolution ?? '') === resolution && (item.quality ?? '') === quality) ?? -1
-  const referenceRequired = model?.route === '/v1/images/edits' && references.length === 0
-  const settingsInvalid = referenceRequired || specifications !== undefined && specifications.length === 0
+  const maxEdits = params?.maxEdits ?? 0
+  const referenceRequired = model?.route === '/v1/images/edits' && generationReferences.length === 0
+  const referenceOverflow = generationReferences.length > maxEdits
+  const settingsInvalid = referenceRequired || referenceOverflow || specifications !== undefined && specifications.length === 0
   const specificationLabel = (item: ImageSpecification): string => [item.size ?? item.ratio, item.resolution, item.quality]
     .filter(value => value !== undefined && value !== '').join(' · ')
-  const maxEdits = params?.maxEdits ?? 0
   const isSignedIn = signedIn === true && !sessionInvalid
   const ownsReferences = isSignedIn && accountIdentity !== null && draft.referenceAccountId === accountIdentity
   const submissionOwner = accountIdentity === null || sessionId === undefined ? null : { accountId: accountIdentity, sessionId }
@@ -457,6 +460,13 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     actions.removeReference(assetId)
   }, [actions, readDraft, releaseReferencePreview])
 
+  const setReferenceRole = useCallback((assetId: string, role: 'generation' | 'writing'): void => {
+    const current = readDraft()
+    if (current.uploading || current.generationStartedAt !== null || current.promptAssisting || accountIdentity === null
+      || current.referenceAccountId !== accountIdentity || current.referenceEpoch !== draft.referenceEpoch) return
+    actions.patch({ references: current.references.map(item => item.assetId === assetId ? { ...item, role } : item), failure: null })
+  }, [accountIdentity, actions, draft.referenceEpoch, readDraft])
+
   const clearReferences = useCallback((): void => {
     const current = readDraft()
     if (current.uploading || current.generationStartedAt !== null || current.promptAssisting) return
@@ -555,7 +565,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
             reject(file.name, t('referenceTotalLimit')); continue
           }
           actions.appendReference({ assetId: asset.assetId, name: file.name,
-            url: legacy ? createReferencePreview(file) : expectedPreview, bytes })
+            url: legacy ? createReferencePreview(file) : expectedPreview, bytes,
+            role: (models.find(entry => entry.id === latest.modelId)?.params.maxEdits ?? 0) > 0 ? 'generation' : 'writing' })
           result = { ...result, added: result.added + 1, converted: result.converted + (asset.converted === true ? 1 : 0),
             firstFrames: result.firstFrames + (asset.firstFrameOnly === true ? 1 : 0) }
           actions.patch({ uploadResult: result })
@@ -569,7 +580,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     } finally {
       if (isCurrent()) actions.patch({ uploading: false })
     }
-  }, [acceptAccount, accountIdentity, actions, createReferencePreview, readDraft, signedIn, t])
+  }, [acceptAccount, accountIdentity, actions, createReferencePreview, models, readDraft, signedIn, t])
 
   const generate = useCallback(async (): Promise<void> => {
     const current = readDraft()
@@ -583,8 +594,12 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     if (selected === undefined) return
     const accepted = selected.params
     if (current.prompt.trim() === '') { setFailure(t('promptRequired')); promptField.current?.focus(); return }
-    if (selected.route === '/v1/images/edits' && current.references.length === 0) { setFailure(t('referenceRequired')); return }
-    const acceptedSpecifications = generationSpecifications(accepted, current.references.length)
+    const activeReferences = current.references.filter(item => item.role !== 'writing')
+    if (activeReferences.length > accepted.maxEdits) {
+      setFailure(t(accepted.maxEdits === 0 ? 'generationUnsupported' : 'generationOverflow', { n: String(accepted.maxEdits) })); return
+    }
+    if (selected.route === '/v1/images/edits' && activeReferences.length === 0) { setFailure(t('referenceRequired')); return }
+    const acceptedSpecifications = generationSpecifications(accepted, activeReferences.length)
     const specification = acceptedSpecifications?.find(item => (item.size ?? item.ratio ?? '') === current.size
       && (item.resolution ?? '') === current.resolution && (item.quality ?? '') === current.quality)
     if (acceptedSpecifications !== undefined && specification === undefined) { setFailure(t('settingsUnavailable')); return }
@@ -618,7 +633,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
       const answer = await post<{ path: string; paths?: readonly string[] }>('/credits/api/image/generate', {
         session_id: sessionId, account_id: accountIdentity,
         prompt: current.prompt.trim(), model: selected.id, count: Math.max(1, Math.min(current.count, accepted.maxCount)),
-        generation_mode: current.references.length > 0 && accepted.maxEdits > 0 ? 'image-to-image' : 'text-to-image',
+        generation_mode: activeReferences.length > 0 ? 'image-to-image' : 'text-to-image',
         ...(specification !== undefined ? current.size !== '' : accepted.sizes.includes(current.size)) ? { size: current.size } : {},
         ...(specification !== undefined ? current.resolution !== '' : accepted.resolutions?.includes(current.resolution) === true) ? { resolution: current.resolution } : {},
         ...(specification !== undefined ? current.quality !== '' : accepted.qualities.includes(current.quality)) ? { quality: current.quality } : {},
@@ -627,7 +642,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         ...accepted.moderations.includes(current.moderation) ? { moderation: current.moderation } : {},
         ...accepted.formats.includes(current.format) && (current.format === 'jpeg' || current.format === 'webp') ? { compression: current.compression } : {},
         ...accepted.seed && current.seed.trim() !== '' ? { seed: Number(current.seed) } : {},
-        references: current.references.slice(0, accepted.maxEdits).map(item => item.assetId),
+        references: activeReferences.map(item => item.assetId),
       })
       if (readDraft().referenceEpoch !== current.referenceEpoch) return
       if (answer.sessionInvalid === true) { acceptAccount({ signedIn: false }); actions.patch({ sessionInvalid: true, failure: t('noAuth') }); return }
@@ -670,11 +685,16 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     promptField.current?.focus()
   }
 
+  if (mediaV2) return <div className={css.page}><div className={css.content}>
+    <MediaV2Composer kind="image" accountKey={accountIdentity} language={language === 'en' ? 'en' : 'zh'} onExit={() => { setMediaV2(false) }} />
+  </div></div>
+
   return (
     <div className={css.page} id="imagegen" role="tabpanel" aria-labelledby="gen-mode-image">
       <div className={css.content}>
         <header className={css.header}>
           <h1 className={css.title}>{t('title')}</h1>
+          <button type="button" className={css.textAction} onClick={() => { setMediaV2(true) }}>{t('modelsAndProcessing')}</button>
           <SegmentedTabs
             className={css.modeTabs}
             items={[
@@ -709,6 +729,12 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               <ul className={css.thumbs} aria-label={t('reference')}>
                 {references.map(item => <li key={item.assetId} className={css.thumb}>
                   <img src={item.url.startsWith('/') ? appPath(item.url) : item.url} alt={item.name} />
+                  <select className={css.referenceRole} aria-label={t('referenceRole', { name: item.name })}
+                    value={item.role ?? 'generation'} disabled={locked}
+                    onChange={(event) => { setReferenceRole(item.assetId, event.target.value === 'writing' ? 'writing' : 'generation') }}>
+                    <option value="generation">{t('referenceForGeneration')}</option>
+                    <option value="writing">{t('referenceForWriting')}</option>
+                  </select>
                   <Tooltip label={t('removeReference', { name: item.name })} side="top" portal>
                     <button type="button" className={css.remove} aria-label={t('removeReference', { name: item.name })} disabled={locked}
                       onClick={() => { removeReference(item.assetId) }}><IconCloseOutlineRegular size={12} /></button>
@@ -770,7 +796,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
               </select>
             </label>
             <span className={css.mode}>{referenceRequired ? t('modeEditRequired')
-              : maxEdits === 0 || references.length === 0 ? t('modeGenerate') : t('modeEdit', { count: String(Math.min(references.length, maxEdits)) })}</span>
+              : referenceOverflow ? t('modeBlocked') : generationReferences.length === 0 ? t('modeGenerate')
+                : t('modeEdit', { count: String(generationReferences.length) })}</span>
             <Tooltip label={originalSubmission !== null ? t('originalLocked') : running ? t('runningShort') : t('submit')} side="top" portal>
               <button type="button" className={css.send} aria-label={running ? t('runningShort') : t('submit')}
                 disabled={submissionLocked || model === null || !isSignedIn || sessionId === undefined || prompt.trim() === '' || settingsInvalid}
@@ -789,7 +816,8 @@ export function ImagePage(props: ImagePageProps): ReactNode {
                 }}>
                 {specifications.map((item, index) => <option key={index} value={index}>{specificationLabel(item)}</option>)}
               </select></label>}
-            {settingsInvalid && <p className={css.parameterHint} role="alert">{t(referenceRequired ? 'referenceRequired' : 'settingsUnavailable')}</p>}
+            {settingsInvalid && <p className={css.parameterHint} role="alert">{t(referenceRequired ? 'referenceRequired' : referenceOverflow
+              ? maxEdits === 0 ? 'generationUnsupported' : 'generationOverflow' : 'settingsUnavailable', { n: String(maxEdits) })}</p>}
             {specifications === undefined && (params.resolutions?.length ?? 0) > 0 && <label className={css.field}><span>{t('resolution')}</span><select className={css.select} aria-label={t('resolution')} value={resolution} disabled={locked}
               onChange={(event) => { actions.patch({ resolution: event.target.value }) }}>
               {params.resolutions?.map(value => <option key={value} value={value}>{value.toUpperCase()}</option>)}

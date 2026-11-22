@@ -5,6 +5,7 @@ export const NS = 'imagegen'
 
 /** Simplified Chinese image-workspace copy. */
 export const zh = {
+  'modelsAndProcessing': '模型与处理',
   'specification': '完整规格',
   'specificationHint': '以下为可用的完整组合，切换会同时更新质量和尺寸',
   'settingsUnavailable': '当前模型暂无可用规格，请刷新模型后重试',
@@ -139,8 +140,14 @@ export const zh = {
   'noAuth': '登录已过期，请到「额度」里重新登录。',
   'failed': '生成失败：{message}',
   'materialHelp': '支持常见图片格式，原图单张最多 32 MB，自动转换后合计最多 12 MB，最多 6 张；AI 帮写会参考全部素材',
-  'generationTextOnly': '当前模型仅使用文字生成，上传图片仅供帮写参考',
-  'generationReferences': '生成时仅使用前 {n} 张图片，其余图片仍保留供帮写',
+  'referenceRole': '素材用途：{name}',
+  'referenceForGeneration': '用于生成',
+  'referenceForWriting': '仅用于帮写',
+  'modeBlocked': '请调整参考图',
+  'generationUnsupported': '当前模型不支持用于生成的参考图。图片已保留，请切换支持图生图的模型，或明确改为仅用于帮写。',
+  'generationOverflow': '当前模型最多支持 {n} 张生成参考图。全部素材已保留，请明确调整用途或移除多余图片。',
+  'generationTextOnly': '当前模型仅文生图。新素材默认仅用于帮写，已有生成参考图不会自动改变用途。',
+  'generationReferences': '生成参考图最多 {n} 张；仅用于帮写的素材不会提交给生成模型',
   'referenceTotalLimit': '参考图片合计不能超过 12 MB',
   'contentLoading': '正在读取创作内容…',
   'contentFailed': '创作内容暂时无法读取',
@@ -151,6 +158,7 @@ export const zh = {
 
 /** English image-workspace copy with the same keys as Chinese. */
 export const en: Record<keyof typeof zh, string> = {
+  'modelsAndProcessing': 'Models and processing',
   'specification': 'Complete specification',
   'specificationHint': 'Choose a complete combination. Quality and size change together.',
   'settingsUnavailable': 'No specifications are available. Refresh the models and try again.',
@@ -285,8 +293,14 @@ export const en: Record<keyof typeof zh, string> = {
   'noAuth': 'The session expired; sign in again in Credits.',
   'failed': 'Generation failed: {message}',
   'materialHelp': 'Common image formats, up to 32 MB per original, 12 MB total after conversion and 6 images. AI writing uses all materials.',
-  'generationTextOnly': 'This model generates from text only. Uploaded images are used for AI writing.',
-  'generationReferences': 'Generation uses only the first {n} images. Other images remain available for AI writing.',
+  'referenceRole': 'Material use: {name}',
+  'referenceForGeneration': 'For generation',
+  'referenceForWriting': 'Writing only',
+  'modeBlocked': 'Adjust reference images',
+  'generationUnsupported': 'This model cannot use generation references. Images are retained. Choose an image-edit model or explicitly mark them as writing only.',
+  'generationOverflow': 'This model supports up to {n} generation references. Every material is retained. Change its use or remove excess images explicitly.',
+  'generationTextOnly': 'This is a text-only model. New materials default to writing only; existing generation references keep their use.',
+  'generationReferences': 'Up to {n} generation references. Writing-only materials are never sent to the generation model.',
   'referenceTotalLimit': 'Reference images must total no more than 12 MB.',
   'contentLoading': 'Loading creation content…',
   'contentFailed': 'Creation content is unavailable.',

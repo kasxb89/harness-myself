@@ -3,6 +3,8 @@
 exports[`image creation workspace > selects complete image specifications without mixing quality and resolution 1`] = `
 {
   "options": [
+    "用于生成",
+    "仅用于帮写",
     "Complete image model",
     "1024x1024 · 1k · pro",
     "1024x1024 · 2k · max",

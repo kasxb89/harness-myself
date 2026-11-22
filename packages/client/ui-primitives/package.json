@@ -41,6 +41,7 @@
     "micromark-util-types": "^2.0.2",
     "shiki": "^4.4.3",
     "@deepseek-ai/dsh-util-workspace-path": "workspace:*",
+    "@deepseek-ai/dsh-util-crypto": "workspace:*",
     "@shikijs/langs": "^4.4.3",
     "@types/mdast": "^4.0.4",
     "micromark-factory-space": "^2.0.1",

@@ -1,0 +1,43 @@
+.composer { width: 100%; min-width: 0; display: grid; gap: 20px; color: var(--dsw-alias-label-primary); font-family: var(--dsw-font, sans-serif); }
+.header, .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; min-width: 0; }
+.header h2 { margin: 0; font-size: 20px; font-weight: 600; }
+.composer h3 { margin: 0; font-size: 14px; font-weight: 600; }
+.composer button, .upload { font: inherit; font-size: 13px; border: 1px solid var(--dsw-alias-stroke-secondary, #8884); border-radius: 8px; color: inherit; background: var(--dsw-alias-fill-secondary, #8881); padding: 8px 12px; cursor: pointer; }
+.composer button:disabled { opacity: .5; cursor: default; }
+.composer button:focus-visible, .composer input:focus-visible, .composer select:focus-visible, .composer textarea:focus-visible, .upload:focus-within { outline: 2px solid var(--dsw-alias-state-business-primary); outline-offset: 3px; }
+.selectors, .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.selectors label, .field label { display: grid; gap: 7px; font-size: 13px; min-width: 0; }
+.composer input:not([type=checkbox]), .composer select, .composer textarea { box-sizing: border-box; min-width: 0; width: 100%; border: 1px solid var(--dsw-alias-stroke-secondary, #8884); border-radius: 8px; padding: 9px 10px; font: inherit; color: inherit; background: var(--dsw-alias-fill-primary, transparent); }
+.composer select { text-overflow: ellipsis; }
+.composer textarea { resize: vertical; min-height: 110px; line-height: 1.6; }
+.field { min-width: 0; }
+.wide { grid-column: 1 / -1; }
+.field .boolean { display: flex; align-items: center; min-height: 36px; }
+.field fieldset { border: 0; padding: 0; margin: 0; }
+.choices { display: flex; gap: 12px; flex-wrap: wrap; padding-top: 8px; }
+.choices label { display: flex; align-items: center; gap: 5px; }
+.hint { margin: 5px 0 0; color: var(--dsw-alias-label-tertiary, #888); font-size: 12px; line-height: 1.6; }
+.error { color: var(--dsw-alias-label-error, #bd4141); font-size: 13px; line-height: 1.6; margin: 4px 0; overflow-wrap: anywhere; }
+.materials { display: grid; gap: 16px; }
+.materialField { padding: 16px; border: 1px solid var(--dsw-alias-stroke-secondary, #8884); border-radius: 12px; min-width: 0; }
+.upload { position: relative; overflow: hidden; }
+.upload input { position: absolute; inset: 0; opacity: 0; cursor: pointer; max-width: 100%; }
+.assets { display: grid; gap: 8px; list-style: none; padding: 0; margin: 12px 0 0; }
+.asset { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-width: 0; }
+.assetName { flex: 1 1 140px; overflow-wrap: anywhere; font-size: 13px; }
+.asset select { width: auto; max-width: 180px; }
+.actions { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.actions .primary { background: var(--dsw-alias-state-business-primary); color: white; border-color: transparent; }
+.price { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 13px; }
+.composer .textButton { justify-self: start; padding: 0; border: 0; background: none; color: var(--dsw-alias-label-secondary); }
+.operations { display: grid; gap: 14px; }
+.operation { border-top: 1px solid var(--dsw-alias-stroke-secondary, #8884); padding-top: 16px; min-width: 0; }
+.operationId { color: var(--dsw-alias-label-tertiary, #888); font-size: 11px; overflow-wrap: anywhere; }
+.results { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap: 12px; margin-top: 16px; }
+.artifact { margin: 0; min-width: 0; border: 1px solid var(--dsw-alias-stroke-secondary, #8884); border-radius: 10px; overflow: hidden; }
+.artifact img, .artifact video { display: block; width: 100%; max-height: 420px; object-fit: contain; background: #8881; }
+.artifact audio { display: block; width: 100%; }
+.artifact figcaption { display: grid; gap: 6px; padding: 10px; font-size: 12px; overflow-wrap: anywhere; }
+.artifact a { color: var(--dsw-alias-state-business-primary); }
+.saved { padding-left: 20px; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 620px) { .selectors, .fields { grid-template-columns: 1fr; } .wide { grid-column: auto; } .header { align-items: flex-start; } .asset { gap: 8px; } }

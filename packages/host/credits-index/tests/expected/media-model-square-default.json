@@ -19,6 +19,9 @@
       ],
       "max_count": 1,
       "max_reference_images": 0,
+      "generation_modes": [
+        "text-to-image"
+      ],
       "qualities": [],
       "backgrounds": [],
       "formats": [],

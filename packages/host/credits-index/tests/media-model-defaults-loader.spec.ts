@@ -232,11 +232,26 @@ it('projects the sole square specification as already selected without asking fo
     expect(description).toContain('Before asking about')
     expect(description).toContain('a single supported value needs no question')
     expect(description).toContain('never a generic ratio menu')
+    expect(description).toContain('list_media_models_v2')
+    expect(description).toContain('explicit intent')
   }
+  expect(listed.native_media_catalog).toBe('list_media_models_v2')
   expect(f.posts).toEqual([])
   await expect(JSON.stringify({ model: listed.default_model_id, source: listed.default_source,
     selected_parameters: listed.selected_parameters, models: listed.models }, null, 2) + '\n')
     .toMatchFileSnapshot('./expected/media-model-square-default.json')
+})
+
+it.each(['image', 'video'])('does not send an explicit V2-only %s id to a legacy default or route', async (kind) => {
+  const f = await fixture(false)
+  await f.human(`使用 ycapi-v2-only-${kind} 生成一份新作品`)
+  const value = await f.call(kind === 'image' ? 'generate_image' : 'generate_video', {
+    model: `ycapi-v2-only-${kind}`, prompt: '明确指定的新原生型号',
+    ...kind === 'video' ? { duration_seconds: 5, resolution: '1080p' } : {},
+  })
+  expect(value.status).toBe('failed')
+  expect(f.posts.filter(path => !path.endsWith('/api/client-errors'))).toEqual([])
+  expect(f.submissions).toEqual([])
 })
 
 it('keeps model-only saved choices visible, then corrects the unsubmitted request using that same model', async () => {

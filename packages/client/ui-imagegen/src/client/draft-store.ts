@@ -8,6 +8,8 @@ export interface ImageReference {
   readonly name: string
   readonly url: string
   readonly bytes: number
+  /** Explicit use survives model changes; older unmarked materials are generation references. */
+  readonly role?: 'generation' | 'writing'
 }
 
 /** Per-file feedback retained with the current account's material selection. */

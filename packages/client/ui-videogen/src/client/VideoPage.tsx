@@ -1,7 +1,7 @@
 /** Video composer, camera-script templates and real generated clips. */
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
 import { queryVideoSubmission, readVideoSubmission, submissionFromAnswer, submissionKey } from './video-submission.ts'
-import { appPath, Button, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, productFailureKind, SegmentedTabs, Switch, Tooltip, VideoPlayer, type ProductFailureKind } from '@deepseek-ai/dsh-client-ui-primitives'
+import { appPath, Button, IconPlayOutlineRegular, IconPlusOutlineRegular, IconSettingsOutlineRegular, Menu, Modal, MediaV2Composer, productFailureKind, SegmentedTabs, Switch, Tooltip, VideoPlayer, type ProductFailureKind } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsStore } from '@deepseek-ai/dsh-client-store'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
@@ -139,6 +139,7 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
   const { t, openImage, openAudio, actions, createPreview, releasePreview, readDraft } = props
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
+  const [mediaV2, setMediaV2] = useState(false)
   const { prompt, modelId, resolution, quality, size, ratio, mode, seed, audio, firstFrame, lastFrame, slots,
     phase, uploading, failure, uploadFailures, message, result } = draft
   const [signedIn, setSignedIn] = useState<boolean | null>(null)
@@ -802,9 +803,14 @@ export function VideoPage(props: PropsRuntime<'main'> & PropsRenderFactories & P
     promptField.current?.focus()
   }
 
+  if (mediaV2) return <div className={css.page}>
+    <MediaV2Composer kind="video" accountKey={accountIdentity} language={language === 'en' ? 'en' : 'zh'} onExit={() => { setMediaV2(false) }} />
+  </div>
+
   return <div className={css.page} id="videogen" role="tabpanel" aria-labelledby="gen-mode-video">
     <header className={css.header}>
       <h1 className={css.title}>{t('title')}</h1>
+      <button type="button" className={css.textAction} onClick={() => { setMediaV2(true) }}>{t('modelsAndProcessing')}</button>
       <SegmentedTabs className={css.modeTabs} items={[
         { value: 'image', label: t('tab.image'), id: 'gen-mode-image', panelId: 'imagegen' },
         { value: 'video', label: t('tab.video'), id: 'gen-mode-video', panelId: 'videogen' },

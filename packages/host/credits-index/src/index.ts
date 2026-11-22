@@ -62,6 +62,9 @@ import { readAnnouncements } from './announcements.ts'
 import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
 import { createDemandProxy, type DemandProxyOptions } from './demand-proxy.ts'
+import { MediaV2Client } from './media-v2-client.ts'
+import { createMediaV2Proxy } from './media-v2-proxy.ts'
+import { registerMediaV2Tools } from './media-v2-tools.ts'
 import { createCommunityProxy } from './community-proxy.ts'
 import { createForumProxy } from './forum-proxy.ts'
 import { createShowcaseProxy } from './showcase-proxy.ts'
@@ -349,6 +352,7 @@ type ResolvedConfig = Omit<Required<Config>, 'videoProjectConcurrency' | 'imageC
 
 /** The single prefix this plugin owns. */
 const ROUTE_PREFIX = '/credits'
+const NATIVE_MEDIA_GUIDANCE = ' Native media-generation-v2 models and processors use list_media_models_v2 with explicit intent, typed parameters and ordered assets, then quote_media_operation, generate_media_operation and query_media_operation. Models absent from this legacy catalog cannot fall back to this tool or text generation; preserve their original V2 operation rather than using a legacy route.'
 
 /**
  * Credential address holding the session token. The store only accepts
@@ -2627,6 +2631,46 @@ export function apply(ctx: Context, config: Config): void {
       maxJsonResponseBytes: resolved.demandMaxJsonResponseBytes, maxChunkBytes: resolved.demandMaxChunkBytes }),
   }
   const serviceGalleryProxy = createServiceGalleryProxy(demandProxyOptions)
+  const mediaV2Client = new MediaV2Client({ baseUrl: apiBaseUrl, directory: join(stateDir, 'media-v2'), timeoutMs: resolved.timeoutMs,
+    creditsPerYuan: resolved.creditsPerYuan,
+    pollIntervalMs: resolved.videoPollIntervalMs,
+    maxArtifactBytes: resolved.videoProjectDownloadMaxBytes,
+    output: async signal => await captureMediaOutput(ctx.get('artifactStorage'), join(stateDir, 'media'), signal) })
+  const captureMediaV2Account = async (signal: AbortSignal) => {
+    signal.throwIfAborted()
+    const binding = await bindCurrentVideoAccount()
+    return {
+      owner: `${binding.identity.accountId}:${binding.identity.sessionFingerprint}`,
+      isCurrent: async () => { try { await binding.key(); return true } catch { return false } },
+      fetch: async (path: string, init: RequestInit) => {
+        const key = await binding.key()
+        signal.throwIfAborted()
+        return await apiFetch(path, { ...init, headers: { ...Object.fromEntries(new Headers(init.headers)), authorization: `Bearer ${key}` },
+          signal: init.signal ?? signal })
+      },
+    }
+  }
+  const mediaV2Proxy = createMediaV2Proxy({ client: mediaV2Client,
+    requestRejection: demandProxyOptions.requestRejection, capture: captureMediaV2Account })
+  registerMediaV2Tools(ctx, { client: mediaV2Client, capture: captureMediaV2Account,
+    pollIntervalMs: resolved.videoPollIntervalMs,
+    taskTimeoutMs: Math.max(resolved.videoTaskTimeoutMs, resolved.imageTaskTimeoutMs),
+    readAsset: async (value, exec) => {
+      const attached = await readChatImageReference(value, exec.agent?.session, ctx.get('attachments'), ctx.get('fs'), 50 * 1024 * 1024, exec.signal)
+      if (attached !== undefined) return { filename: attached.ref.name ?? `reference.${attached.ref.mediaType === 'image/jpeg' ? 'jpg' : 'png'}`, mime: attached.ref.mediaType, bytes: attached.data }
+      const workspaceRoot = exec.agent?.session.header.cwd, fileSystem = ctx.get('fs')
+      if (workspaceRoot === undefined || !isAbsolute(workspaceRoot) || fileSystem === undefined) throw new Error('Workspace unavailable')
+      const root = await fileSystem.resolve(workspaceRoot, { signal: exec.signal })
+      const target = await fileSystem.resolve(value, { cwd: workspaceRoot, signal: exec.signal })
+      const entry = await fileSystem.lstat(value, { cwd: workspaceRoot }, exec.signal)
+      if (entry?.type !== 'file' || !fileSystem.contains(root, target) || entry.size !== undefined && entry.size > 50 * 1024 * 1024) throw new Error('Reference is not an authorized workspace file')
+      const bytes = Buffer.from(await fileSystem.readBytes(target, exec.signal, 50 * 1024 * 1024))
+      const known = [...ALLOWED_ASSET_TYPES, ...ALLOWED_REFERENCE_VIDEO_TYPES, ...ALLOWED_REFERENCE_AUDIO_TYPES]
+        .find(type => referenceSignature(bytes, type))
+      const filename = basename(fileSystem.processPath(target))
+      const mime = known ?? (['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6)) ? 'image/gif' : 'application/octet-stream')
+      return { filename, mime, bytes }
+    } })
   const showcaseProxy = createShowcaseProxy({ ...demandProxyOptions,
     limits: () => ({ ...demandProxyOptions.limits(), maxJsonResponseBytes: resolved.communityMaxJsonResponseBytes }),
   })
@@ -2644,6 +2688,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.effect(() => async () => { await demandProxy.close() }, 'credits-index: private human-engineer demand requests')
   ctx.effect(() => async () => { await communityProxy.close() }, 'credits-index: ordinary-user community demand requests')
   ctx.effect(() => async () => { await forumProxy.close() }, 'credits-index: ordinary-user public forum requests')
+  ctx.effect(() => async () => { await mediaV2Proxy.close() }, 'credits-index: typed media V2 operations')
 
   /** All account data reads share one login-owned admission and the existing unique renewal owner. */
   const accountRequest = (session: StoredSession | null): AccountGetRequest => async (path, authenticated, signal, body) => {
@@ -3343,6 +3388,7 @@ export function apply(ctx: Context, config: Config): void {
 
 
       try {
+        if (await mediaV2Proxy.handle(request, response, route, method)) return
         if (await serviceGalleryProxy.handle(request, response, route, method)) return
         if (await showcaseProxy.handle(request, response, route, method)) return
         if (await forumProxy.handle(request, response, route, method)) return
@@ -5515,10 +5561,11 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'list_image_models',
-    description: 'Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. generation_modes identifies executable text-to-image and image-to-image inputs. For image-to-image, use edit_specifications when present and supply real reference_images; an edits-only model cannot generate without references. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Before asking about an image model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. Listing does not reserve capacity, estimate prices or authorize a generation.',
+    description: 'Read the signed-in account’s available image models and current Host-validated generation controls without submitting images or charging for generation. Read when an exact image model, size, aspect ratio, resolution, count or reference-image limit is needed. Use exact ids and the size strings as returned, including aspect-ratio strings; resolution is a separate field. generation_modes identifies executable text-to-image and image-to-image inputs. For image-to-image, use edit_specifications when present and supply real reference_images; an edits-only model cannot generate without references. Empty menus and omitted fields offer no optional choice. Unverified model limits are conservative local limits, not confirmed upstream capabilities. Only pass controls declared by generate_image; this catalog also describes controls available to AI Creation. Read default_model_id, default_source and selected_parameters before choosing a model or static controls. A default_error_code with an available model means complete its selection from that same model’s declared specifications; it does not authorize a different model. Before asking about an image model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. Listing does not reserve capacity, estimate prices or authorize a generation.' + NATIVE_MEDIA_GUIDANCE,
     parameters: {},
     isConcurrencySafe: () => true,
     output: { schema: { type: 'object', properties: {
+      native_media_catalog: { type: 'string' },
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
       default_model_id: { type: 'string' }, default_configured: { type: 'boolean' },
       default_available: { type: 'boolean' }, default_error_code: { type: 'string' }, default_error_message: { type: 'string' },
@@ -5589,7 +5636,7 @@ export function apply(ctx: Context, config: Config): void {
           binding.identity.accountId, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
-        return { status: 'listed', models, ...defaultMetadata, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
+        return { native_media_catalog: 'list_media_models_v2', status: 'listed', models, ...defaultMetadata, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
           : '按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。' }
       } catch (error) {
         if (error instanceof VideoProjectError && error.code === 'VIDEO_ACCOUNT_REQUIRED') {
@@ -5610,7 +5657,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.tools.register(defineTool({
     name: 'generate_image',
     isConcurrencySafe: () => true,
-    description: 'Generate images or edit reference images through the signed-in account relay and save every result into the artifacts directory. Quick completions return paths; longer operations return a background job_id with original plan_id and operation_id. Use job_output at measured intervals for progress and completion, then present the real paths. job_kill stops local waiting; accepted upstream work may continue billing. Never resubmit to wait for a background result. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id to query an accepted task or save a retained synchronous result without generating again. The task listing marks recoverable records with can_query. If neither an original task id nor a retained result is available, keep the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice.' + MEDIA_FAILURE_GUIDANCE,
+    description: 'Generate images or edit reference images through the signed-in account relay and save every result into the artifacts directory. Quick completions return paths; longer operations return a background job_id with original plan_id and operation_id. Use job_output at measured intervals for progress and completion, then present the real paths. job_kill stops local waiting; accepted upstream work may continue billing. Never resubmit to wait for a background result. For pending or unknown results, never resubmit this tool: use query_image_task with the original plan_id and operation_id to query an accepted task or save a retained synchronous result without generating again. The task listing marks recoverable records with can_query. If neither an original task id nor a retained result is available, keep the unknown outcome and reconcile the original request before any paid retry. For image-to-image requests, pass the current-chat user attachment or an authorized workspace image in reference_images. Use list_image_models when the requested model or image controls need checking; preserve its exact model ids, size strings, independent resolution tiers and count/reference limits. Ask the user to choose a model only when their request requires that choice.' + MEDIA_FAILURE_GUIDANCE + NATIVE_MEDIA_GUIDANCE,
     parameters: {
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide exactly one of shot_id or asset_id.' },
       shot_id: { type: 'string', description: 'Exact shot id in the explicit plan; never guess a latest project.' },
@@ -5898,9 +5945,10 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'list_video_models',
-    description: 'Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. Read default_model_id, default_source and selected_parameters before planning. selected_parameters.seconds is a default single-clip length, not the largest clip this model supports. For a requested final duration, use every supported duration within the selected resolution, ratio, quality and mode, minimizing clip count before excess generated seconds; never split one supported 15-second work into three five-second clips just because the saved default is five. Preserve that selected model unless the human chooses another one; a tool model argument alone cannot override a saved choice. If default_error_code reports an incomplete specification, use the returned selected model and its own specifications, not another model’s duration or resolution menu. Distinct ids such as MiniMax-H3 and ycapi-minimax-h3 are different channels, not interchangeable aliases. Before asking about a video model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.',
+    description: 'Read the signed-in account’s current video models and exact generation parameters without submitting or charging for generation. Call when planning explicit model controls or paid clip lengths. A simple single-clip request can directly call generate_video_project without total_duration_seconds: the Host resolves actual model defaults in the same call. Use exact ids, durations by resolution, size strings, reference limits and audio_output; do not infer audio from a missing switch or use display names as ids. Read default_model_id, default_source and selected_parameters before planning. selected_parameters.seconds is a default single-clip length, not the largest clip this model supports. For a requested final duration, use every supported duration within the selected resolution, ratio, quality and mode, minimizing clip count before excess generated seconds; never split one supported 15-second work into three five-second clips just because the saved default is five. Preserve that selected model unless the human chooses another one; a tool model argument alone cannot override a saved choice. If default_error_code reports an incomplete specification, use the returned selected model and its own specifications, not another model’s duration or resolution menu. Distinct ids such as MiniMax-H3 and ycapi-minimax-h3 are different channels, not interchangeable aliases. Before asking about a video model or static parameters, read this listing. Saved selected_parameters already answer those choices; a single supported value needs no question. Offer only unresolved choices from the selected model’s compatible complete specifications, never a generic ratio menu. This catalog does not report live upstream capacity. For queued work use the background generate_video_project workflow, including one clip.' + NATIVE_MEDIA_GUIDANCE,
     parameters: {},
     output: { schema: { type: 'object', properties: {
+      native_media_catalog: { type: 'string' },
       status: { type: 'string' }, code: { type: 'string' }, message: { type: 'string' },
       default_model_id: { type: 'string' }, default_configured: { type: 'boolean' },
       default_available: { type: 'boolean' }, default_error_code: { type: 'string' }, default_error_message: { type: 'string' },
@@ -5939,7 +5987,7 @@ export function apply(ctx: Context, config: Config): void {
           binding.identity.accountId, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
-        return { status: 'listed', models, ...defaultMetadata, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
+        return { native_media_catalog: 'list_media_models_v2', status: 'listed', models, ...defaultMetadata, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
       } catch (error) {
         if (error instanceof CreativeError && error.code === 'MODEL_CONFIG_CHANGED' && !exec.signal.aborted) {
           return { status: 'failed', code: error.code, message: error.message }
@@ -5951,7 +5999,7 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'generate_video',
-    description: 'Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Default to one finished work. For several user-requested works, first prepare_video_works with their concrete count and pass a separate returned work_id for each work. Reuse work_id when confirming, correcting or retrying the same finished work: even a new tool-call id returns its original operation instead of another generation POST. A separate actual human request can prepare independent work even with the same brief or plan, while the original accepted or unknown work retains its own task. Natural-language intent and inferred total counts do not gate execution. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.' + VIDEO_REQUEST_GUIDANCE + MEDIA_FAILURE_GUIDANCE,
+    description: 'Compatibility single-clip generation through the account relay. Read list_video_models first. Prefer generate_video_project for new video requests, including a single clip: its background job exposes queue and generation progress without holding chat open. Default to one finished work. For several user-requested works, first prepare_video_works with their concrete count and pass a separate returned work_id for each work. Reuse work_id when confirming, correcting or retrying the same finished work: even a new tool-call id returns its original operation instead of another generation POST. A separate actual human request can prepare independent work even with the same brief or plan, while the original accepted or unknown work retains its own task. Natural-language intent and inferred total counts do not gate execution. Progress checks and continuing the original task use its existing query or resume tools. Do not write submission, polling or download scripts or probe invalid paid durations. For story direction, character/reference continuity, dialogue or subtitles, use the yunshu-video-director skill. For a complete video such as 40 seconds or automatic assembly, always use generate_video_project; several camera beats may fit one clip. Accepted work that outlasts this foreground wait returns pending: query_video_task reads its original receipt without repeating that submission. Edit existing clips with edit_video. Only declared duration, resolution, ratio, frames and references are accepted.' + VIDEO_REQUEST_GUIDANCE + MEDIA_FAILURE_GUIDANCE + NATIVE_MEDIA_GUIDANCE,
     parameters: {
       work_id: { type: 'string', description: 'Existing work_id from prepare_video_works or an earlier generation result. Reuse it for the same finished work across tool calls and confirmations. Omission selects the current request’s first default work; it never creates another version of that work. For several works, prepare the complete count first and use each returned work_id once.' },
       plan_id: { type: 'string', description: 'Explicit update_creation_plan id for this generation. Also provide shot_id.' },

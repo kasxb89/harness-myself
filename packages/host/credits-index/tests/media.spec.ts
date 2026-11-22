@@ -367,16 +367,24 @@ describe('explicit gateway task-plugin capability source', () => {
 })
 
 
-it('distinguishes the direct H3 display name without changing canonical or YC model ids', () => {
+it('reads published H3 names without changing canonical or YC model identity', () => {
   const rows = [
-    { model_name: 'MiniMax-H3', display_name: 'MiniMax-H3' },
+    { model_name: 'MiniMax-H3', display_name: 'MiniMax H3 · 秘塔直连' },
     { model_name: 'ycapi-minimax-h3', display_name: 'MiniMax H3' },
     { model_name: 'another-video', display_name: 'Vendor model' },
   ].map(row => ({ ...row, supported_endpoint_types: ['openai-video'] }))
   const catalog = catalogFromPricing(rows, null)
   expect(catalog.map(({ id, displayName }) => ({ id, displayName }))).toEqual([
-    { id: 'MiniMax-H3', displayName: 'mt-MiniMax-H3' },
+    { id: 'MiniMax-H3', displayName: 'MiniMax H3 · 秘塔直连' },
     { id: 'ycapi-minimax-h3', displayName: 'MiniMax H3' },
     { id: 'another-video', displayName: 'Vendor model' },
   ])
+  const original = catalogFromPricing([{ model_name: 'MiniMax-H3', supported_endpoint_types: ['openai-video'] }], null)
+  expect(catalog[0]).toEqual({ ...original[0], displayName: 'MiniMax H3 · 秘塔直连' })
+})
+
+it.each([undefined, '', '  '])('retains the legacy H3 fallback without a published name %s', (display_name) => {
+  const [model] = catalogFromPricing([{ model_name: 'MiniMax-H3', display_name,
+    supported_endpoint_types: ['openai-video'] }], null)
+  expect(model).toMatchObject({ id: 'MiniMax-H3', displayName: 'mt-MiniMax-H3', route: '/v1/video/generations' })
 })
