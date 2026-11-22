@@ -73,6 +73,7 @@ export interface MediaV2Task {
 /** Host-enriched request quote with exact CNY, product credits and its expiry time. */
 export interface MediaV2Quote {
   readonly quote_id: string
+  readonly model_version?: string
   readonly client_operation_id: string
   readonly request_sha256: string
   readonly retail_cny: string
@@ -93,6 +94,7 @@ export interface MediaV2Record {
 }
 /** Selectable model definitions, product credit scale and an optional Host-configured polling interval. */
 export interface MediaV2Catalog {
+  readonly capabilities: { readonly same_operation_configuration_requote: boolean }
   readonly models: readonly MediaV2Model[]
   readonly credits_per_yuan: number
   readonly poll_after_ms?: number
@@ -138,6 +140,9 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
   if (!Array.isArray(data?.models) || !finite(data.credits_per_yuan) || data.credits_per_yuan <= 0) throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (data.poll_after_ms !== undefined && (!finite(data.poll_after_ms) || !Number.isInteger(data.poll_after_ms)
     || data.poll_after_ms < 1 || data.poll_after_ms > 60_000)) throw new Error('MEDIA_V2_CATALOG_INVALID')
+  const capabilities = mediaV2Object(data.capabilities)
+  const configurationRequote = capabilities?.same_operation_configuration_requote
+  if (configurationRequote !== undefined && typeof configurationRequote !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   const models = data.models.map((value): MediaV2Model => {
     const row = mediaV2Object(value), pricing = mediaV2Object(row?.pricing), schema = mediaV2Object(row?.parameters_schema)
     if (!text(row?.id) || !text(row.display_name) || !text(row.model_version) || row.kind !== 'image' && row.kind !== 'video'
@@ -163,6 +168,7 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
       ...typeof row.description === 'string' ? { description: row.description } : {} }
   })
   return { models, credits_per_yuan: data.credits_per_yuan,
+    capabilities: { same_operation_configuration_requote: configurationRequote === true },
     ...data.poll_after_ms === undefined ? {} : { poll_after_ms: data.poll_after_ms } }
 }
 /**
@@ -204,9 +210,11 @@ export function parseMediaV2Record(value: unknown): MediaV2Record {
   if (row.quote !== undefined) {
     if (!text(quote?.quote_id) || quote.client_operation_id !== request.client_operation_id || !text(quote.request_sha256)
       || typeof quote.retail_cny !== 'string' || !/^\d+(?:\.\d+)?$/u.test(quote.retail_cny) || !finite(quote.credits) || quote.credits < 0
-      || !finite(quote.credits_per_yuan) || quote.credits_per_yuan <= 0 || !finite(quote.expires_at)) throw new Error('MEDIA_V2_RECORD_INVALID')
+      || !finite(quote.credits_per_yuan) || quote.credits_per_yuan <= 0 || !finite(quote.expires_at)
+      || quote.model_version !== undefined && !text(quote.model_version)) throw new Error('MEDIA_V2_RECORD_INVALID')
     admittedQuote = { quote_id: quote.quote_id, client_operation_id: quote.client_operation_id, request_sha256: quote.request_sha256,
-      retail_cny: quote.retail_cny, credits: quote.credits, credits_per_yuan: quote.credits_per_yuan, expires_at: quote.expires_at }
+      retail_cny: quote.retail_cny, credits: quote.credits, credits_per_yuan: quote.credits_per_yuan, expires_at: quote.expires_at,
+      ...typeof quote.model_version === 'string' ? { model_version: quote.model_version } : {} }
   }
   const quoteFailure = mediaV2Object(row.quote_failure)
   let admittedQuoteFailure: { readonly code: string; readonly message: string } | undefined

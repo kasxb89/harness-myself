@@ -355,7 +355,7 @@ H3 原任务查询固定使用 canonical `/v1/tasks/:id` 路由。失败或取�
 
 原生图片、视频处理器通过独立声明的 `media-generation-v2` 协议接入 `/credits/api/media-v2`。中转密钥只保存在 Host；上传保留不超过 50 MiB 的原始字节，服务端实际探测文件、尺寸和时长。素材角色、输入意图和参数均明确传递；缺少或不兼容的参考素材会阻止报价，不会变成文生请求。已有普通图片、视频接口继续使用。
 
-原操作 UUID、完整请求、报价和任务回执保存在 `media-v2` 下的私有版本 1 记录中。Host 在报价前保存请求，在任务提交前保存提交围栏。报价或提交失答后只 GET 原操作恢复；404、未知状态都不允许自动再次提交。用户积分沿用本插件已有的 `creditsPerYuan`，按 `Math.round(retail_cny * creditsPerYuan)` 换算，不使用上游 quota 冒充积分。过期但未提交的报价可明确沿同一操作重新核价。
+原操作 UUID、完整请求、报价和任务回执保存在 `media-v2` 下的私有版本 1 记录中。Host 在报价前保存请求，在任务提交前保存提交围栏。报价或提交失答后只 GET 原操作恢复；404、未知状态都不允许自动再次提交。用户积分沿用本插件已有的 `creditsPerYuan`，按 `Math.round(retail_cny * creditsPerYuan)` 换算，不使用上游 quota 冒充积分。过期但未提交的报价可明确沿同一操作重新核价。服务声明 `same_operation_configuration_requote` 时，明确 GET 核实尚未受理的原操作可追加新版本报价行动，原正文与 UUID 保持。新费用必须重新由用户确认；并发续报价时，已受理的原快照优先。
 
 内置工具通过 `list_media_models_v2`、`upload_media_asset`、`quote_media_operation`、`generate_media_operation` 和 `query_media_operation` 使用相同参数与回执。生成由当前账号的后台任务执行；查询和部分下载恢复只读取原任务，保存所有分层图片、GIF 和矢量文件。SVG 作为文件下载，不插入应用 DOM。停止本地等待不代表取消已被上游接受的任务。
 

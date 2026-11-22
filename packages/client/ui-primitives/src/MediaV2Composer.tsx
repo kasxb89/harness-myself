@@ -71,6 +71,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   const [records, setRecords] = useState<readonly ViewRecord[]>([])
   const [currentId, setCurrentId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+  const [configurationRequote, setConfigurationRequote] = useState(false)
   const [pollAfterMs, setPollAfterMs] = useState<number | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -78,6 +79,9 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   const epoch = useRef(0), inFlight = useRef(false)
   const model = models.find(item => item.id === modelId) ?? null
   const current = records.find(item => item.record.request.client_operation_id === currentId)
+  const quotedVersion = current?.record.quote?.model_version ?? current?.record.request.model_version
+  const configurationChanged = current?.record.state === 'quoted' && model !== null
+    && current.record.request.model === model.id && quotedVersion !== model.model_version
   const originalUnsettled = currentId !== null && (current === undefined || current.record.state !== 'quoted')
   const locked = busy || originalUnsettled
   const issues = useMemo(() => model === null ? [] : mediaV2FormIssues(model, intent, parameters, assets, now),
@@ -85,8 +89,11 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   const fields = model === null ? [] : mediaV2Fields(model)
   const replaceRecord = useCallback((value: ViewRecord): void => {
     const id = value.record.request.client_operation_id
-    setRecords(previous => [...previous.filter(item => item.record.request.client_operation_id !== id), value])
-  }, [])
+    setRecords((previous) => {
+      const retained = previous.filter(item => item.record.request.client_operation_id !== id)
+      return value.record.task === undefined || value.record.task.kind === kind ? [...retained, value] : retained
+    })
+  }, [kind])
   const persist = useCallback((value: {
     modelId: string
     intent: MediaV2Intent
@@ -114,10 +121,14 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
       const [catalogAnswer, operationsAnswer] = await Promise.all([transport(`${PREFIX}/models`), transport(`${PREFIX}/operations`)])
       const catalog = parseMediaV2Catalog(mediaV2Data(catalogAnswer)), operations = mediaV2Object(mediaV2Data(operationsAnswer))
       if (!Array.isArray(operations?.operations)) throw new Error('MEDIA_V2_OPERATIONS_INVALID')
-      const views = operations.operations.map(recordView).filter(item => item.record.task?.kind === kind
-        || catalog.models.some(model => model.id === item.record.request.model && model.kind === kind))
+      const views = operations.operations.map(recordView).filter((item) => {
+        if (item.record.task !== undefined) return item.record.task.kind === kind
+        const declared = catalog.models.find(model => model.id === item.record.request.model)
+        return declared === undefined || declared.kind === kind
+      })
       if (captured !== epoch.current) return
       setPollAfterMs(catalog.poll_after_ms)
+      setConfigurationRequote(catalog.capabilities.same_operation_configuration_requote)
       setModels(catalog.models.filter(item => item.kind === kind && item.enabled))
       setRecords(views)
       const restored = mediaV2Object(JSON.parse(sessionStorage.getItem(draftKey(kind, accountKey)) ?? 'null'))
@@ -143,7 +154,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   useEffect(() => {
     epoch.current += 1
     setModels([]); setRecords([]); setAssets([]); setCurrentId(null); setModelId(''); setParameters({}); setPollAfterMs(undefined)
-    setBusy(false)
+    setBusy(false); setConfigurationRequote(false)
     void load()
     return () => { epoch.current += 1 }
   }, [load])
@@ -204,17 +215,17 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
     finally { inFlight.current = false; if (captured === epoch.current) setBusy(false) }
   }
   const quote = async (): Promise<void> => {
-    if (model === null || locked || inFlight.current || issues.length > 0) return
+    if (model === null || locked || inFlight.current || issues.length > 0 || configurationChanged && !configurationRequote) return
     const clientId = current?.record.state === 'quoted' ? current.record.request.client_operation_id : randomUUID()
     const captured = epoch.current
     const bindings: Record<string, string[]> = {}
     for (const selected of assets.filter(item => item.role === 'generation')) {
       if (selected.asset !== undefined) (bindings[selected.field] ??= []).push(selected.asset.asset_id)
     }
-    const request: MediaV2Request = {
-      client_operation_id: clientId, model: model.id, model_version: model.model_version,
-      intent, parameters: { ...parameters }, assets: bindings,
-    }
+    const request: MediaV2Request = configurationChanged
+      ? { ...current.record.request, model_version: model.model_version }
+      : { client_operation_id: clientId, model: model.id, model_version: model.model_version,
+        intent, parameters: { ...parameters }, assets: bindings }
     inFlight.current = true; setBusy(true); setError(null)
     try {
       saveDraft({ currentId: clientId }); setCurrentId(clientId)
@@ -235,7 +246,12 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
             setError(view.record.state === 'quote-rejected' ? view.record.quote_failure?.message ?? labels.quoteRejected
               : view.record.state === 'quoted' || view.record.state === 'accepted' ? null : labels.unknown)
           }
-        } catch { if (captured === epoch.current) setError(labels.unknown) }
+        } catch {
+          if (captured === epoch.current) {
+            if (current !== undefined) replaceRecord({ ...current, record: { ...current.record, state: 'unknown' } })
+            setError(labels.unknown)
+          }
+        }
       }
     }
     finally { inFlight.current = false; if (captured === epoch.current) setBusy(false) }
@@ -272,7 +288,8 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
     return () => { controller.abort(); if (timer !== undefined) clearTimeout(timer) }
   }, [accountKey, pollAfterMs, pollingIds, recover])
   const submit = async (): Promise<void> => {
-    if (current?.record.state !== 'quoted' || current.record.quote === undefined || current.record.quote.expires_at <= Date.now() / 1000 || inFlight.current || issues.length > 0) return
+    if (current?.record.state !== 'quoted' || current.record.quote === undefined || current.record.quote.expires_at <= Date.now() / 1000 || inFlight.current || issues.length > 0
+      || configurationChanged) return
     const id = current.record.request.client_operation_id, captured = epoch.current
     inFlight.current = true; setBusy(true)
     // Lock this original operation before waiting for an HTTP response.
@@ -357,13 +374,18 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
         </ul>
       </section>}
       {issues.filter(issue => issue.field === 'intent').map((issue, index) => <p key={index} className={css.error}>{issueText(issue.reason)}</p>)}
+      {configurationChanged && <p className={css.error} role="alert">{configurationRequote
+        ? labels.configurationChanged : labels.configurationRequoteUnsupported}</p>}
       <div className={css.actions}>
-        <button type="button" disabled={locked || issues.length > 0 || accountKey === null} onClick={() => { void quote() }}>{busy && currentId !== null && current === undefined ? labels.quoting : labels.quote}</button>
+        <button type="button" disabled={locked || issues.length > 0 || accountKey === null
+          || configurationChanged && !configurationRequote} onClick={() => { void quote() }}>
+          {busy && currentId !== null && current === undefined ? labels.quoting : labels.quote}
+        </button>
         {current?.record.quote !== undefined && <div className={css.price}>
           <strong>{labels.price}: {current.record.quote.credits.toLocaleString()} {labels.credits}</strong>
           <span>¥{current.record.quote.retail_cny}</span>
           {current.record.quote.expires_at <= now && current.record.state === 'quoted' && <span className={css.error}>{labels.expires}</span>}</div>}
-        {current?.record.state === 'quoted' && <button type="button" className={css.primary} disabled={busy || issues.length > 0 || current.record.quote === undefined || current.record.quote.expires_at <= now} onClick={() => { void submit() }}>{labels.submit}</button>}
+        {current?.record.state === 'quoted' && <button type="button" className={css.primary} disabled={busy || issues.length > 0 || current.record.quote === undefined || current.record.quote.expires_at <= now || configurationChanged} onClick={() => { void submit() }}>{labels.submit}</button>}
         {currentId !== null && current === undefined && <button type="button" disabled={busy} onClick={() => { void recover(currentId) }}>{labels.recover}</button>}
       </div>
     </>}

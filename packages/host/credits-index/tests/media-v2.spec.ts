@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MediaV2Client, type MediaV2Account } from '../src/media-v2-client.ts'
-import { parseMediaV2Request, parseMediaV2Task } from '../src/media-v2-protocol.ts'
+import { parseMediaV2Request, parseMediaV2Task, type MediaV2Quote } from '../src/media-v2-protocol.ts'
 
 const id = '821072d0-b470-4ab8-ae42-98ef7668f925'
 const request = { client_operation_id: id, model: 'model-image', model_version: 'version-1', intent: 'reference',
@@ -206,4 +206,143 @@ it('binds an accepted recovery quote only to its matching outer original task', 
   expect(calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
   send.mockImplementationOnce(async () => new Response(JSON.stringify({ success: true, data: { client_operation_id: id, state: 'accepted', quote_id: quote.quote_id, task, quote: { ...quote, model: 'other', operation_state: 'accepted' } } })))
   await expect(client.query(account, id, new AbortController().signal)).rejects.toMatchObject({ code: 'operation_conflict' })
+})
+
+
+async function configurationFixture(capability = true) {
+  const directory = await mkdtemp(join(tmpdir(), 'media-v2-config-')); directories.push(directory)
+  let remote: MediaV2Quote | undefined, accepted = false, race = false, lost = false, missing = false
+  let corruptHash = false, rejectedAcceptance = false
+  const calls: { path: string; method: string; body: unknown }[] = []
+  const client = new MediaV2Client({ baseUrl: 'http://synthetic.invalid', directory, timeoutMs: 1000, creditsPerYuan: 1000 })
+  const account: MediaV2Account = { owner: 'configuration-owner', fetch: async (path, init) => {
+    const body: unknown = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+    calls.push({ path, method: init.method ?? 'GET', body })
+    const answer = (data: unknown) => new Response(JSON.stringify({ success: true, data }))
+    if (path.endsWith('/models')) return answer({ capabilities: { media_generation_v2: true, quote_required: true,
+      durable_operation_receipt: true, all_artifacts: true, same_operation_configuration_requote: capability }, models: [{
+      id: request.model, display_name: 'Configuration image', kind: 'image', model_version: 'version-2', enabled: true,
+      parameters_schema: { properties: {} }, asset_fields: [], intents: [{ id: 'reference', label: 'Reference', requires_assets: true }],
+      pricing: { display: 'quote', quote_required: true },
+    }] })
+    if (path.includes('/operations/')) {
+      if (missing || remote === undefined) return new Response(JSON.stringify({ success: false, error: { code: 'operation_unknown', message: 'Unknown' } }), { status: 404 })
+      return answer({ client_operation_id: id, state: accepted ? 'accepted' : 'quoted', quote_id: remote.quote_id,
+        quote: { ...remote, ...accepted ? { operation_state: 'accepted', task } : {} }, ...accepted ? { task } : {} })
+    }
+    if (path.endsWith('/tasks/' + task.id)) return answer({ task })
+    if (path.endsWith('/tasks')) { accepted = true; return answer({ task, replayed: false }) }
+    if (path.endsWith('/quotes')) {
+      const incoming = parseMediaV2Request(body)
+      if (rejectedAcceptance && remote !== undefined) {
+        accepted = true
+        return new Response(JSON.stringify({ success: false,
+          error: { code: 'invalid_parameters', message: '配置拒绝，但原任务并发受理' } }), { status: 422 })
+      }
+      if (race && remote !== undefined) {
+        accepted = true
+        if (lost) { lost = false; throw new Error('lost original acceptance race') }
+        return answer({ ...remote, operation_state: 'accepted', task })
+      }
+      if (accepted && remote !== undefined) return answer({ ...remote, operation_state: 'accepted', task })
+      remote = { ...quote, ...incoming, quote_id: incoming.model_version === 'version-2' ? 'quote-2' : 'quote-1',
+        retail_cny: incoming.model_version === 'version-2' ? '0.60' : '0.30', operation_state: 'quoted', request_sha256: corruptHash ? 'b'.repeat(64) : quote.request_sha256 }
+      if (lost) { lost = false; throw new Error('lost replacement quote') }
+      return answer(remote)
+    }
+    throw new Error('Unexpected configuration fixture path')
+  } }
+  return { client, account, calls, setRace: () => { race = true }, lose: () => { lost = true },
+    missing: () => { missing = true }, corrupt: () => { corruptHash = true },
+    rejectAndAccept: () => { rejectedAcceptance = true }, directory }
+}
+
+it('explicitly requotes only version on the original operation and preserves immutable snapshots until confirmation', async () => {
+  const fixture = await configurationFixture(), signal = new AbortController().signal
+  await fixture.client.quote(fixture.account, request, signal)
+  const updated = await fixture.client.quote(fixture.account, { ...request, model_version: 'version-2' }, signal)
+  expect(updated.request).toEqual(request)
+  expect(updated.quote).toMatchObject({ quote_id: 'quote-2', model_version: 'version-2', credits: 600 })
+  expect(updated.configuration_requotes).toHaveLength(1)
+  expect(updated.configuration_requotes![0]).toMatchObject({ request: { ...request, model_version: 'version-2' },
+    previous_quote: { quote_id: 'quote-1', retail_cny: '0.30' }, result_quote: { quote_id: 'quote-2', retail_cny: '0.60' } })
+  expect(fixture.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(0)
+  const after = await fixture.client.submit(fixture.account, id, signal)
+  expect(after.task?.id).toBe(task.id)
+  expect(fixture.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+  const restarted = new MediaV2Client({ baseUrl: 'http://synthetic.invalid', directory: fixture.directory, timeoutMs: 1000, creditsPerYuan: 1000 })
+  expect((await restarted.query(fixture.account, id, signal)).request).toEqual(request)
+  expect((await restarted.records(fixture.account))[0]?.configuration_requotes).toHaveLength(1)
+})
+
+it('returns a retained accepted old-version quote when explicit configuration renewal races original acceptance', async () => {
+  const fixture = await configurationFixture(), signal = new AbortController().signal
+  await fixture.client.quote(fixture.account, request, signal); fixture.setRace()
+  const result = await fixture.client.quote(fixture.account, { ...request, model_version: 'version-2' }, signal)
+  expect(result.task?.id).toBe(task.id); expect(result.quote?.model_version).toBe('version-1')
+  expect(result.configuration_requotes![0]?.previous_quote.quote_id).toBe('quote-1')
+  await fixture.client.submit(fixture.account, id, signal)
+  expect(fixture.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(0)
+})
+
+it('recovers a lost replacement quotation by original GET without repeating its quote or changing its request', async () => {
+  const fixture = await configurationFixture(), signal = new AbortController().signal
+  await fixture.client.quote(fixture.account, request, signal); fixture.lose()
+  await expect(fixture.client.quote(fixture.account, { ...request, model_version: 'version-2' }, signal)).rejects.toThrow('lost replacement quote')
+  expect((await fixture.client.records(fixture.account))[0]?.state).toBe('quoting')
+  const result = await fixture.client.query(fixture.account, id, signal)
+  expect(result.quote?.quote_id).toBe('quote-2'); expect(result.request).toEqual(request)
+  expect(result.configuration_requotes![0]?.result_quote?.quote_id).toBe('quote-2')
+  expect(fixture.calls.filter(call => call.path.endsWith('/quotes') && call.method === 'POST')).toHaveLength(2)
+  expect(fixture.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(0)
+})
+
+it('does not enable changed-version quotation without the capability or after original-operation404', async () => {
+  const signal = new AbortController().signal, disabled = await configurationFixture(false)
+  await disabled.client.quote(disabled.account, request, signal)
+  await expect(disabled.client.quote(disabled.account, { ...request, model_version: 'version-2' }, signal)).rejects.toMatchObject({ code: 'operation_conflict' })
+  expect(disabled.calls.filter(call => call.path.endsWith('/quotes') && call.method === 'POST')).toHaveLength(1)
+  const missing = await configurationFixture()
+  await missing.client.quote(missing.account, request, signal); missing.missing()
+  await expect(missing.client.quote(missing.account, { ...request, model_version: 'version-2' }, signal)).rejects.toMatchObject({ code: 'operation_unknown' })
+  expect((await missing.client.records(missing.account))[0]?.state).toBe('unknown')
+  await expect(missing.client.submit(missing.account, id, signal)).rejects.toMatchObject({ code: 'operation_unknown' })
+  expect(missing.calls.filter(call => call.path.endsWith('/quotes') && call.method === 'POST')).toHaveLength(1)
+  expect(missing.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(0)
+})
+
+it('rejects changed semantic content, ordered materials and semantic digest during same-operation configuration renewal', async () => {
+  const fixture = await configurationFixture(), signal = new AbortController().signal
+  await fixture.client.quote(fixture.account, request, signal)
+  for (const changed of [{ ...request, intent: 'frames' }, { ...request, parameters: { prompt: 'different' } },
+    { ...request, assets: { images: [...request.assets.images].reverse() } }, { ...request, model: 'different-model' }]) {
+    await expect(fixture.client.quote(fixture.account, { ...changed, model_version: 'version-2' }, signal)).rejects.toMatchObject({ code: 'operation_conflict' })
+  }
+  fixture.corrupt()
+  await expect(fixture.client.quote(fixture.account, { ...request, model_version: 'version-2' }, signal)).rejects.toMatchObject({ code: 'operation_conflict' })
+  expect(fixture.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(0)
+})
+
+
+it('records the retained original accepted snapshot after a lost configuration-refresh race response', async () => {
+  const fixture = await configurationFixture(), signal = new AbortController().signal
+  await fixture.client.quote(fixture.account, request, signal); fixture.setRace(); fixture.lose()
+  await expect(fixture.client.quote(fixture.account, { ...request, model_version: 'version-2' }, signal)).rejects.toThrow('lost original acceptance race')
+  const recovered = await fixture.client.query(fixture.account, id, signal)
+  expect(recovered.task?.id).toBe(task.id); expect(recovered.quote?.quote_id).toBe('quote-1')
+  expect(recovered.configuration_requotes![0]?.result_quote?.quote_id).toBe('quote-1')
+  expect(recovered.request).toEqual(request)
+  expect(fixture.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(0)
+})
+
+
+it('does not hide a concurrent original acceptance behind a confirmed configuration quote refusal', async () => {
+  const fixture = await configurationFixture(), signal = new AbortController().signal
+  await fixture.client.quote(fixture.account, request, signal); fixture.rejectAndAccept()
+  await expect(fixture.client.quote(fixture.account, { ...request, model_version: 'version-2' }, signal)).rejects.toMatchObject({ code: 'invalid_parameters' })
+  expect((await fixture.client.records(fixture.account))[0]?.state).toBe('quote-rejected')
+  const recovered = await fixture.client.query(fixture.account, id, signal)
+  expect(recovered.state).toBe('accepted'); expect(recovered.task?.id).toBe(task.id)
+  expect(recovered.request).toEqual(request)
+  expect(fixture.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(0)
 })

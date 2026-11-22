@@ -14,6 +14,13 @@ import { mediaV2Id, mediaV2Object, mediaV2UUID, parseMediaV2Asset, parseMediaV2C
 /** Captured account identity and a credential-owning fetch; credentials never enter this module's records. */
 export interface MediaV2Account { owner: string
   fetch(path: string, init: RequestInit): Promise<Response> }
+/** Append-only explicit configuration quotation action; the original request is never overwritten. */
+export interface MediaV2ConfigurationRequote {
+  requested_at: number
+  request: MediaV2Request
+  previous_quote: MediaV2Quote
+  result_quote?: MediaV2Quote
+}
 /** Original operation state; an uncertain submission can only recover its existing receipt. */
 export interface MediaV2Record {
   version: 1
@@ -21,6 +28,7 @@ export interface MediaV2Record {
   request: MediaV2Request
   state: 'quoting' | 'quoted' | 'quote-rejected' | 'submitting' | 'accepted' | 'unknown'
   quote_failure?: { code: string; message: string }
+  configuration_requotes?: MediaV2ConfigurationRequote[]
   quote?: MediaV2Quote
   task?: MediaV2Task
   updated_at: number
@@ -33,6 +41,9 @@ export class MediaV2Error extends Error {
 const REMOTE_CODES = new Set(['invalid_request', 'model_not_available', 'model_version_changed', 'invalid_parameters',
   'reference_required', 'reference_limit_exceeded', 'asset_not_ready', 'asset_not_found', 'asset_binding_mismatch',
   'quote_expired', 'quote_changed', 'operation_conflict', 'operation_unknown', 'insufficient_quota', 'media_capacity_full', 'upstream_unavailable'])
+function sameOperation(left: MediaV2Request, right: MediaV2Request): boolean {
+  return isDeepStrictEqual({ ...left, model_version: '' }, { ...right, model_version: '' })
+}
 function artifactSignature(bytes: Buffer, mime: string): boolean {
   if (mime === 'image/png') return bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
   if (mime === 'image/jpeg') return bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255
@@ -69,6 +80,18 @@ export class MediaV2Client {
       state: row.state as MediaV2Record['state'], updated_at: Number(row.updated_at),
       ...row.quote === undefined ? {} : { quote: parseMediaV2Quote(row.quote) },
       ...row.task === undefined ? {} : { task: parseMediaV2Task(row.task) } }
+    if (row.configuration_requotes !== undefined) {
+      if (!Array.isArray(row.configuration_requotes) || row.configuration_requotes.length > 256) throw new MediaV2Error('operation_unknown', '原配置报价记录无效。')
+      result.configuration_requotes = row.configuration_requotes.map((value) => {
+        const action = mediaV2Object(value), next = parseMediaV2Request(action.request), previous = parseMediaV2Quote(action.previous_quote)
+        if (typeof action.requested_at !== 'number' || !Number.isFinite(action.requested_at) || !sameOperation(request, next)) {
+          throw new MediaV2Error('operation_unknown', '原配置报价请求无法核对。')
+        }
+        this.matchQuote({ ...request, model_version: previous.model_version }, previous)
+        return { requested_at: action.requested_at, request: next, previous_quote: previous,
+          ...action.result_quote === undefined ? {} : { result_quote: parseMediaV2Quote(action.result_quote) } }
+      })
+    }
     if (row.quote_failure !== undefined) {
       const failure = mediaV2Object(row.quote_failure)
       if (typeof failure.code !== 'string' || typeof failure.message !== 'string' || failure.message.length > 2000) throw new MediaV2Error('operation_unknown', '原报价拒绝记录无效。')
@@ -197,6 +220,24 @@ export class MediaV2Client {
       || quote.intent !== request.intent || !isDeepStrictEqual(quote.assets, request.assets)) throw new MediaV2Error('quote_changed', '报价的模型、模式或素材已变化，尚未提交生成。')
     for (const [key, value] of Object.entries(request.parameters)) if (!isDeepStrictEqual(value, quote.parameters[key])) throw new MediaV2Error('quote_changed', '报价调整了已选择参数，尚未提交生成。')
   }
+  private matchRetainedQuote(record: MediaV2Record, quote: MediaV2Quote, requested?: MediaV2Request): void {
+    const requests = [record.request, ...record.configuration_requotes?.map(action => action.request) ?? []]
+    const snapshot = requests.find(request => request.model_version === quote.model_version)
+    if (snapshot === undefined) throw new MediaV2Error('quote_changed', '报价版本不属于原操作的明确请求，不能提交。')
+    this.matchQuote(snapshot, quote)
+    const hashes = [record.quote?.request_sha256,
+      ...record.configuration_requotes?.map(action => action.previous_quote.request_sha256) ?? []]
+    if (hashes.some(hash => hash !== undefined && hash !== quote.request_sha256)) {
+      throw new MediaV2Error('operation_conflict', '原操作语义哈希不一致，不能重新生成。')
+    }
+    if (quote.operation_state === 'accepted' && requested !== undefined && quote.model_version !== requested.model_version) {
+      const retained = [record.quote,
+        ...record.configuration_requotes?.flatMap(action => [action.previous_quote, action.result_quote]) ?? []]
+      if (!retained.some(item => item?.quote_id === quote.quote_id && item.model_version === quote.model_version)) {
+        throw new MediaV2Error('operation_conflict', '已受理报价不匹配原保留快照，请继续核对原任务。')
+      }
+    }
+  }
   /**
    * Persist the original complete request before asking the server for its free quotation.
    * @param account - Captured account scope and its credential-owning fetch closure.
@@ -210,10 +251,35 @@ export class MediaV2Client {
     catch { throw new MediaV2Error('invalid_parameters', '参数或参考素材不完整，请保留草稿并补全；尚未提交生成。', 422) }
     return await this.single(account, request.client_operation_id, async () => {
       const previous = await this.read(account, request.client_operation_id)
-      if (previous !== undefined && !isDeepStrictEqual(previous.request, request)) throw new MediaV2Error('operation_conflict', '原操作参数已冻结，请保留原任务；修改后请明确开始新操作。')
-      if (previous?.state === 'accepted' || previous?.state === 'submitting' || previous?.state === 'unknown') return await this.queryOriginal(account, request.client_operation_id, signal)
-      const record: MediaV2Record = previous ?? { version: 1, owner: account.owner, request, state: 'quoting', updated_at: Date.now() }
-      await this.save(record)
+      if (previous !== undefined && !sameOperation(previous.request, request)) {
+        throw new MediaV2Error('operation_conflict', '原操作内容、模式或素材已冻结；修改后请明确开始独立新操作。')
+      }
+      let record: MediaV2Record = previous ?? { version: 1, owner: account.owner, request, state: 'quoting', updated_at: Date.now() }
+      if (previous !== undefined && (previous.state !== 'quote-rejected' || previous.quote !== undefined)) {
+        try { record = await this.queryOriginal(account, request.client_operation_id, signal) }
+        catch (error) {
+          previous.state = 'unknown'; previous.updated_at = Date.now(); await this.save(previous); throw error
+        }
+        if (record.task !== undefined || record.state === 'accepted') return record
+        if (!['quoted', 'quote-rejected'].includes(record.state) || record.quote === undefined) {
+          throw new MediaV2Error('operation_unknown', '原操作尚未确认未受理，请只查询原编号。')
+        }
+        // A lost first quotation is recovered with GET only, never another quote POST.
+        if (previous.quote === undefined && previous.state === 'quoting') return record
+        const catalog = await this.catalog(account, signal)
+        const configurable = catalog.capabilities.same_operation_configuration_requote === true
+        if (request.model_version !== record.request.model_version && !configurable) {
+          throw new MediaV2Error('operation_conflict', '当前服务尚未声明同操作更新配置，请保留原报价。')
+        }
+        if (configurable) {
+          if ((record.configuration_requotes?.length ?? 0) >= 256) throw new MediaV2Error('operation_conflict', '原配置报价历史已满，请保留原记录。')
+          record.configuration_requotes = [...record.configuration_requotes ?? [],
+            { requested_at: Date.now(), request, previous_quote: record.quote }]
+        }
+      } else if (previous !== undefined && request.model_version !== previous.request.model_version) {
+        throw new MediaV2Error('operation_conflict', '原报价尚无服务器未受理回执，请保留原记录。')
+      }
+      record.state = 'quoting'; record.updated_at = Date.now(); await this.save(record)
       let reply: unknown
       try { reply = await this.json(account, '/quotes', 'POST', request, signal) }
       catch (error) {
@@ -225,7 +291,10 @@ export class MediaV2Client {
         throw error
       }
       const quote = this.projectQuote(reply)
-      this.matchQuote(request, quote)
+      if (quote.operation_state === 'quoted') this.matchQuote(request, quote)
+      this.matchRetainedQuote(record, quote, request)
+      const action = record.configuration_requotes?.at(-1)
+      if (action !== undefined && isDeepStrictEqual(action.request, request)) action.result_quote = quote
       // Defaults may be added, but no explicitly selected parameter may be silently rewritten.
       delete record.quote_failure
       record.quote = quote; record.state = quote.operation_state === 'accepted' ? 'accepted' : 'quoted'
@@ -264,7 +333,7 @@ export class MediaV2Client {
   private async queryOriginal(account: MediaV2Account, id: string, signal: AbortSignal): Promise<MediaV2Record> {
     const record = await this.read(account, id)
     if (record === undefined) throw new MediaV2Error('operation_unknown', '没有找到本机原操作，不能补建或重发。', 404)
-    if (record.state === 'quote-rejected') return record
+    if (record.state === 'quote-rejected' && record.quote === undefined) return record
     const raw = mediaV2Object(await this.json(account, `/operations/${mediaV2UUID(id)}`, 'GET', undefined, signal))
     let retainedQuote = raw.quote
     if (retainedQuote !== undefined) {
@@ -283,13 +352,22 @@ export class MediaV2Client {
       ...retainedQuote === undefined ? {} : { quote: this.projectQuote(retainedQuote) } })
     if (operation.client_operation_id !== id) throw new MediaV2Error('operation_conflict', '原操作回执不匹配，不能重新生成。')
     if (operation.quote !== undefined) {
-      this.matchQuote(record.request, operation.quote)
-      if (record.quote !== undefined && record.quote.request_sha256 !== operation.quote.request_sha256) throw new MediaV2Error('operation_conflict', '原报价请求哈希不一致，不能重新生成。')
+      this.matchRetainedQuote(record, operation.quote)
+      if (record.quote !== undefined && operation.quote_id !== record.quote.quote_id) {
+        const action = record.configuration_requotes?.at(-1)
+        if (action === undefined || action.previous_quote.quote_id !== record.quote.quote_id
+          || action.result_quote !== undefined || action.request.model_version !== operation.quote.model_version) {
+          throw new MediaV2Error('operation_conflict', '新报价没有原操作的明确更新记录，不能重新生成。')
+        }
+        action.result_quote = operation.quote
+      }
+      const pending = record.configuration_requotes?.at(-1)
+      if (operation.state === 'accepted' && pending !== undefined && pending.result_quote === undefined) pending.result_quote = operation.quote
       record.quote = operation.quote
     }
     if (record.quote !== undefined && operation.quote_id !== record.quote.quote_id) throw new MediaV2Error('operation_conflict', '原报价回执不匹配，不能重新生成。')
     if (operation.state === 'quoted' && operation.task === undefined && record.task === undefined) {
-      record.state = 'quoted'; delete record.quote_failure
+      if (record.state !== 'quote-rejected') { record.state = 'quoted'; delete record.quote_failure }
     }
     if (operation.task !== undefined) {
       const task = mediaV2Object(await this.json(account, `/tasks/${encodeURIComponent(operation.task.id)}`, 'GET', undefined, signal))

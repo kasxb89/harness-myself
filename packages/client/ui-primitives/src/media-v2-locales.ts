@@ -2,6 +2,8 @@
 export const mediaV2Zh = {
   intentText: '文本生成', intentReference: '参考素材生成', intentFrames: '首尾帧生成', intentTransform: '素材处理',
   title: '模型与处理', back: '常规创作', model: '模型', intent: '使用方式', loading: '读取模型与原任务…', noModels: '当前账号暂无可用的此类模型与处理工具',
+  configurationChanged: '模型配置已更新，请核对参数并显式重新报价，再确认生成。原操作编号和素材保持。',
+  configurationRequoteUnsupported: '模型配置已更新，当前服务不支持同操作更新报价。请保留原记录，核对后明确继续编辑新草稿。',
   reload: '刷新模型', prompt: '描述', parameters: '参数', materials: '参考素材', add: '添加素材', remove: '移除', writing: '仅用于构思', generation: '提交给模型',
   retained: '保留的素材', retainedHint: '切换模型不会删除素材。请明确处理不兼容的素材后继续。', empty: '未选择', clear: '清除该参数',
   quote: '获取准确积分', quoting: '正在报价…', submit: '确认生成', submitting: '正在提交…', price: '本次费用', credits: '积分', yuan: '元', expires: '报价已过期，请重新报价',
@@ -18,6 +20,8 @@ export type MediaV2Labels = { readonly [K in keyof typeof mediaV2Zh]: string }
 export const mediaV2En: MediaV2Labels = {
   intentText: 'Text generation', intentReference: 'Reference generation', intentFrames: 'Frame generation', intentTransform: 'Media processing',
   title: 'Models and processing', back: 'Standard creation', model: 'Model', intent: 'Input workflow', loading: 'Reading models and original operations…', noModels: 'No available models or processors for this account',
+  configurationChanged: 'Model configuration changed. Review the parameters and explicitly request a new quote before confirming. The original operation and materials stay unchanged.',
+  configurationRequoteUnsupported: 'Model configuration changed. This service cannot update this operation quote. Keep the original record and explicitly edit a new draft after reviewing it.',
   reload: 'Refresh models', prompt: 'Description', parameters: 'Parameters', materials: 'Reference media', add: 'Add media', remove: 'Remove', writing: 'Writing only', generation: 'Send to model',
   retained: 'Retained media', retainedHint: 'Changing models preserves every asset. Resolve incompatible media explicitly before continuing.', empty: 'Not selected', clear: 'Clear this parameter',
   quote: 'Get exact credits', quoting: 'Getting price…', submit: 'Confirm generation', submitting: 'Submitting…', price: 'This request', credits: 'credits', yuan: 'CNY', expires: 'Quote expired. Request a fresh quote.',

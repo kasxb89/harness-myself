@@ -29,7 +29,13 @@ export interface MediaV2Model {
 }
 /** Executable models with the existing Host product-credit projection. */
 export interface MediaV2Catalog {
-  capabilities: { media_generation_v2: true; quote_required: true; durable_operation_receipt: true; all_artifacts: true }
+  capabilities: {
+    media_generation_v2: true
+    quote_required: true
+    durable_operation_receipt: true
+    all_artifacts: true
+    same_operation_configuration_requote?: boolean
+  }
   models: readonly MediaV2Model[]
   credits_per_yuan: number
   poll_after_ms?: number
@@ -270,9 +276,12 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
     return result
   })
   if (new Set(models.map(model => model.id)).size !== models.length) invalid()
-  return { capabilities: { media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true },
-    models, credits_per_yuan: number(row.credits_per_yuan, Number.MIN_VALUE),
-    ...row.poll_after_ms === undefined ? {} : { poll_after_ms: number(row.poll_after_ms, 1, true) } }
+  return { capabilities: {
+    media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true,
+    ...caps.same_operation_configuration_requote === undefined ? {}
+      : { same_operation_configuration_requote: bool(caps.same_operation_configuration_requote) },
+  }, models, credits_per_yuan: number(row.credits_per_yuan, Number.MIN_VALUE),
+  ...row.poll_after_ms === undefined ? {} : { poll_after_ms: number(row.poll_after_ms, 1, true) } }
 }
 /**
  * Decode original-operation recovery without authorizing another submission.
