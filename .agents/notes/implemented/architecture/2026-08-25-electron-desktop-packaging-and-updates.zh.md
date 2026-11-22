@@ -20,7 +20,7 @@ DeepSeek Harness 需要一个复用 Web UI 的 Electron 桌面应用。该应用
 
 交付小型 Electron 壳和固定版本 pnpm；[运行时参考](../../../../apps/desktop/README.zh.md)持有可执行文件选择。[薄壳决策](2026-09-10-desktop-web-wrapper.zh.md)负责 Host 启动与传输：私有 Host 运行共享 Web profile runner，Electron 加载其认证 HTTP URL，子进程 IPC 承载生命周期消息。
 
-Electron 拥有 `.dsh/profiles/desktop` 保留 profile。[内置运行时决策](2026-09-08-desktop-bundled-runtime-and-external-plugins.zh.md)负责核心资源存储、外部插件依赖、共享包链接和 profile 协调。私有 Desktop Host 保持独立于公共 CLI 包，且不会发布到 npm。
+Electron 拥有 `.dsh/products/yunshu/profiles/desktop` 保留 profile。[内置运行时决策](2026-09-08-desktop-bundled-runtime-and-external-plugins.zh.md)负责核心资源存储、外部插件依赖、共享包链接和 profile 协调。私有 Desktop Host 保持独立于公共 CLI 包，且不会发布到 npm。
 
 一个 Desktop 发布号同时标识 Electron 产物及其精确的 `@deepseek-ai/dsh` 与 `@deepseek-ai/dsh-desktop-host` 依赖。发布不能在构建或运行时选择不同的核心版本。因此，即使壳代码没有变化，更新 dsh 也必须产生新的 Electron 发布。
 
@@ -57,7 +57,7 @@ Desktop Host 为保留 profile 提供共享 Web 插件管理器，并通过启�
   storages/
 ```
 
-`.dsh/profiles/desktop` 是唯一活动桌面 profile。其可执行包归属及允许解析的目录遵循[内置运行时决策](2026-09-08-desktop-bundled-runtime-and-external-plugins.zh.md)。pnpm 根据正常配置选择 store 和缓存。
+`.dsh/products/yunshu/profiles/desktop` 是唯一活动桌面 profile。其可执行包归属及允许解析的目录遵循[内置运行时决策](2026-09-08-desktop-bundled-runtime-and-external-plugins.zh.md)。pnpm 根据正常配置选择 store 和缓存。
 
 ## 安装与解析
 
@@ -136,7 +136,7 @@ Windows 应用替换遵循[目录安装参考](../../../../apps/desktop/README.z
 
 - 没有系统 Node.js 或 pnpm 的干净离线机器能够启动内置 dsh，无需安装核心依赖。
 - 签名应用记录最终运行时文件清单；每个 macOS 原生文件都具有发布 Developer ID、安全时间戳和 hardened runtime，每个 Windows 产物都具有配置的硬件 EV 签名。
-- `.dsh/profiles/desktop/node_modules` 保存由共享 Web 插件管理器管理的外部插件。
+- `.dsh/products/yunshu/profiles/desktop/node_modules` 保存由共享 Web 插件管理器管理的外部插件。
 - Desktop 包操作使用启动器提供的内置 pnpm，以及共享管理器的子进程环境与 profile 配置。
 - 主应用的“插件”页面向共享 Host 服务发送结构化包操作与激活请求。
 - 独立 CLI 仍不能访问保留 Desktop profile。

@@ -20,7 +20,7 @@ The current GUI protocol binds the Web client and backend release. Independently
 
 Ship a small Electron shell and pinned pnpm; the [runtime reference](../../../../apps/desktop/README.md) owns the executable choice. The [thin-wrapper decision](2026-09-10-desktop-web-wrapper.md) owns Host boot and transport: the private Host runs the shared Web profile runner, Electron loads its authenticated HTTP URL, and child IPC carries lifecycle messages.
 
-Electron owns the reserved profile at `.dsh/profiles/desktop`. The [bundled-runtime decision](2026-09-08-desktop-bundled-runtime-and-external-plugins.md) owns core resource storage, external plugin dependencies, shared package links, and profile reconciliation. The private Desktop Host remains outside the public CLI package and is never published to npm.
+Electron owns the reserved profile at `.dsh/products/yunshu/profiles/desktop`. The [bundled-runtime decision](2026-09-08-desktop-bundled-runtime-and-external-plugins.md) owns core resource storage, external plugin dependencies, shared package links, and profile reconciliation. The private Desktop Host remains outside the public CLI package and is never published to npm.
 
 One Desktop release number identifies the Electron artifact and its exact `@deepseek-ai/dsh` and `@deepseek-ai/dsh-desktop-host` dependencies. A release cannot select a different core version at build or runtime. Updating dsh therefore requires a new Electron release even when shell code is unchanged.
 
@@ -57,7 +57,7 @@ Update confirmations use the shell static origin because they must remain availa
   storages/
 ```
 
-`.dsh/profiles/desktop` is the only active desktop profile. Its executable package ownership and allowed resolution directories follow the [bundled-runtime decision](2026-09-08-desktop-bundled-runtime-and-external-plugins.md). pnpm selects its store and cache from normal configuration.
+`.dsh/products/yunshu/profiles/desktop` is the only active desktop profile. Its executable package ownership and allowed resolution directories follow the [bundled-runtime decision](2026-09-08-desktop-bundled-runtime-and-external-plugins.md). pnpm selects its store and cache from normal configuration.
 
 ## Installation and resolution
 
@@ -136,7 +136,7 @@ Architecture-specific builds report actual component-level compressed and instal
 
 - A clean offline machine without system Node.js or pnpm starts bundled dsh without installing core dependencies.
 - The signed application inventories final runtime files; every macOS native file has the release Developer ID, secure timestamp, and hardened runtime, and every Windows artifact has the configured hardware-backed EV signature.
-- `.dsh/profiles/desktop/node_modules` stores external plugins managed by the shared Web plugin manager.
+- `.dsh/products/yunshu/profiles/desktop/node_modules` stores external plugins managed by the shared Web plugin manager.
 - Desktop package operations use launcher-supplied bundled pnpm and the shared manager’s subprocess environment and profile configuration.
 - The main application’s Plugins page sends structured package and activation requests to the shared Host service.
 - The reserved Desktop profile remains unavailable to the standalone CLI.

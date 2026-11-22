@@ -68,10 +68,11 @@ function createAppReady(): { service: AppReady; commit(): void } {
  * The home-level user patch layer (`$DSH_HOME/cordis.patch.yml`), applied
  * over every profile's own layer. Resolved per call, not at module load:
  * `$DSH_HOME` may be set by the test or launcher after import.
+ * @param configurationHome - application configuration root; omission uses the shared Harness home.
  * @returns the absolute patch-file path.
  */
-export function homePatchPath(): string {
-  return join(resolveDshHome(), PROFILE_PATCH_FILENAME)
+export function homePatchPath(configurationHome: string = resolveDshHome()): string {
+  return join(configurationHome, PROFILE_PATCH_FILENAME)
 }
 
 /** Absolute path of this dsh installation's package.json (both anchors: src/ and lib/ sit one level under apps/cli). */
@@ -161,12 +162,15 @@ export function initializeProfileFromDefault(
  * @param name - the profile name.
  * @param userLayer - `false` skips parsing `cordis.patch.yml` (the default dump).
  * @param fromDefaultProfile - shipped template used once to initialize a missing profile.
+ * @param configurationHome - application profile root; data services still resolve DSH_HOME independently.
  * @returns the loaded profile.
  * @throws when explicit initialization names an unknown template or an existing profile.
  */
-export function prepareProfile(name: string, userLayer = true, fromDefaultProfile?: string): Profile {
-  if (fromDefaultProfile !== undefined) initializeProfileFromDefault(name, fromDefaultProfile)
-  const profile = loadProfile(NAME, name, INSTALL_ANCHOR, undefined, { userLayer })
+export function prepareProfile(
+  name: string, userLayer = true, fromDefaultProfile?: string, configurationHome: string = resolveDshHome(),
+): Profile {
+  if (fromDefaultProfile !== undefined) initializeProfileFromDefault(name, fromDefaultProfile, configurationHome)
+  const profile = loadProfile(NAME, name, INSTALL_ANCHOR, configurationHome, { userLayer })
   reportSkippedBundles(NAME, profile)
   writeFileSync(join(profile.dir, PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
   return profile
@@ -192,6 +196,7 @@ interface ComposedProfile {
  * @param patchFiles - `--patch` overlay paths, in argv order.
  * @param fromDefaultProfile - shipped template for a missing named profile.
  * @param resolvedProfile - application-owned profile and installation.
+ * @param configurationHome - root for home patches and profile-local package resolution.
  * @returns the profile and its patch layers.
  */
 async function composeProfile(
@@ -199,10 +204,11 @@ async function composeProfile(
   patchFiles: readonly string[],
   fromDefaultProfile?: string,
   resolvedProfile?: ResolvedProfileRuntime,
+  configurationHome: string = resolveDshHome(),
 ): Promise<ComposedProfile> {
-  const profile = resolvedProfile?.profile ?? prepareProfile(name, true, fromDefaultProfile)
+  const profile = resolvedProfile?.profile ?? prepareProfile(name, true, fromDefaultProfile, configurationHome)
   if (resolvedProfile !== undefined) writeFileSync(join(profile.dir, PROFILE_ROOT_FILENAME), PROFILE_ROOT_CONFIG)
-  const resolutionOptions = { installAnchor: resolvedProfile?.installAnchor ?? INSTALL_ANCHOR, profile }
+  const resolutionOptions = { installAnchor: resolvedProfile?.installAnchor ?? INSTALL_ANCHOR, profile, home: configurationHome }
   const resolution = await createRuntimeResolution(resolutionOptions)
   const overlays = patchFiles.flatMap(file => loadOverlayPatches(NAME, resolve(file)))
   return { profile, resolution, overlays }
@@ -224,6 +230,8 @@ export interface RunProfileOptions {
   profile: string
   /** Loaded application profile; bypasses named profile initialization when supplied. */
   resolvedProfile?: ResolvedProfileRuntime | undefined
+  /** Application-owned profile and home-patch root; data services retain the existing DSH_HOME. */
+  configurationHome?: string | undefined
   /** Shipped template used once to initialize a missing profile. */
   fromDefaultProfile?: string | undefined
   /** `--patch` overlay paths, in argv order. */
@@ -242,6 +250,7 @@ export interface RunProfileOptions {
  * @throws after disposing startup resources; cleanup failures retain the original error.
  */
 export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Context; shutdown: ProcessShutdown }> {
+  const configurationHome = options.configurationHome === undefined ? resolveDshHome() : resolve(options.configurationHome)
   // Before the first plugin mounts and before anything can issue a request: Node's fetch ignores the
   // proxy environment on its own, so every profile would otherwise connect directly. Resolving from
   // the launcher's snapshot — not `process.env` — is what lets a proxy declared in a `.env` layer
@@ -264,6 +273,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
   try {
     const composed = await composeProfile(
       options.profile, options.patchFiles, options.fromDefaultProfile, options.resolvedProfile,
+      configurationHome,
     )
     const appReady = createAppReady()
     const shutdown = createProcessShutdown(dispose)
@@ -290,7 +300,7 @@ export async function runProfile(options: RunProfileOptions): Promise<{ ctx: Con
       dir: composed.profile.dir, patchPath: composed.profile.patchPath,
       installAnchor: options.resolvedProfile?.installAnchor ?? INSTALL_ANCHOR,
       startedBundles: composed.profile.layers.map(layer => layer.packageName),
-      cwd: process.cwd(), home: resolveDshHome(),
+      cwd: process.cwd(), home: configurationHome,
       overlays: composed.overlays, telemetryDisabledEnv: process.env.DSH_TELEMETRY_DISABLED,
     }
     const ctx = await boot(NAME, rootConfig, readProfilePatches(NAME, profileContext, composed.profile), async (hostCtx) => {

@@ -14,7 +14,7 @@ function requireDesktopProfile(dir: string): void {
 }
 
 /** Parse only DSH-owned commands; all other arguments remain pnpm's responsibility. */
-async function versionCommand(profile: string, args: readonly string[]): Promise<number | undefined> {
+async function versionCommand(profile: string, args: readonly string[], configurationHome?: string): Promise<number | undefined> {
   const [command, ...rest] = args
   if (command !== 'allow-version' && command !== 'revoke-version' && command !== 'version-exemptions') return undefined
   try {
@@ -40,7 +40,7 @@ async function versionCommand(profile: string, args: readonly string[]): Promise
     if (command === 'allow-version') {
       process.stderr.write('dsh: warning: allowing incompatible plugin versions can break the application or corrupt data. Approval applies only to the exact package and DSH versions.\n')
     }
-    const dir = resolveProfileDir(profile)
+    const dir = resolveProfileDir(profile, configurationHome)
     if (profile !== 'desktop') await mkdir(dir, { recursive: true })
     await withFileLock(join(dir, 'package.json'), async () => {
       if (profile === 'desktop') requireDesktopProfile(dir)
@@ -65,18 +65,21 @@ async function versionCommand(profile: string, args: readonly string[]): Promise
  * @param profile Profile name; Desktop's reserved profile must already be initialized by the application.
  * @param args DSH exemption command or pnpm arguments relative to the invoking directory.
  * @param packageManager Installation-owned executable and environment for pnpm operations.
+ * @param configurationHome Application-owned profile root; omitted for ordinary CLI commands.
  * @returns Zero on success; nonzero on invalid approval or package-manager failure.
  */
-export async function runPlugin(profile: string, args: readonly string[], packageManager?: ProfileContext['packageManager']): Promise<number> {
+export async function runPlugin(
+  profile: string, args: readonly string[], packageManager?: ProfileContext['packageManager'], configurationHome?: string,
+): Promise<number> {
   if (profile === 'desktop') {
-    try { requireDesktopProfile(resolveProfileDir(profile)) } catch (error) {
+    try { requireDesktopProfile(resolveProfileDir(profile, configurationHome)) } catch (error) {
       process.stderr.write(`dsh: ${String(error)}\n`)
       return 1
     }
   }
-  const versionResult = await versionCommand(profile, args)
+  const versionResult = await versionCommand(profile, args, configurationHome)
   if (versionResult !== undefined) return versionResult
-  const dir = resolveProfileDir(profile)
+  const dir = resolveProfileDir(profile, configurationHome)
   if (existsSync(join(dir, 'package.json'))) {
     for (const warning of readProfileCompatibility(dir).warnings) process.stderr.write(`dsh: warning: ${warning}\n`)
   }
@@ -101,7 +104,7 @@ export async function runPlugin(profile: string, args: readonly string[], packag
   }
   if (result.exitCode !== 0) process.stderr.write(`dsh: plugin command failed; diagnostics: ${result.logPath}\n`)
   if (result.exitCode !== 0 && args.some(argument => /^git\+|^github:|\.git(?:#|$)/.test(argument))) {
-    process.stderr.write(`dsh: git-hosted plugins build on install via their prepare script, which pnpm blocks until allowed — add the exact key pnpm printed above under allowBuilds in ${join(resolveProfileDir(profile), 'pnpm-workspace.yaml')}, then re-run\n`)
+    process.stderr.write(`dsh: git-hosted plugins build on install via their prepare script, which pnpm blocks until allowed — add the exact key pnpm printed above under allowBuilds in ${join(dir, 'pnpm-workspace.yaml')}, then re-run\n`)
   }
   return result.exitCode
 }

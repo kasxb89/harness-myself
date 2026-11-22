@@ -161,6 +161,7 @@ const harness = await vi.hoisted(async () => {
   }
   const app = Object.assign(new EventEmitter(), {
     isPackaged: true,
+    commandLine: { hasSwitch: vi.fn(() => true) },
     name: 'Desktop test',
     whenReady: () => Promise.resolve(),
     getLocale: (): string => 'en-US',
@@ -172,7 +173,7 @@ const harness = await vi.hoisted(async () => {
     setPath: vi.fn<(name: string, path: string) => void>(),
     getPath: vi.fn<(name: string) => string>(),
     setAboutPanelOptions: vi.fn<(options: Electron.AboutPanelOptionsOptions) => void>(),
-    requestSingleInstanceLock: () => true,
+    requestSingleInstanceLock: vi.fn(() => true),
     setAsDefaultProtocolClient: vi.fn(),
     exit: vi.fn(),
     relaunch: vi.fn(),
@@ -333,6 +334,15 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     return encoding === undefined ? original.readFile(path) : original.readFile(path, encoding)
   }) }
 })
+vi.mock('node:fs', async (importOriginal) => {
+  const original = await importOriginal<typeof import('node:fs')>()
+  return { ...original, readFileSync: vi.fn((...args: Parameters<typeof original.readFileSync>) => {
+    if (args[0] === join('desktop-test-app', 'package.json')) {
+      return JSON.stringify({ dshDesktopAppId: 'com.yunshu.desktop' })
+    }
+    return original.readFileSync(...args)
+  }) }
+})
 vi.mock('../src/login-shell-environment.ts', async importOriginal => ({
   ...await importOriginal<typeof import('../src/login-shell-environment.ts')>(),
   readDesktopLoginShellEnvironment: harness.loginShell,
@@ -447,6 +457,7 @@ beforeEach(() => {
   vi.useFakeTimers()
   harness.reset()
   harness.app.name = 'Desktop test'
+  harness.app.commandLine.hasSwitch.mockReturnValue(true)
   const userData = mkdtempSync(join(tmpdir(), 'dsh-main-user-data-'))
   onTestFinished(() => { rmSync(userData, { recursive: true, force: true }) })
   harness.app.getPath.mockImplementation(name => name === 'userData' ? userData : `desktop-test-${name}`)
@@ -523,14 +534,18 @@ describe('desktop main startup', () => {
     await harness.quitCompleted.promise
   })
 
-  it('uses the product display name while preserving the existing data and log paths', async () => {
+  it('preserves an explicit browser path while applying product identity before the instance lock', async () => {
     const userData = harness.app.getPath('userData')
     const logs = harness.app.getPath('logs')
     await readyForUpdate()
     expect(harness.app.setName).toHaveBeenCalledWith('云枢')
     expect(harness.app.name).toBe('云枢')
     expect(harness.app.setPath).toHaveBeenCalledWith('userData', userData)
-    expect(harness.app.setPath).toHaveBeenCalledWith('logs', logs)
+    expect(harness.app.setPath).toHaveBeenCalledWith('sessionData', userData)
+    expect(harness.app.getPath('logs')).toBe(logs)
+    const identityCall = harness.app.setPath.mock.calls.findIndex(call => call[0] === 'userData')
+    const lockCall = harness.app.requestSingleInstanceLock.mock.invocationCallOrder[0]!
+    expect(harness.app.setPath.mock.invocationCallOrder[identityCall]).toBeLessThan(lockCall)
   })
 
   it.each([true, false])('selects the package manager before Host startup (packaged=%s)', async (packaged) => {
@@ -1080,7 +1095,7 @@ describe('desktop main startup', () => {
     expect(() => handler(event, 'application', NaN, 34)).toThrow('invalid popup request')
     const application = handler(event, 'application', 48, 34)
     expect(harness.menu.buildFromTemplate.mock.lastCall![0].map(item => item.label ?? item.type)).toEqual([
-      '关于 云枢', 'separator', '检查更新…', '管理 dsh 命令…', 'separator', '退出',
+      '关于 云枢', 'separator', '检查更新…', '管理 yunshu 命令…', 'separator', '退出',
     ])
     expect(harness.popup.mock.lastCall![0]).toMatchObject({ window, x: 48, y: 34 })
     expect(harness.popup.mock.lastCall![0].callback).toBeTypeOf('function')
@@ -1679,7 +1694,9 @@ describe('desktop main startup', () => {
     expect(invoke(DESKTOP_IPC.updatesStatus, 'app')).toEqual({ phase: 'available', version: '1.0.1' })
     await expect(invoke(DESKTOP_IPC.onboardingApiKey, 'app')).resolves.toBe(true)
     window.show.mockClear()
-    harness.app.emit('open-url', { preventDefault() {} }, 'dsh://open')
+    expect(harness.app.setAsDefaultProtocolClient).toHaveBeenCalledWith('yunshu')
+    expect(harness.app.setAsDefaultProtocolClient).not.toHaveBeenCalledWith('dsh')
+    harness.app.emit('open-url', { preventDefault() {} }, 'yunshu://open')
     expect(window.show).toHaveBeenCalledOnce()
     expect(harness.windows).toHaveLength(1)
     expect(harness.dialog.showMessageBox).not.toHaveBeenCalled()

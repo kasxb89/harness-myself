@@ -115,8 +115,9 @@ export function createElectronBuilderConfig(
   const packaged = resolveDesktopBuildCommit(env)
   return {
     appId,
-    protocols: [{ name: '云枢', schemes: ['dsh'] }],
+    protocols: [{ name: '云枢', schemes: ['yunshu'] }],
     extraMetadata: {
+      name: 'yunshu-desktop',
       dshDesktopAppId: appId,
       ...(privateLinux ? { dshDesktopPrivateDistribution: 'kylin-v10sp1-2503-x64', homepage: projectHomepage,
         desktopName: 'yunshu-kylin.desktop' } : {}),

@@ -17,7 +17,7 @@ describe('manual Windows package inputs', () => {
     expect(result.version).toBe('0.2.1-alpha.1.20261008.42.2')
     const settings = parseEnv(result.settings)
     expect(() => { validateDesktopPackageEnvironment(settings, { platform: 'win32', arch: 'x64' }, { unsigned: true }) }).not.toThrow()
-    expect(settings).toEqual({ DSH_DESKTOP_APP_ID: 'com.deepseek.harness' })
+    expect(settings).toEqual({ DSH_DESKTOP_APP_ID: 'com.yunshu.desktop' })
   })
 
   it('accepts an explicit version without a GitHub run identity', () => {
@@ -36,7 +36,7 @@ describe('manual Windows package inputs', () => {
     const result = windowsCiSettings({ ...inputs, PACKAGE_DEPLOYMENT: 'invalid',
       PACKAGE_POLICY_ORIGIN: 'not-an-origin', PACKAGE_LOGIN_ORIGINS: 'not-an-origin',
     }, productVersion, now)
-    expect(parseEnv(result.settings)).toEqual({ DSH_DESKTOP_APP_ID: 'com.deepseek.harness' })
+    expect(parseEnv(result.settings)).toEqual({ DSH_DESKTOP_APP_ID: 'com.yunshu.desktop' })
   })
 
   it.each([

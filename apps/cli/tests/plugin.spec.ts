@@ -71,6 +71,23 @@ it('uses shipped profile defaults when listing a missing profile', async () => {
   expect(runPluginCommand).not.toHaveBeenCalled()
 })
 
+it('keeps application-owned desktop package commands out of the shared profile', async () => {
+  const { home } = fixture()
+  const configurationHome = join(home, 'products', 'yunshu')
+  const productProfile = join(configurationHome, 'profiles', 'desktop')
+  const sharedProfile = join(home, 'profiles', 'desktop')
+  const web = PROFILE_TEMPLATES.web
+  if (web === undefined) throw new Error('the shipped web profile must exist')
+  initProfile(productProfile, web.bundles)
+  initProfile(sharedProfile, web.bundles)
+  const original = readFileSync(join(sharedProfile, 'package.json'), 'utf8')
+  vi.mocked(runProfilePnpm).mockResolvedValue({ exitCode: 0, output: '', truncated: false, logPath: '/profile/log' })
+  expect(await runPlugin('desktop', ['list'], undefined, configurationHome)).toBe(0)
+  expect(runProfilePnpm).toHaveBeenCalledWith(expect.objectContaining({ dir: productProfile }), ['list'], expect.any(Object))
+  expect(readFileSync(join(sharedProfile, 'package.json'), 'utf8')).toBe(original)
+  expect(await runPlugin('desktop', ['version-exemptions'], undefined, configurationHome)).toBe(0)
+})
+
 it.each([0, 1])('forwards ordinary pnpm output and exit status %s', async (exitCode) => {
   const { stdout, stderr } = fixture()
   vi.mocked(runPluginCommand).mockImplementation(async (_context, _args, options) => {

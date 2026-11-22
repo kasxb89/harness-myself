@@ -1,0 +1,19 @@
+# Bilingual-pair consistency record for 2026-11-22-yunshu-desktop-configuration-isolation.md (docs/i18n/README.md): per heading
+# section, a hash of its English and Chinese blocks outside code blocks and generated regions.
+# After editing either side, bring the other along and re-record with:
+#   pnpm run verify-translation-pairing --write .agents/notes/implemented/architecture/2026-11-22-yunshu-desktop-configuration-isolation.md
+/agent-note-yunshu-desktop-configuration-and-application-identity:
+  en: 07bb1bc1650c32d5
+  zh: 85d2bfe3f36066e2
+/agent-note-yunshu-desktop-configuration-and-application-identity/problem:
+  en: 2ac846b9413c74c8
+  zh: a81ae7e4d16efc7b
+/agent-note-yunshu-desktop-configuration-and-application-identity/decision:
+  en: 6d79323e5e6e5537
+  zh: 8ed427adfc02965a
+/agent-note-yunshu-desktop-configuration-and-application-identity/alternatives-considered:
+  en: 6647a88a39096bb6
+  zh: ca2ed7994258a6d8
+/agent-note-yunshu-desktop-configuration-and-application-identity/consequences:
+  en: df58542c386cca9b
+  zh: 837576df2b832547

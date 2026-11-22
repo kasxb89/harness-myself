@@ -6,7 +6,7 @@ export interface DesktopElectronBuilderConfig {
   readonly appId: string
   readonly artifactName: string
   readonly asar: boolean
-  readonly protocols: readonly [{ readonly name: '云枢'; readonly schemes: readonly ['dsh'] }]
+  readonly protocols: readonly [{ readonly name: '云枢'; readonly schemes: readonly ['yunshu'] }]
   readonly directories: {
     readonly output: string
   }
@@ -19,6 +19,7 @@ export interface DesktopElectronBuilderConfig {
     { readonly from: string, readonly to: 'dsh/node_modules', readonly filter: readonly ['**/*'] },
   ]
   readonly extraMetadata: {
+    readonly name: 'yunshu-desktop'
     readonly dshDesktopAppId: string
     readonly dshDesktopUnsigned?: true
     readonly dshDesktopPrivateDistribution?: 'kylin-v10sp1-2503-x64'

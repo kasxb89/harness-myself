@@ -2,6 +2,7 @@
 
 import { delimiter, dirname, join, resolve } from 'node:path'
 import { runCli } from '@deepseek-ai/dsh/lib/bin.js'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import { installOfficeEngineResolution, runtimeArchivePath } from './office-engine.ts'
 
 /**
@@ -14,6 +15,7 @@ export async function runDesktopCli(runtimeDir: string, supportDir: string): Pro
   installOfficeEngineResolution(runtimeDir)
   await runCli({
     manageDesktopProfile: true,
+    configurationHome: join(resolveDshHome(), 'products', 'yunshu'),
     packageManager: {
       command: process.execPath,
       args: ['--expose-internals', join(supportDir, 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs')],

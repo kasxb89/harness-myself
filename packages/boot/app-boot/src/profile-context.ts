@@ -22,6 +22,7 @@ export interface ProfileContext {
   readonly patchPath: string
   readonly installAnchor: string
   readonly cwd: string
+  /** Configuration and profile-package root; applications may isolate it while data services retain DSH_HOME. */
   readonly home: string
   /** Bundle packages used to start this process, before any persisted edits. */
   readonly startedBundles: readonly string[]

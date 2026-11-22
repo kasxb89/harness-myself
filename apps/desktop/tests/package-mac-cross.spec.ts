@@ -62,9 +62,9 @@ describe('private Windows macOS packaging entry', () => {
     const environment = macCrossLocalEnvironment({ DSH_DESKTOP_APP_ID: 'ambient.wrong', APPLE_ID: 'private', OSS_ACCESS_KEY_ID: 'private' })
     const configuration = createElectronBuilderConfig({ ...environment, DSH_DESKTOP_TARGET_PLATFORM: 'darwin',
       DSH_DESKTOP_TARGET_ARCH: 'arm64', DSH_DESKTOP_BUILD_VERSION: '0.2.1-alpha.2.20261029.1' }, 'win32', 'x64')
-    expect(configuration.appId).toBe('com.deepseek.harness')
+    expect(configuration.appId).toBe('com.yunshu.desktop')
     expect(configuration.extraMetadata).toMatchObject({ dshDesktopUnsigned: true, version: '0.2.1-alpha.2.20261029.1',
-      dshDesktopAppId: 'com.deepseek.harness', dshDesktopUpdateConfigOrigin: 'https://8.133.202.230/harness' })
+      dshDesktopAppId: 'com.yunshu.desktop', dshDesktopUpdateConfigOrigin: 'https://8.133.202.230/harness' })
     expect(environment.APPLE_ID).toBeUndefined()
     expect(environment.OSS_ACCESS_KEY_ID).toBeUndefined()
   })

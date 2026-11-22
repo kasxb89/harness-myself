@@ -16,7 +16,7 @@ Desktop 初始化时安装核心依赖图，会重复发布构建器已经完成
 
 ## 决策
 
-[运行时准备](../../../../apps/desktop/scripts/prepare-dsh.ts)在构建时物化一次生产依赖图，并通过 `extraResources/dsh` 分发。Electron 壳保留在 ASAR 中。Electron RunAsNode 进程从资源启动私有 Desktop Host，并从 `$DSH_HOME/profiles/desktop` 加载已启用插件。
+[运行时准备](../../../../apps/desktop/scripts/prepare-dsh.ts)在构建时物化一次生产依赖图，并通过 `extraResources/dsh` 分发。Electron 壳保留在 ASAR 中。Electron RunAsNode 进程从资源启动私有 Desktop Host，并从 `$DSH_HOME/products/yunshu/profiles/desktop` 加载已启用插件。
 
 本记录负责核心资源存储与外部插件依赖。[打包决策](2026-08-25-electron-desktop-packaging-and-updates.zh.md)保留发布身份、签名、进程归属和仅限 Electron 的插件授权。[薄壳决策](2026-09-10-desktop-web-wrapper.zh.md)负责共享 Web 启动与 HTTP 传输。
 

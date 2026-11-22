@@ -4,7 +4,7 @@ import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
-import { resolveDesktopAppId, resolveMacOSNotarizationEnvironment, resolveMacOSSigningEnvironment, resolveNpmRegistry } from './desktop-release-environment.mjs'
+import { resolveDesktopAppId, resolveMacOSNotarizationEnvironment, resolveMacOSSigningEnvironment, resolveNpmRegistry, YUNSHU_DESKTOP_APP_ID } from './desktop-release-environment.mjs'
 import { resolvePackagedDesktopUpdateConfigOrigin, resolveUnsignedDesktopUpdateConfig } from './desktop-update-config-origin.mjs'
 import { resolveDesktopAutoUpdateConfig, resolveDesktopUploadProvider } from './desktop-auto-update-environment.mjs'
 import { createWindowsTokenSigner } from './windows-sign.mjs'
@@ -31,7 +31,7 @@ export function localMacOSPackageEnvironment(environment = process.env, appRoot 
     ? loadDesktopPackageEnvironment('darwin', {}, appRoot) : {}
   return {
     ...Object.fromEntries(Object.entries(environment).filter(([name]) => !AMBIENT_RELEASE_SETTING.test(name))),
-    DSH_DESKTOP_APP_ID: settings.DSH_DESKTOP_APP_ID ?? 'com.deepseek.harness',
+    DSH_DESKTOP_APP_ID: settings.DSH_DESKTOP_APP_ID ?? YUNSHU_DESKTOP_APP_ID,
     ...(settings.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN === undefined ? {} : {
       DSH_DESKTOP_UPDATE_CONFIG_ORIGIN: settings.DSH_DESKTOP_UPDATE_CONFIG_ORIGIN,
     }),

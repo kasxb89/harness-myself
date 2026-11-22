@@ -2,6 +2,7 @@
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { desktopBuildVersionPrefix, validateDesktopBuildVersion } from './desktop-build-version.mjs'
+import { YUNSHU_DESKTOP_APP_ID } from './desktop-release-environment.mjs'
 
 /**
  * Validate manual inputs without reading local credentials or querying release storage.
@@ -22,7 +23,7 @@ export function windowsCiSettings(environment, productVersion, now = new Date())
     candidate = `${desktopBuildVersionPrefix(productVersion)}${date}.${environment.GITHUB_RUN_NUMBER}.${environment.GITHUB_RUN_ATTEMPT}`
   }
   const version = validateDesktopBuildVersion(candidate, productVersion)
-  const settings = 'DSH_DESKTOP_APP_ID=com.deepseek.harness\n'
+  const settings = `DSH_DESKTOP_APP_ID=${YUNSHU_DESKTOP_APP_ID}\n`
   return { version, settings }
 }
 

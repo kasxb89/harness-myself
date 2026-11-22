@@ -13,7 +13,7 @@ import { reportStartupFailure } from './startup-diagnostics.ts'
 import type { RunProfileOptions } from './profile-boot.ts'
 
 /** Installation-owned dependencies supplied by a packaged CLI launcher. */
-export type RunCliOptions = Pick<RunProfileOptions, 'packageManager'> & {
+export type RunCliOptions = Pick<RunProfileOptions, 'packageManager' | 'configurationHome'> & {
   /** Permit plugin commands for Desktop's existing profile; reserved for its installed carrier. */
   manageDesktopProfile?: boolean
 }
@@ -49,7 +49,7 @@ export async function runCli(options: RunCliOptions = {}): Promise<void> {
     }
     case 'plugin': {
       const { runPlugin } = await import('./plugin.ts')
-      process.exit(await runPlugin(invocation.profile, invocation.args, options.packageManager))
+      process.exit(await runPlugin(invocation.profile, invocation.args, options.packageManager, options.configurationHome))
       break
     }
     case 'dump-config': {
@@ -59,12 +59,13 @@ export async function runCli(options: RunCliOptions = {}): Promise<void> {
         invocation.defaultOnly,
         invocation.patches,
         invocation.fromDefaultProfile,
+        options.configurationHome,
       )
       break
     }
     case 'dump-config-schema': {
       const { runDumpConfigSchema } = await import('./dump-config-schema.ts')
-      await runDumpConfigSchema(invocation.profile, invocation.patches, invocation.fromDefaultProfile)
+      await runDumpConfigSchema(invocation.profile, invocation.patches, invocation.fromDefaultProfile, options.configurationHome)
       break
     }
     default:

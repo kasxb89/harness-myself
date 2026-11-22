@@ -47,19 +47,19 @@ export function prepareDevelopmentApp(options: DevelopmentAppOptions): string {
   const launcher = developmentLauncher(options, bundle)
   const icon = join(options.appRoot, 'resources', 'icon-macos.icns')
   const brand = { name: '云枢', icon: createHash('sha256').update(readFileSync(icon)).digest('hex') }
-  const identity = JSON.stringify({ ...options, launcher, brand,
+  const identity = JSON.stringify({ ...options, launcher, brand, productIdentityVersion: 2,
     plist: readFileSync(join(source, 'Contents', 'Info.plist'), 'utf8') })
   if (!existsSync(stamp) || readFileSync(stamp, 'utf8') !== identity) {
     rmSync(bundle, { recursive: true, force: true })
     execFileSync('/usr/bin/ditto', [source, bundle])
     const plist = join(bundle, 'Contents', 'Info.plist')
     const values = {
-      CFBundleIdentifier: `com.deepseek.harness.dev.${createHash('sha256').update(options.appRoot).digest('hex').slice(0, 12)}`,
+      CFBundleIdentifier: `com.yunshu.desktop.dev.${createHash('sha256').update(options.appRoot).digest('hex').slice(0, 12)}`,
       CFBundleName: brand.name,
       CFBundleDisplayName: brand.name,
       CFBundleExecutable: 'HarnessDev',
       CFBundleIconFile: 'Yunshu.icns',
-      CFBundleURLTypes: [{ CFBundleURLName: brand.name, CFBundleURLSchemes: ['dsh'], CFBundleTypeRole: 'Viewer' }],
+      CFBundleURLTypes: [{ CFBundleURLName: brand.name, CFBundleURLSchemes: ['yunshu'], CFBundleTypeRole: 'Viewer' }],
     }
     copyFileSync(icon, join(bundle, 'Contents', 'Resources', 'Yunshu.icns'))
     for (const [key, value] of Object.entries(values)) {

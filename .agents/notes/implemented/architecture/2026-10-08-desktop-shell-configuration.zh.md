@@ -14,7 +14,7 @@ Electron 主进程负责 `userData/desktop/settings.json`，不依赖 Host 启�
 
 配置归属按运行依赖划分：由 Electron 负责且需要在 Host 启动前或不可用时读取配置的功能，使用壳层配置。Host 插件设置，包括 Web/Desktop 共用偏好，继续使用 Cordis。仅仅展示在 Desktop 中，不构成归属壳层的理由。统一设置界面可以使用不同的存储归属。
 
-`desktop` 子目录集中存放壳层配置，不迁移已有文件。[快捷键决策](2026-09-20-device-local-shortcut-preferences.zh.md)继续负责 `userData/keybindings.json` 及其持久化语义。[共享 Web 应用决策](2026-09-10-desktop-web-wrapper.zh.md)仍约束 Host 组合和 profile 配置。
+`desktop` 子目录在应用浏览器数据目录下集中存放壳层配置。[产品隔离决策](2026-11-22-yunshu-desktop-configuration-isolation.zh.md)负责该目录及经过资格确认的偏好迁移。[快捷键决策](2026-09-20-device-local-shortcut-preferences.zh.md)继续负责 `userData/keybindings.json` 及其持久化语义。[共享 Web 应用决策](2026-09-10-desktop-web-wrapper.zh.md)仍约束 Host 组合和 profile 配置。
 
 ## Alternatives considered
 

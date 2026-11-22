@@ -3,6 +3,9 @@
 /** Environment variable that supplies the Electron application identifier. */
 export const DESKTOP_APP_ID_ENV = 'DSH_DESKTOP_APP_ID'
 
+/** Product-owned default; changing it later requires installed-upgrade qualification. */
+export const YUNSHU_DESKTOP_APP_ID = 'com.yunshu.desktop'
+
 /** Environment variable that supplies electron-builder's macOS certificate qualifier. */
 export const MACOS_SIGNING_IDENTITY_ENV = 'DSH_DESKTOP_MACOS_SIGNING_IDENTITY'
 
@@ -64,6 +67,9 @@ export function resolveDesktopAppId(env) {
   const appId = requireEnvironmentValue(env, DESKTOP_APP_ID_ENV)
   if (!/^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+$/u.test(appId)) {
     throw new Error(`desktop release environment: ${DESKTOP_APP_ID_ENV} must be a reverse-DNS identifier`)
+  }
+  if (['com.deepseek.harness', 'com.deepseek.dsh'].includes(appId.toLowerCase())) {
+    throw new Error(`desktop release environment: ${DESKTOP_APP_ID_ENV} cannot reuse a DeepSeek application identity; use ${YUNSHU_DESKTOP_APP_ID} and qualify the identity transition before publication`)
   }
   return appId
 }

@@ -1,7 +1,7 @@
 /** Installed launcher scripts preserve terminal invocation through a minimal runtime fixture. */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
@@ -39,7 +39,7 @@ function fixture(layout = 'app.asar') {
     'process.exitCode = 23',
     '',
   ].join('\n'))
-  const command = join(cli, 'bin', platform === 'win32' ? 'dsh.cmd' : 'dsh')
+  const command = join(cli, 'bin', platform === 'win32' ? 'yunshu.cmd' : 'yunshu')
   function start(args: string[], executable = command) {
     // cmd fixture inputs contain no metacharacters; POSIX cases exercise literal expansion characters separately.
     const child = platform === 'win32'
@@ -76,7 +76,7 @@ it('preserves common arguments, cwd, environment, binary input, stderr and exit 
 it.skipIf(process.platform === 'win32')('resolves chained command symlinks without expanding argument contents', async () => {
   const f = fixture()
   const link = join(f.root, 'command-link')
-  const command = join(f.root, 'dsh')
+  const command = join(f.root, 'yunshu')
   symlinkSync(relative(f.root, f.command), link)
   symlinkSync(link, command)
   const args = ['quote"inside', 'trailing\\', '%PATH%', '$HOME', '`literal`', '']
@@ -93,4 +93,20 @@ it.skipIf(process.platform === 'win32')('launches a directory-layout application
   run.child.stdin.end('directory layout')
   expect(await run.closed, run.stderr()).toBe(23)
   expect(JSON.parse(run.stdout())).toMatchObject({ args, cwd: f.root, nodeMode: '1', input: Buffer.from('directory layout').toString('hex') })
+})
+
+
+it('publishes only the product command when reusing a prepared command directory', () => {
+  const root = mkdtempSync(join(tmpdir(), 'yunshu-cli-name-'))
+  onTestFinished(() => rm(root, { recursive: true, force: true }))
+  for (const platform of ['win32', 'darwin', 'linux'] as const) {
+    const target = join(root, platform)
+    mkdirSync(join(target, 'bin'), { recursive: true })
+    writeFileSync(join(target, 'bin', 'dsh'), 'old private launcher')
+    writeFileSync(join(target, 'bin', 'dsh.cmd'), 'old private launcher')
+    prepareDesktopCli(target, platform)
+    expect(existsSync(join(target, 'bin', platform === 'win32' ? 'yunshu.cmd' : 'yunshu'))).toBe(true)
+    expect(existsSync(join(target, 'bin', 'dsh'))).toBe(false)
+    expect(existsSync(join(target, 'bin', 'dsh.cmd'))).toBe(false)
+  }
 })

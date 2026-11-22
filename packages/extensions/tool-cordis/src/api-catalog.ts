@@ -1893,6 +1893,11 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
         parameters: [],
       },
       {
+        signature: 'readonly home: string',
+        description: 'Configuration and profile-package root; applications may isolate it while data services retain DSH_HOME.',
+        parameters: [],
+      },
+      {
         signature: 'readonly startedBundles: readonly string[]',
         description: 'Bundle packages used to start this process, before any persisted edits.',
         parameters: [],

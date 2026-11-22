@@ -28,15 +28,17 @@ const NAME = 'dsh'
  * never parsed).
  * @param patches - `--patch` overlay paths, in argv order.
  * @param fromDefaultProfile - shipped template used once to initialize a missing profile.
+ * @param configurationHome - application-owned profile and home-patch root.
  */
 export function runDumpConfig(
   profile: string,
   defaultOnly: boolean,
   patches: readonly string[],
   fromDefaultProfile?: string,
+  configurationHome?: string,
 ): void {
-  const loaded = prepareProfile(profile, !defaultOnly, fromDefaultProfile)
-  const layers = collectConfigDumpLayers(loaded, defaultOnly, patches)
+  const loaded = prepareProfile(profile, !defaultOnly, fromDefaultProfile, configurationHome)
+  const layers = collectConfigDumpLayers(loaded, defaultOnly, patches, configurationHome)
   // The dump anchors on the same empty root file the boot includes.
   process.stdout.write(renderConfigDump(NAME, join(loaded.dir, PROFILE_ROOT_FILENAME), layers))
 }
@@ -46,12 +48,14 @@ export function runDumpConfig(
  * @param loaded - prepared profile and parsed bundle and profile patches.
  * @param defaultOnly - omit profile, home, and argv layers without reading their files.
  * @param patches - overlay paths relative to the invoking directory, in argv order.
+ * @param configurationHome - application-owned home-patch root; omission uses DSH_HOME.
  * @returns the labeled layers shared by YAML and schema dumps.
  */
 export function collectConfigDumpLayers(
   loaded: Profile,
   defaultOnly: boolean,
   patches: readonly string[],
+  configurationHome?: string,
 ): ConfigDumpLayer[] {
   const layers: ConfigDumpLayer[] = loaded.layers.map(layer => ({
     label: layer.packageName,
@@ -61,7 +65,7 @@ export function collectConfigDumpLayers(
     if (existsSync(loaded.patchPath)) {
       layers.push({ label: loaded.patchPath, patches: loaded.patches })
     }
-    const homePatchFile = homePatchPath()
+    const homePatchFile = homePatchPath(configurationHome)
     const homePatches = loadOptionalPatches(NAME, homePatchFile)
     if (homePatches !== undefined) {
       layers.push({ label: homePatchFile, patches: homePatches })

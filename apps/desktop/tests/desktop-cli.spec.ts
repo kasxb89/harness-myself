@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { runCli } from '@deepseek-ai/dsh/lib/bin.js'
 import { runDesktopCli } from '../../desktop-host/src/cli.ts'
 import { installOfficeEngineResolution } from '../../desktop-host/src/office-engine.ts'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
 vi.mock('@deepseek-ai/dsh/lib/bin.js', () => ({ runCli: vi.fn() }))
 vi.mock('../../desktop-host/src/office-engine.ts', () => ({ installOfficeEngineResolution: vi.fn() }))
@@ -24,6 +25,7 @@ it.each(['system-bin', undefined])('dispatches with bundled pnpm when PATH is %s
   expect(installOfficeEngineResolution).toHaveBeenCalledExactlyOnceWith(runtime)
   expect(runCli).toHaveBeenCalledExactlyOnceWith({
     manageDesktopProfile: true,
+    configurationHome: join(resolveDshHome(), 'products', 'yunshu'),
     packageManager: {
       command: process.execPath,
       args: ['--expose-internals', join(support, 'primary-runtime', 'dependencies', 'pnpm', 'bin', 'pnpm.mjs')],

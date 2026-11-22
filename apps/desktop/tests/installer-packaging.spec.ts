@@ -59,8 +59,8 @@ describe('installer preparation preserves application dependencies', () => {
       expect(config.appId).toBe('com.example.installer')
       expect(config.artifactName).toBe(`yunshu-\${version}-\${os}-\${arch}${platform === 'win32' ? '-unsigned' : ''}.\${ext}`)
       expect(config.win.executableName).toBe('Yunshu')
-      expect(config.protocols).toEqual([{ name: '云枢', schemes: ['dsh'] }])
-      expect(config.extraMetadata).not.toHaveProperty('name')
+      expect(config.protocols).toEqual([{ name: '云枢', schemes: ['yunshu'] }])
+      expect(config.extraMetadata).toHaveProperty('name', 'yunshu-desktop')
       expect(config.extraMetadata).not.toHaveProperty('productName')
       expect(config.mac.icon).toMatch(/icon-macos\.png$/u)
       expect(config.win.icon).toMatch(/icon-windows\.png$/u)
@@ -92,7 +92,7 @@ describe('installer preparation preserves application dependencies', () => {
     }
   })
 
-  it('uses Yunshu in actual builder version fields while retaining the internal package identity', async () => {
+  it('uses the product package name in actual builder version fields without renaming the workspace', async () => {
     const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
     const config = createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.example.installer', DSH_DESKTOP_UNSIGNED: '1' }, 'win32', 'x64')
     const metadata = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
@@ -102,10 +102,11 @@ describe('installer preparation preserves application dependencies', () => {
     }
     const packager = new Packager({ projectDir: tmpdir() })
     Object.defineProperties(packager, {
-      config: { value: config }, metadata: { value: metadata }, devMetadata: { value: metadata },
+      config: { value: config }, metadata: { value: { ...metadata, ...config.extraMetadata } }, devMetadata: { value: metadata },
     })
     const appInfo = new AppInfo(packager, null, { executableName: config.win.executableName })
-    expect(appInfo.name).toBe('@deepseek-ai/dsh-desktop')
+    expect(metadata.name).toBe('@deepseek-ai/dsh-desktop')
+    expect(appInfo.name).toBe('yunshu-desktop')
     expect(appInfo.id).toBe('com.example.installer')
     expect(appInfo.productFilename).toBe('Yunshu')
     expect(appInfo.productName).toBe('云枢')
@@ -122,6 +123,30 @@ describe('installer preparation preserves application dependencies', () => {
     expect(versionFields).toContain('/LANG=1033 ProductName "云枢"')
     expect(versionFields).toContain('/LANG=1033 FileDescription "云枢智能工作台"')
     expect(versionFields.some(field => /deepseek|electron desktop shell/iu.test(field))).toBe(false)
+  })
+
+  it('keeps actual product registration and update-cache identities separate from upstream', async () => {
+    const { createElectronBuilderConfig } = await import('../scripts/electron-builder-config.mjs')
+    const config = createElectronBuilderConfig({ DSH_DESKTOP_APP_ID: 'com.yunshu.desktop', DSH_DESKTOP_UNSIGNED: '1' }, 'win32', 'x64')
+    const source = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { name: string; version: string }
+    const product = new Packager({ projectDir: tmpdir() })
+    Object.defineProperties(product, {
+      config: { value: config }, metadata: { value: { ...source, ...config.extraMetadata } }, devMetadata: { value: source },
+    })
+    const upstream = new Packager({ projectDir: tmpdir() })
+    Object.defineProperties(upstream, {
+      config: { value: { appId: 'com.deepseek.harness', productName: 'DeepSeek Harness' } },
+      metadata: { value: source }, devMetadata: { value: source },
+    })
+    const productInfo = new AppInfo(product, null, { executableName: 'Yunshu' })
+    const upstreamInfo = new AppInfo(upstream, null, { executableName: 'DeepSeek Harness' })
+    expect(productInfo.id).not.toBe(upstreamInfo.id)
+    expect(productInfo.name).toBe('yunshu-desktop')
+    expect(productInfo.name).not.toBe(upstreamInfo.name)
+    expect(productInfo.updaterCacheDirName).not.toBe(upstreamInfo.updaterCacheDirName)
+    expect(config.protocols).toEqual([{ name: '云枢', schemes: ['yunshu'] }])
+    expect(config.protocols.flatMap(value => value.schemes)).not.toContain('dsh')
+    expect(readFileSync(new URL('../installer/uninstall.nsh', import.meta.url), 'utf8')).not.toContain('@deepseek-ai\\dsh-desktop')
   })
 
   it('isolates the actual Windows fixture product filename while retaining production settings', async () => {

@@ -12,7 +12,7 @@
 
 Desktop 绑定 `127.0.0.1`，即 Electron 为就绪 URL 与 WebSocket 凭据过滤器拨号的地址。WebSocket 流按 Host 监听器使用 `ws:` 或 `wss:`；附加凭据要求 authority 与 scheme 均匹配。
 
-应用菜单第一项“**关于云枢**”打开 Electron 原生关于面板，展示应用图标、产品名称和当前安装的发布版本。菜单文案跟随桌面壳的语言。macOS 的隐藏、隐藏其他、显示全部和退出条目使用本地化文案，隐藏和退出条目包含 云枢 产品名称。这些条目保留原生动作和快捷键。macOS 从应用包读取产品图标，开发启动器生成的应用包也使用该图标；Windows 使用随包分发的 PNG。桌面壳先保留已有浏览器数据与日志路径，再设置显示名称。
+应用菜单第一项“**关于云枢**”打开 Electron 原生关于面板，展示应用图标、产品名称和当前安装的发布版本。菜单文案跟随桌面壳的语言。macOS 的隐藏、隐藏其他、显示全部和退出条目使用本地化文案，隐藏和退出条目包含 云枢 产品名称。这些条目保留原生动作和快捷键。macOS 从应用包读取产品图标，开发启动器生成的应用包也使用该图标；Windows 使用随包分发的 PNG。桌面壳在获取单实例锁前选择云枢专用的浏览器数据目录；显示名称不决定账号或会话的存储位置。只有存在旧云枢 profile 标记时，才会从旧浏览器目录一次性复制 `keybindings.json`、`desktop/settings.json` 和 `background-close-confirmed`；目标已有文件优先。不复制 Cookie、浏览器认证或完整 profile 配置，原文件保持不变。
 
 Desktop 的本地原生目录流程打开绑定应用窗口的 Electron 文件夹对话框，并先恢复、显示和聚焦该窗口。并发请求共用一个对话框；取消不返回路径，失败后可以重试。普通 Web 使用 Host 选择器。浏览模式列出 Host 目录。Linux 缺少 zenity 或 kdialog 时，自动选择使用浏览模式，不使用 Electron 对话框。
 
@@ -32,15 +32,15 @@ Desktop Host 的 Platform API 请求与更新策略请求用相同的 Platform �
 
 ## 终端命令
 
-应用菜单中的**管理 dsh 命令…**位于**检查更新…**下方，显示当前命令，并提供安装、修复和移除操作。命令复用 Desktop 已安装的运行时和普通 [dsh CLI](../cli/README.zh.md)，Desktop 应用关闭后也可以使用。安装后打开新终端，运行 `dsh --version`。
+应用菜单中的**管理 yunshu 命令…**位于**检查更新…**下方，显示当前命令，并提供安装、修复和移除操作。命令复用 Desktop 已安装的运行时和普通 [dsh CLI](../cli/README.zh.md)，Desktop 应用关闭后也可以使用。安装后打开新终端，运行 `yunshu --version`。
 
-macOS 安装会创建 `/usr/local/bin/dsh`；目录权限需要时，系统会请求管理员认证，不会修改 shell 启动文件。Windows 管理对话框将命令注册到当前用户的 PATH。切换已有命令前会要求确认；修复当前已选中的 Desktop 命令不会重复要求切换确认。macOS 链接会保留并恢复被替换的启动器；Windows 会保留其他 PATH 条目，包括注册前就已存在的条目。若其他命令的 PATH 优先级更高，对话框会显示其位置。移动应用后，macOS 使用“修复”，Windows 从新位置使用“安装”。“移除”不会改动无关安装。
+macOS 安装会创建 `/usr/local/bin/yunshu`；目录权限需要时，系统会请求管理员认证，不会修改 shell 启动文件。Windows 管理对话框将命令注册到当前用户的 PATH。切换已有命令前会要求确认；修复当前已选中的 Desktop 命令不会重复要求切换确认。macOS 链接会保留并恢复被替换的启动器；Windows 会保留其他 PATH 条目，包括注册前就已存在的条目。若其他命令的 PATH 优先级更高，对话框会显示其位置。移动应用后，macOS 使用“修复”，Windows 从新位置使用“安装”。“移除”不会改动无关安装。
 
-命令注册是安装 Desktop 后的可选操作。卸载 Desktop 前，请通过**管理 dsh 命令… → 移除**删除其 CLI 注册；应用卸载程序不会移除该注册。更新或卸载 Desktop 前请结束 CLI 命令。CLI 运行时版本随已安装的 Desktop 版本变化。Desktop 插件命令与运行时限制见[内置命令运行时](#bundled-command-runtime)。
+命令注册是安装 Desktop 后的可选操作。卸载 Desktop 前，请通过**管理 yunshu 命令… → 移除**删除其 CLI 注册；应用卸载程序不会移除该注册。更新或卸载 Desktop 前请结束 CLI 命令。CLI 运行时版本随已安装的 Desktop 版本变化。云枢不会安装、替换或删除通用 `dsh` 命令；旧 `dsh` 注册不属于本命令的管理范围。Desktop 插件命令与运行时限制见[内置命令运行时](#bundled-command-runtime)。
 
 ## 关闭窗口与退出
 
-关闭主窗口（macOS 的关闭按钮和 ⌘W；Windows 的 ×、Alt+F4 和任务栏"关闭窗口"）会隐藏窗口；Windows 首次隐藏前需要确认。页面和 Host 继续运行，任务不受影响，下次显示时仍是原来的文档，会话、草稿和滚动位置都保留；macOS 全屏窗口先退出全屏再隐藏。macOS 通过 Dock 图标、再次启动或 `dsh://open` 找回窗口，Windows 通过托盘找回。最小化行为不变。进入工作区前关闭欢迎窗口，Windows 上走退出流程，macOS 上应用留在 Dock 中且没有窗口。
+关闭主窗口（macOS 的关闭按钮和 ⌘W；Windows 的 ×、Alt+F4 和任务栏"关闭窗口"）会隐藏窗口；Windows 首次隐藏前需要确认。页面和 Host 继续运行，任务不受影响，下次显示时仍是原来的文档，会话、草稿和滚动位置都保留；macOS 全屏窗口先退出全屏再隐藏。macOS 通过 Dock 图标、再次启动或 `yunshu://open` 找回窗口，Windows 通过托盘找回。最小化行为不变。进入工作区前关闭欢迎窗口，Windows 上走退出流程，macOS 上应用留在 Dock 中且没有窗口。
 
 Windows 在整个运行期间常驻托盘图标。悬停提示为产品名，单击显示并聚焦窗口，右键菜单提供壳语言下的"打开云枢"和"退出云枢"。首次隐藏前复用更新弹窗，显示“正在运行的任务不会中断，可在系统托盘中重新打开窗口”和“确认”按钮。确认后隐藏窗口，并在 Electron userData 下写入 `background-close-confirmed`；Esc、关闭弹窗或加载失败均保持主窗口可见，不记录确认。重复关闭请求会聚焦已有壳弹窗。覆盖更新保留标记，卸载删除标记。旧的 `background-notice-shown` 标记不会跳过此确认。关闭窗口不发送系统通知。托盘位图是 `resources/tray-windows.ico`，由 `pnpm run render:tray-icon` 从 `resources/icon-windows.svg` 按 16、20、24、32、40、48、64 像素分别渲染，打包为 `resources/tray.ico`。macOS 不提供菜单栏图标。
 
@@ -89,7 +89,7 @@ Desktop/SDK 共享运行时构建器在复制或签名产物前，裁剪 NumPy �
 | 发布身份 | 桌面壳 API、Web 客户端、后端与插件依赖图作为一个组合完成验证；独立版本会产生未经验证的组合，并让更新可用性含糊不清。 | Electron 与 `@deepseek-ai/dsh` 始终使用同一精确版本。即使桌面壳代码不变，升级 dsh 也必须发布新 Desktop 版本。 |
 | 运行时 | 应用必须能够在没有系统 Node.js 或 pnpm 的机器上运行。 | dsh 通过设置 `ELECTRON_RUN_AS_NODE=1` 和 `--expose-internals` 的 Electron 运行，所有包操作都使用内置 pnpm。包管理器配置和 Host 环境遵循用户设置。包脚本通过 `node` shell 启动器转发给 Electron。 |
 | 包来源 | 即使离线，启动时安装核心依赖也会增加开销。 | `app.asar/dsh` 携带完整生产依赖树；profile 只安装外部插件。 |
-| 状态归属 | 共享可执行依赖图会让 CLI（命令行界面）与 Desktop 相互改变 dsh、Cordis、插件或原生模块版本，而两个桌面进程还可能争用同一个 profile。 | Electron 在访问任何 profile 前获取进程生命周期单实例锁，并独占 `$DSH_HOME/profiles/desktop` 及其包管理器状态。CLI 与 Desktop 共享 `$DSH_HOME` 下受支持的产品数据，但绝不共享可执行包、插件激活、锁文件或 `node_modules`。 |
+| 状态归属 | 共享可执行依赖图会让 CLI（命令行界面）与 Desktop 相互改变 dsh、Cordis、插件或原生模块版本，而两个桌面进程还可能争用同一个 profile。 | Electron 在获取进程生命周期单实例锁前选择云枢专用浏览器数据目录，并独占 `$DSH_HOME/products/yunshu/profiles/desktop` 及其包管理器状态。账号登录、会话和任务数据保留原来的 `$DSH_HOME` 位置；可执行包、Desktop 配置、插件激活和锁与其他 Harness 安装分离。 |
 | 传输 | Web 服务与认证共享一套实现。 | Electron 加载打包的 Web 资源；Host 提供启动注入和经过认证的 API。 |
 | 插件变更 | Desktop 与 Web 需要一致的安装和激活行为。 | 主应用使用共享 Web 插件管理器和内置 pnpm。 |
 | 更新 | 桌面壳与 dsh 独立更新会重新产生版本分裂，而桌面壳未变化的数据块不应强制完整传输。 | Electron 壳、匹配的 dsh 运行时与 pnpm 组成一个已签名更新单元。平台更新产物可以复用未变化的数据块，但运行时版本选择绝不脱离 Desktop 发布。 |
@@ -102,11 +102,13 @@ Welcome 加载共享 Toast 的配色和阴影变量，挂载在 body 下的通�
 
 ## 内置命令运行时
 
-安装后的 `resources/runtime/cli/bin/dsh` shell 脚本（Windows 为 `dsh.cmd`）使用 Desktop 的 Electron 可执行文件和内置 pnpm 运行普通 CLI 分派入口。Desktop 关闭时也可使用，并保留 Electron 运行时限制。普通 profile、配置和插件命令与 npm dsh 使用相同实现；该命令不会打开 Desktop。
+安装后的 `resources/runtime/cli/bin/yunshu` shell 脚本（Windows 为 `yunshu.cmd`）使用 Desktop 的 Electron 可执行文件和内置 pnpm 运行普通 CLI 分派入口。Desktop 关闭时也可使用，并保留 Electron 运行时限制。普通 profile、配置和插件命令与 npm dsh 使用相同实现；该命令不会打开 Desktop。
 
-管理 Desktop 插件前，先启动一次 Desktop 以初始化其 profile，完全退出应用，再运行 `dsh plugin --profile desktop add <package>`、`list` 或 `remove <package>`。重新打开 Desktop 后使用更改。包操作保留共享的 profile 写锁和兼容性检查。内置命令拒绝未初始化的 Desktop profile，不会在其位置创建普通 CLI profile。
+管理 Desktop 插件前，先启动一次 Desktop 以初始化其 profile，完全退出应用，再运行 `yunshu plugin --profile desktop add <package>`、`list` 或 `remove <package>`。重新打开 Desktop 后使用更改。包操作保留共享的 profile 写锁和兼容性检查。内置命令拒绝未初始化的 Desktop profile，不会在其位置创建普通 CLI profile。
 
 更新或卸载 Desktop 前请结束 CLI 命令；安装程序不与运行中的命令协调。CLI 不提供 Office 创作 skill 的资源路径。Desktop 现有 Office 设置与 Web 附件转换保留各自的资源配置。`prepare:runtime` 复制启动脚本，无需编译原生 CLI 启动器。
+
+<a id="installation-ownership"></a>
 
 ## 安装归属
 
@@ -114,7 +116,9 @@ Desktop 在离线运行时中内置 `dsh-custom-mode@2.2.5`。此发布首次启
 
 新建自定义员工通过 Host 运行时上下文取得目录信息。提示词读取器也会在员工自身作用域内，用 Session 当前工作目录解析旧提示词中的 `{{cwd}}`。重启时，编辑器刷新已有员工中复制的读取器和工具代码，保留提示词、初始提示词、名称和组成；旧员工因此恢复运行，无需替换用户编写的指令。
 
-Electron 拥有 `$DSH_HOME/profiles/desktop`。其 `dependencies` 包含 pnpm 安装的包；`dsh.profile.bundles` 包含内置 bundle，后接已启用插件。签名应用从 `resources/app.asar/dsh` 提供 dsh、私有 Desktop Host 及其生产依赖。打包应用选择 runtime profile 解析，不创建包链接；开发 profile 使用文件系统链接。宿主与插件在同一个 Electron Node 模式进程中执行；Desktop 不启用 `--preserve-symlinks`。CLI 不能启动此 profile。Desktop 内置命令可在应用退出后管理其插件；npm 安装的 dsh 不能修改它。
+Electron 拥有 `$DSH_HOME/products/yunshu/profiles/desktop`。其 `dependencies` 包含 pnpm 安装的包；`dsh.profile.bundles` 包含内置 bundle，后接已启用插件。签名应用从 `resources/app.asar/dsh` 提供 dsh、私有 Desktop Host 及其生产依赖。打包应用选择 runtime profile 解析，不创建包链接；开发 profile 使用文件系统链接。宿主与插件在同一个 Electron Node 模式进程中执行；Desktop 不启用 `--preserve-symlinks`。CLI 不能启动此 profile。Desktop 内置命令可在应用退出后管理其插件；npm 安装的 dsh 不能修改它。
+
+Desktop 以 `$DSH_HOME/products/yunshu` 为配置主目录。profile patch、主目录 patch、旧版 `settings.yaml` 导入、热重载和 Desktop 内置插件命令统一使用此配置根。共享的 `$DSH_HOME/cordis.patch.yml`、`$DSH_HOME/settings.yaml` 及旧 `profiles/desktop` 配置不会覆盖云枢。Desktop 用安装包中的 bundle 初始化独立 profile，不复制另一产品的覆盖配置或已启用扩展。既有登录文件、会话和任务保留原位；启动不复制凭据，也不建立第二条刷新链。参见[隔离决策](../../.agents/notes/implemented/architecture/2026-11-22-yunshu-desktop-configuration-isolation.zh.md)和[升级指南](../../docs/upgrade-guide/v0.2.1-alpha.2/yunshu-product-isolation/guide.zh.md)。
 
 应用 preload 只向 `dsh-app://app` 文档暴露启动就绪、致命启动失败上报、原生目录选择、用于 composer 路径引用的 `__DSH_HOST_PATHS__` 桥接和租约范围内的 Browser 桥接。同一个 preload 通过 `dshDesktop.deviceInfo()` 转发主进程采集的机器描述，按 `name=value` 字段以 `; ` 分隔：`platform`、`os`、`app_arch`（应用二进制实际运行的架构，模拟运行时与硬件架构不同）、`cpu` 和 `memory_gib`（物理内存总量，GiB，保留一位小数）。取值不可用时省略对应字段。该描述不包含主机名、用户名或序列号。产品页面还获得 Desktop 标记、更新展示数据和打开原生确认的操作，不能选择安装产物或授权安装。插件管理使用 Web 应用经过认证的 HTTP API；Electron 在 `dsh-app://shell/` 本地提供更新弹窗文档和资源，不依赖 Host 就绪。Electron 不提供插件管理 IPC 或独立管理页面。任何渲染进程都不会获得文件系统访问、原始 Electron IPC、shell 或任意 pnpm 参数。
 
@@ -178,7 +182,7 @@ pnpm run dev:desktop
 pnpm run start:desktop
 ```
 
-Web 侧的对应命令是 `pnpm run dev:web` 与 `pnpm run start:web`，见[开发指南](../../docs/development.zh.md)。Workspace 开发使用 Electron RunAsNode 运行当前 CLI 与私有 Desktop Host 包，插件管理和恢复使用 `$DSH_HOME/profiles/desktop`，与一次性工作区运行时分离。Host 在开发与打包构建中都使用 runtime 模块解析，不创建官方包的 fallback 链接；开发者安装的包（包括链接）保留原生优先级。需要验证 Electron RunAsNode、内置 pnpm、内置 dsh 资源、插件安装和修复时，应运行未封装安装器的应用目录。
+Web 侧的对应命令是 `pnpm run dev:web` 与 `pnpm run start:web`，见[开发指南](../../docs/development.zh.md)。Workspace 开发使用 Electron RunAsNode 运行当前 CLI 与私有 Desktop Host 包，插件管理和恢复使用 `$DSH_HOME/products/yunshu/profiles/desktop`，与一次性工作区运行时分离。Host 在开发与打包构建中都使用 runtime 模块解析，不创建官方包的 fallback 链接；开发者安装的包（包括链接）保留原生优先级。需要验证 Electron RunAsNode、内置 pnpm、内置 dsh 资源、插件安装和修复时，应运行未封装安装器的应用目录。
 
 [原生输入与渲染进程键盘测试](tests/keyboard.spec.ts)直接纳入仓库 Client 类型检查。它只导入不依赖 Cordis 的 Desktop 输入、持久化、IPC、浏览器 guest 和蒙层模块。
 
@@ -188,7 +192,7 @@ Web 侧的对应命令是 `pnpm run dev:web` 与 `pnpm run start:web`，见[开�
 
 欢迎页显示云枢品牌与唯一的手机号登录操作。按钮打开 `dsh-app://app/?panel=credits` 的产品账号面板，由现有手机号验证流程完成登录。
 
-重复启动和 `dsh://open` 会保持工作区隐藏，直到启动凭据检查或欢迎页操作允许进入。从 Welcome 进入时，键盘焦点落在文档上，不选中侧边栏控件；Tab 导航仍可使用。
+重复启动和 `yunshu://open` 会保持工作区隐藏，直到启动凭据检查或欢迎页操作允许进入。从 Welcome 进入时，键盘焦点落在文档上，不选中侧边栏控件；Tab 导航仍可使用。
 
 Desktop 启动后通过已认证 Host 的 `/credits/api/session` 读取产品登录状态。已有持久化手机号会话时直接进入工作区；未登录时显示欢迎页。手机号登录按钮打开产品账号面板，不保存完成标记。导航期间禁止重复点击，失败时显示本地化重试提示。会话读取失败或响应无效不会被当作已登录。
 
@@ -287,7 +291,7 @@ pnpm run package:desktop:mac:x64:unsigned
 
 添加 `--check` 仅验证本地配置和工具而不构建，或添加 `--dir` 只生成解包应用。DMG 路径为 `apps/desktop/.desktop-build/targets/<target>/unsigned-artifacts/yunshu-<version>-mac-<arch>-unsigned.dmg`。所有检查通过后，命令打印 `DMG:` 及其绝对路径。打开后将应用复制到本地测试目录。
 
-这些命令只从可选的 `.env.macos` 读取 `DSH_DESKTOP_APP_ID` 和 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN`，默认分别为 `com.deepseek.harness` 和 `https://8.133.202.230/harness`。它们忽略继承的发布设置，并省略独立的外部强制更新服务；feed 新版本由用户自愿更新。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。未签名 macOS 的 `afterPack` 编译捆绑的[原生交换辅助程序](resources/unsigned-mac-swap.c)，并为它添加 ad-hoc 签名；构建机器需要 Xcode Command Line Tools（`xcrun clang`），最终用户无需编译器。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。运行时完整性与冒烟检查仍会执行。安装包构建完成后，会在 `unsigned-artifacts/` 的 DMG 旁写入 `nightly-mac.yml` 和 `<target>-release.json`；目录构建不写完成记录。不生成 ZIP。[显式未签名上传](#upload-updates)发布已检查的 DMG，供[更新](#updates)一节说明的自动安装流程使用。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
+这些命令只从可选的 `.env.macos` 读取 `DSH_DESKTOP_APP_ID` 和 `DSH_DESKTOP_UPDATE_CONFIG_ORIGIN`，默认分别为 `com.yunshu.desktop` 和 `https://8.133.202.230/harness`。它们忽略继承的发布设置，并省略独立的外部强制更新服务；feed 新版本由用户自愿更新。构建工具、标准网络代理与 `DSH_DESKTOP_NPM_REGISTRY` 仍可从 shell 提供。它们跳过 Developer ID 签名、Apple 公证、临时签名钥匙串和公证代理修改。未签名 macOS 的 `afterPack` 编译捆绑的[原生交换辅助程序](resources/unsigned-mac-swap.c)，并为它添加 ad-hoc 签名；构建机器需要 Xcode Command Line Tools（`xcrun clang`），最终用户无需编译器。Electron 使用无需证书的本地 ad-hoc 签名，以便修改后的可执行文件能够运行；DMG 不签名。运行时完整性与冒烟检查仍会执行。安装包构建完成后，会在 `unsigned-artifacts/` 的 DMG 旁写入 `nightly-mac.yml` 和 `<target>-release.json`；目录构建不写完成记录。不生成 ZIP。[显式未签名上传](#upload-updates)发布已检查的 DMG，供[更新](#updates)一节说明的自动安装流程使用。macOS 可能要求在“系统设置 → 隐私与安全性”中批准打开未经公证的应用。
 
 ### 用回环 registry 安装本地 Official 包
 
@@ -323,7 +327,7 @@ pwsh -NoProfile -File apps/desktop/scripts/smoke-windows.ps1 -Makensis $Makensis
 
 Windows 安装器在启动时和选定目标目录后检查应用是否正在运行，通过检查后才将新版本解压到安装目录旁边。通过同卷目录改名替换前，安装器会再次检查。运行中的应用会阻止安装；更新启动允许等待应用退出，最长十秒。同路径升级在替换成功前保留旧目录；解压失败时旧版不变，替换失败时尝试恢复旧目录。安装器在启动前清理旧版备份。强制结束安装器或断电可能留下 `.new-*` 或 `.old-*` 目录；不同安装位置或安装范围迁移仍使用 electron-builder 的旧卸载器流程。
 
-解压失败时，安装器会把 7-Zip 的结果和完整错误输出写入更新缓存目录 `%LOCALAPPDATA%\<按包名派生>-updater\installer-logs\extract-failure-<时间戳>.log`（当前为 `@deepseek-aidsh-desktop-updater`），并在弹窗中显示首条错误行和 **复制错误信息** 按钮；静默安装只写入报告。Windows 产品名称、快捷方式和卸载项使用云枢，安装包文件说明为“云枢智能工作台”，安装后的主程序是 `Yunshu.exe`。公司元数据不继承作者名称，产品版权使用云枢。签名发布者身份仍来自签名证书。发布安装包为 `yunshu-<版本>-win-x64.exe`；未签名的 Windows 构建（`DSH_DESKTOP_UNSIGNED=1`）在 `.exe` 前添加 `-unsigned`，以免被误当作发布产物。品牌调整保留已有应用 ID、内部包名和用户数据位置。
+解压失败时，安装器会把 7-Zip 的结果和完整错误输出写入更新缓存目录 `%LOCALAPPDATA%\<按包名派生>-updater\installer-logs\extract-failure-<时间戳>.log`（当前为 `yunshu-desktop-updater`），并在弹窗中显示首条错误行和 **复制错误信息** 按钮；静默安装只写入报告。Windows 产品名称、快捷方式和卸载项使用云枢，安装包文件说明为“云枢智能工作台”，安装后的主程序是 `Yunshu.exe`。公司元数据不继承作者名称，产品版权使用云枢。签名发布者身份仍来自签名证书。发布安装包为 `yunshu-<版本>-win-x64.exe`；未签名的 Windows 构建（`DSH_DESKTOP_UNSIGNED=1`）在 `.exe` 前添加 `-unsigned`，以免被误当作发布产物。打包后的 Electron 名称为 `yunshu-desktop`，产品应用 ID 默认为 `com.yunshu.desktop`，外部 URL 协议为 `yunshu`。打包拒绝复用上游的 `com.deepseek.harness` 和 `com.deepseek.dsh`；内部 workspace 包名保持不变。
 
 <a id="upload-updates"></a>
 
@@ -552,7 +556,7 @@ Desktop 每次检查版本清单前都从 harnes-api 后台发现固定 Nightly 
 
 [壳层配置决策](../../.agents/notes/implemented/architecture/2026-10-08-desktop-shell-configuration.zh.md)说明独立于 Host 的配置归属，以及评估现有设置迁移的标准。
 
-Electron 主进程在启动时读取一次 `app.getPath('userData')/desktop/settings.json`，独立于 Host 和 Cordis 配置。打包应用默认路径为 Windows 的 `%APPDATA%\@deepseek-ai\dsh-desktop\desktop\settings.json` 和 macOS 的 `~/Library/Application Support/@deepseek-ai/dsh-desktop/desktop/settings.json`。开发模式使用启动器打印的 `userData` 路径。`DSH_HOME` 不改变此文件的位置。
+Electron 主进程在启动时读取一次 `app.getPath('userData')/desktop/settings.json`，独立于 Host 和 Cordis 配置。打包应用默认路径为 Windows 的 `%APPDATA%\yunshu-desktop\desktop\settings.json` 和 macOS 的 `~/Library/Application Support/yunshu-desktop/desktop/settings.json`。开发模式使用启动器打印的 `userData` 路径。`DSH_HOME` 不改变此文件的位置。
 
 首次启动（包括升级后首次启动）时，Desktop 会在文件缺失时创建以下内容：
 
@@ -625,12 +629,12 @@ node apps/desktop/node_modules/pnpm/bin/pnpm.mjs --dir apps/desktop run test:upd
 
 - 发布签名、公证、更新托管和跨上一版本的已安装产物验证需要生产发布环境。
 - 依赖的生命周期脚本遵循 pnpm 的构建权限；Desktop 不提供单独的审批对话框。
-- 桌面壳与 CLI dsh 共享 `$DSH_HOME` 下的会话、设置、凭据、工作区和存储，但可执行包、插件激活和锁文件彼此隔离。
+- 账号登录、会话、任务及其他既有业务数据保留原来的 `$DSH_HOME` 位置。云枢配置和 Electron 浏览器数据独立；这不会迁移或隔离 CLI dsh 的全部历史业务数据。
 - 在 Electron win32-arm64 宿主上，未打包启动现在可以成功，但载荷仍为 x64：`packages/skill/tool-workspace-dependencies/src/index.ts` 的架构校验会把载荷记录的架构与宿主 `process.arch` 比较，因此 `load_workspace_dependencies` 工具仍可能拒绝 primary runtime。
 
 仅向应用提供的旧 `dshOnboarding.hasApiKey()` preload 方法在产品引导中返回 false；欢迎页没有手动填写密钥的入口。只有所属应用的主 frame 可以调用该方法。
 
-产品登录在产品账号面板内完成。原生欢迎页不会启动官方提供方的浏览器授权，也不会因其授权完成而直接进入工作区。打包应用注册 `dsh://open`，只显示窗口而不传递凭证。macOS 开发启动器在 `.desktop-build/development` 下准备经临时签名的 `云枢.app`，在 Info.plist 中声明 `dsh` 和产品图标并注册到 Launch Services。识别到旧 `Harness Dev.app` 或 `智澍科技.app` 时只注销其注册，保留应用包；Launch Services 明确返回 `-10814` 表示已无有效注册，不阻止启动，而新应用注册失败或其他旧应用注销错误仍会中止启动。生成的应用包记录所选 home、浏览器数据路径、已准备的 primary-runtime 目录与调试设置，不包含账号 token，并依赖工作区和已准备的运行环境继续存在。
+产品登录在产品账号面板内完成。原生欢迎页不会启动官方提供方的浏览器授权，也不会因其授权完成而直接进入工作区。打包应用注册 `yunshu://open`，只显示窗口而不传递凭证。macOS 开发启动器在 `.desktop-build/development` 下准备经临时签名的 `云枢.app`，在 Info.plist 中声明 `yunshu` 和产品图标并注册到 Launch Services。识别到旧 `Harness Dev.app` 或 `智澍科技.app` 时只注销其注册，保留应用包；Launch Services 明确返回 `-10814` 表示已无有效注册，不阻止启动，而新应用注册失败或其他旧应用注销错误仍会中止启动。生成的应用包记录所选 home、浏览器数据路径、已准备的 primary-runtime 目录与调试设置，不包含账号 token，并依赖工作区和已准备的运行环境继续存在。
 
 账号失效并返回 Welcome 时，主进程保留一次性通知，直到渲染器通过所属窗口的 IPC 领取。重新加载 Welcome 不会重复提示；主动退登和冷启动不会生成该通知。
 

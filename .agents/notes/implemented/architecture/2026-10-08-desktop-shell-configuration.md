@@ -14,7 +14,7 @@ Electron main owns `userData/desktop/settings.json` independently of Host startu
 
 Ownership follows runtime dependencies: Electron-owned functions needing configuration before Host startup or while the Host is unavailable use shell configuration. Host plugin settings, including shared Web/Desktop preferences, continue to use Cordis. Displaying a setting in Desktop alone does not justify shell ownership. A unified settings interface can use separate storage owners.
 
-The `desktop` subdirectory groups shell configuration without relocating existing files. The [shortcut decision](2026-09-20-device-local-shortcut-preferences.md) retains ownership of `userData/keybindings.json` and its persistence semantics. The [shared Web application decision](2026-09-10-desktop-web-wrapper.md) still governs Host composition and profile configuration.
+The `desktop` subdirectory groups shell configuration under the application’s browser-data directory. The [product-isolation decision](2026-11-22-yunshu-desktop-configuration-isolation.md) owns that directory and the qualified preference migration. The [shortcut decision](2026-09-20-device-local-shortcut-preferences.md) retains ownership of `userData/keybindings.json` and its persistence semantics. The [shared Web application decision](2026-09-10-desktop-web-wrapper.md) still governs Host composition and profile configuration.
 
 ## Alternatives considered
 

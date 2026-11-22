@@ -42,7 +42,7 @@ describe('desktop macOS release signature', () => {
   it('loads release identifiers from the environment and requires code signing', async () => {
     const { createElectronBuilderConfig } = await import('../electron-builder.config.mjs')
     const config = createElectronBuilderConfig(RELEASE_ENVIRONMENT, 'darwin', 'arm64')
-    expect(config.protocols).toEqual([{ name: '云枢', schemes: ['dsh'] }])
+    expect(config.protocols).toEqual([{ name: '云枢', schemes: ['yunshu'] }])
     expect(portablePath(config.directories.output)).toContain('/.desktop-build/targets/mac-arm64/artifacts')
     expect(config.mac.extendInfo.NSMicrophoneUsageDescription).toContain('microphone')
     expect(config.mac.entitlementsInherit).toBe(config.mac.entitlements)
@@ -218,6 +218,13 @@ describe('desktop macOS release signature', () => {
       DSH_DESKTOP_MACOS_SIGNING_IDENTITY: 'Example Company (TEAMID1234)',
       DSH_DESKTOP_MACOS_TEAM_ID: 'short',
     })).toThrow(/10 uppercase/u)
+  })
+
+  it.each(['com.deepseek.harness', 'com.deepseek.dsh', 'COM.DeepSeek.Harness'])('rejects an upstream desktop identity before packaging (%s)', (appId) => {
+    expect(() => resolveDesktopAppId({ DSH_DESKTOP_APP_ID: appId })).toThrow(/cannot reuse a DeepSeek application identity/u)
+    expect(resolveDesktopAppId({ DSH_DESKTOP_APP_ID: 'com.yunshu.desktop' })).toBe('com.yunshu.desktop')
+    expect(resolveDesktopAppId({ DSH_DESKTOP_APP_ID: 'com.deepseek.dsh.qualification.q0123456789abcdef01234567' }))
+      .toBe('com.deepseek.dsh.qualification.q0123456789abcdef01234567')
   })
 
   it('requires one complete notarization credential strategy', () => {

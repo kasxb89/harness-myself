@@ -68,6 +68,8 @@ import { DesktopInstallerShutdown } from './installer-shutdown.ts'
 import { DesktopTray } from './tray.ts'
 import { DesktopBackgroundNotice } from './background-notice.ts'
 import { DesktopClientActivity } from './client-activity.ts'
+import { configureDesktopProductIdentity, importDesktopShellPreferences, type DesktopProductIdentity } from './product-identity.ts'
+import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 
 let focusPrimaryWindow = (): void => {}
 let stopForRecovery = async (): Promise<void> => {}
@@ -87,10 +89,6 @@ let windowsLanguage: string | undefined
 let backendReady = false
 /** Error-level console output of the primary window, attached to crash reports. */
 const rendererConsole = new RendererConsoleTail()
-
-// Platform-conventional logs directory (macOS ~/Library/Logs/<name>, otherwise under userData);
-// set before ready so the first fatal report already resolves under it.
-app.setAppLogsPath()
 
 function currentDesktopLocale(): ReturnType<typeof resolveDesktopLocale> {
   return resolveDesktopLocale(windowsLanguage ?? app.getLocale())
@@ -325,12 +323,9 @@ function createWindow(preload: string, show = false, primary = false): BrowserWi
   return window
 }
 
-async function main(): Promise<void> {
-  const existingUserData = app.getPath('userData')
-  const existingLogs = app.getPath('logs')
-  app.setName('云枢')
-  app.setPath('userData', existingUserData)
-  app.setPath('logs', existingLogs)
+async function main(desktopProductIdentity: DesktopProductIdentity): Promise<void> {
+  try { importDesktopShellPreferences(desktopProductIdentity, join(resolveDshHome(), 'profiles', 'desktop')) }
+  catch { console.warn('desktop: previous shell preferences could not be imported; existing files were retained') }
   const desktopSettings = readDesktopSettings(app.getPath('userData'))
   void pruneCrashReports(app.getPath('logs'))
   const journalDirectory = process.env.DSH_DESKTOP_UPDATE_JOURNAL_DIR
@@ -1368,10 +1363,10 @@ async function main(): Promise<void> {
     window.focus()
   }
 
-  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') app.setAsDefaultProtocolClient('dsh')
+  if (app.isPackaged || process.env.DSH_DESKTOP_DEV_APP === '1') app.setAsDefaultProtocolClient('yunshu')
   app.on('open-url', (event, url) => {
     event.preventDefault()
-    if (url === 'dsh://open' || url === 'dsh://open/') focusPrimaryWindow()
+    if (url === 'yunshu://open' || url === 'yunshu://open/') focusPrimaryWindow()
   })
 
   app.on('activate', (_event, hasVisibleWindows) => {
@@ -1499,9 +1494,17 @@ async function main(): Promise<void> {
   publishUpdate(updateState)
 }
 
-const ownsDesktopInstance = claimDesktopSingleInstance(app, () => { focusPrimaryWindow() })
+async function launchOwnedDesktop(): Promise<void> {
+  // The namespace must precede the process lock, otherwise another desktop product can receive this launch.
+  const identity = configureDesktopProductIdentity(app, process.env)
+  app.setAppLogsPath()
+  if (!claimDesktopSingleInstance(app, () => { focusPrimaryWindow() })) return
+  await app.whenReady()
+  await main(identity)
+}
 
-if (ownsDesktopInstance) void app.whenReady().then(main).catch(async (error: unknown) => {
+void launchOwnedDesktop().catch(async (error: unknown) => {
+  await app.whenReady()
   const message = error instanceof Error ? error.message : String(error)
   console.error(error)
   const diagnosticFile = process.env.DSH_DESKTOP_DIAGNOSTIC_FILE

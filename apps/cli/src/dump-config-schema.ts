@@ -20,15 +20,17 @@ const NAME = 'dsh'
  * @param profile - the profile name.
  * @param patches - overlay paths, in argv order.
  * @param fromDefaultProfile - shipped template used once to initialize a missing profile.
+ * @param configurationHome - application-owned profile and home-patch root.
  * @returns after collection and output, with diagnostics also written to stderr.
  */
 export async function runDumpConfigSchema(
   profile: string,
   patches: readonly string[],
   fromDefaultProfile?: string,
+  configurationHome?: string,
 ): Promise<void> {
-  const loaded = prepareProfile(profile, true, fromDefaultProfile)
-  const layers = collectConfigDumpLayers(loaded, false, patches)
+  const loaded = prepareProfile(profile, true, fromDefaultProfile, configurationHome)
+  const layers = collectConfigDumpLayers(loaded, false, patches, configurationHome)
   // oxlint-disable-next-line typescript/unbound-method -- Saved only for exact restoration, never called unbound.
   const stdoutWrite = process.stdout.write
   let dump: ConfigSchemaDump

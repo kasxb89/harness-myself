@@ -16,7 +16,7 @@ Separate package directories can load duplicate Cordis or service modules. Retai
 
 ## Decision
 
-[Runtime preparation](../../../../apps/desktop/scripts/prepare-dsh.ts) materializes the production graph once at build time and ships it through `extraResources/dsh`. The Electron shell stays in ASAR. An Electron RunAsNode process runs the private Desktop Host from resources and loads enabled plugins from `$DSH_HOME/profiles/desktop`.
+[Runtime preparation](../../../../apps/desktop/scripts/prepare-dsh.ts) materializes the production graph once at build time and ships it through `extraResources/dsh`. The Electron shell stays in ASAR. An Electron RunAsNode process runs the private Desktop Host from resources and loads enabled plugins from `$DSH_HOME/products/yunshu/profiles/desktop`.
 
 This note owns core resource storage and external plugin dependencies. The [packaging decision](2026-08-25-electron-desktop-packaging-and-updates.md) retains release identity, signing, process ownership, and Electron-only plugin authorization. The [thin-wrapper decision](2026-09-10-desktop-web-wrapper.md) owns shared Web boot and HTTP transport.
 
