@@ -38,6 +38,19 @@ export function resolveDesktopUpdateConfigOrigin(packaged: boolean, manifest: un
   return manifest.dshDesktopUpdateConfigOrigin
 }
 
+/**
+ * Identify an installed private Kylin package whose updates are distributed separately.
+ * @param packaged - Whether the trusted application manifest belongs to an installed app.
+ * @param manifest - Locally packaged manifest, never remote status or renderer input.
+ * @param platform - Current Electron operating system.
+ * @param arch - Current Electron architecture.
+ * @returns Whether ordinary shared-feed polling must remain disabled.
+ */
+export function isPrivateKylinPackage(packaged: boolean, manifest: unknown, platform: NodeJS.Platform, arch: string): boolean {
+  return packaged && platform === 'linux' && arch === 'x64' && record(manifest)
+    && manifest.dshDesktopPrivateDistribution === 'kylin-v10sp1-2503-x64'
+}
+
 function trustedUrl(value: string, allowLoopbackHttp: boolean, backendBase: boolean): URL {
   if (!/^https?:\/\//iu.test(value) || /[\u0000-\u0020\u007f\\?#]/u.test(value)
     || /%(?:0[0-9a-f]|1[0-9a-f]|7f|5c|2f)/iu.test(value)) {
