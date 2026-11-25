@@ -1,5 +1,5 @@
 import { createSnapshotStore } from '@deepseek-ai/dsh-client-store'
-import { Context } from '@deepseek-ai/cordis'
+import { Context, Service } from '@deepseek-ai/cordis'
 import { describe, expect, it, onTestFinished, vi } from 'vitest'
 import type {
   ISessions, SessionListState, SessionReference, SessionSnapshot, SessionSummary,
@@ -10,7 +10,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RemoteResult } from '@deepseek-ai/dsh-api-remotes/client'
 import { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type { StoredEntry } from '@deepseek-ai/dsh-client-ui-slots'
-import { RemoteError, TestRemote } from '@deepseek-ai/dsh-client-test-runtime'
+import { RemoteError } from '@deepseek-ai/dsh-client-test-runtime'
 import { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
 import { apply, inject } from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type { WorkspaceBrowserInjected, WorkspacePickerInjected } from '@deepseek-ai/dsh-client-ui-workspace/client'
@@ -54,8 +54,16 @@ const workspaceState = (
   items, archivedSessionIds, pinnedSessionIds, state: 'idle', phase: 'ready', error: null,
 })
 
+/** Trace namespaces as separate services, as the shipped Remote does. */
+class FixtureRemote extends Service {
+  readonly $host = { home: undefined, isLoopback: true }
+
+  constructor(ctx: Context) { super(ctx, 'remote') }
+}
+
 async function bench() {
   const ctx = new Context()
+  onTestFinished(() => ctx.fiber.dispose())
   ctx.provide('shortcuts', { register: () => () => {}, catalog: createSnapshotStore([]) })
   ctx.provide('uiConversation', {})
   await ctx.plugin(SlotRegistry).await()
@@ -145,7 +153,10 @@ async function bench() {
   const deleteSession = vi.fn<(request: { sessionId: SessionId; cwd: string }) => Promise<RemoteResult<{ deleted: true }>>>(
     async () => ({ ok: true, value: { deleted: true } }),
   )
-  Object.assign(new TestRemote(ctx, { session: { delete: deleteSession } }), { directoryPicker })
+  await ctx.plugin({ apply(provider: Context) {
+    new FixtureRemote(provider)
+    provider.provide('remote.session', { delete: deleteSession } as never)
+  } }).await()
   ctx.provide('remote.directoryPicker', directoryPicker as never)
   const locale = new LocaleRuntime(ctx)
   // These specs assert the shipped Chinese copy. There is no jsdom `window`
@@ -207,7 +218,7 @@ describe('ui-workspace apply', () => {
 
   it('declares the services it drives', () => {
     expect(inject).toEqual([
-      'slots', 'sessions', 'workspaces', 'locale', 'remote', 'remote.directoryPicker', 'layout', 'shortcuts',
+      'slots', 'sessions', 'workspaces', 'locale', 'remote', 'remote.directoryPicker', 'remote.session', 'layout', 'shortcuts',
     ])
   })
 
@@ -406,6 +417,23 @@ describe('ui-workspace apply', () => {
     expect(forget).toHaveBeenCalledExactlyOnceWith('one')
     dialog.settleSessionDelete()
     expect(dialog.hooks.deleteRequest.getSnapshot()).toBeNull()
+  })
+
+  it('refuses deletion before its Host call when the session namespace is not injected', async () => {
+    const b = await bench()
+    onTestFinished(() => b.ctx.fiber.dispose())
+    b.setSessions(sessionState([{ ...summary('one', 1), cwd: '/projects/alpha' }]))
+    declare(b.slots, 'sidebar.workspaces', 'shell.overlay')
+    await b.ctx.plugin({ inject: inject.filter(name => name !== 'remote.session'), apply }).await()
+    const action = faceOf(entry(b.slots, MENU_ITEM, 'delete')) as DeleteSessionInjected
+    const dialog = faceOf(entry(b.slots, 'shell.overlay', 'workspace.session-delete')) as SessionDeleteDialogInjected
+    const forget = vi.spyOn(b.ctx.uiWorkspace, 'forgetDeletedSession')
+    action.requestSessionDelete(sid('one'), 'exact title')
+    await expect(dialog.deleteSession(sid('one'), '/projects/alpha'))
+      .rejects.toThrow('cannot get property "remote.session" without inject')
+    expect(b.deleteSession).not.toHaveBeenCalled()
+    expect(forget).not.toHaveBeenCalled()
+    expect(dialog.hooks.deleteRequest.getSnapshot()?.sessionId).toBe('one')
   })
 
   it.each([

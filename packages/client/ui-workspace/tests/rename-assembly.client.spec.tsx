@@ -43,7 +43,7 @@ async function createRuntime(): Promise<SlotTestRuntime> {
   // The rename flow never picks a directory; the namespace only has to be there
   // for ui-workspace's inject to settle.
   const directoryPicker = {}
-  runtime.remote.provideNamespaces({ directoryPicker })
+  runtime.remote.provideNamespaces({ directoryPicker, session: {} })
   const locale = new LocaleRuntime(runtime.ctx)
   runtime.ctx.provide('locale', locale)
   runtime.slots.installLocale(locale)
@@ -111,10 +111,8 @@ describe('session rename through the assembled browser', () => {
         },
       )
     }
-    // `order` places plugin rows after the shipped rows (100/200/300/400)
-    // even when the later registration has the lower shadowing priority
-    // assigned to dynamic browser packages; the first plugin row opens the
-    // plugin group with a hairline.
+    // The custom export precedes the shipped delete action at order 500;
+    // the last action follows at 600 regardless of shadowing priority.
     registerAction('export', 500, -1, 'Export action')
     registerAction('last', 600, -2, 'Last action')
     const view = runtime.renderRoot()
@@ -123,15 +121,18 @@ describe('session rename through the assembled browser', () => {
     const trigger = within(row as HTMLElement).getByLabelText('会话“Persisted title”的操作')
     fireEvent.click(trigger)
     expect(view.getAllByRole('menuitem').map(item => item.textContent)).toEqual([
-      '置顶会话', '重命名', '分叉会话', '归档会话', 'Export action', 'Last action',
+      '置顶会话', '重命名', '分叉会话', '归档会话', 'Export action', '删除会话', 'Last action',
     ])
-    expect(view.getAllByRole('separator')).toHaveLength(1)
+    expect(view.getAllByRole('separator')).toHaveLength(2)
     const last = view.getByRole('menuitem', { name: 'Last action' })
     const exportRow = view.getByRole('menuitem', { name: 'Export action' })
     trigger.focus()
     fireEvent.keyDown(trigger, { key: 'End' })
     expect(document.activeElement).toBe(last)
     fireEvent.keyDown(last, { key: 'ArrowUp' })
+    const deleteRow = view.getByRole('menuitem', { name: '删除会话' })
+    expect(document.activeElement).toBe(deleteRow)
+    fireEvent.keyDown(deleteRow, { key: 'ArrowUp' })
     expect(document.activeElement).toBe(exportRow)
     fireEvent.click(exportRow)
     expect(selected).toHaveBeenCalledWith('export', SID, 'Persisted title')

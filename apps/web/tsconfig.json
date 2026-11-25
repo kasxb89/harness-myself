@@ -22,6 +22,7 @@
   // this client-registered project must not also hold them (one program
   // cannot see both sides of the cordis Context merges).
   "exclude": [
+    "tests/session-delete.e2e.ts",
     "tests/sidebar-login-reminder.e2e.ts",
     "tests/chat-media-preferences.e2e.ts",
     "tests/onboarding-survey.e2e.ts",
