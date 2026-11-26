@@ -1,7 +1,7 @@
-/** Primitive control values accepted by the current browser form, including string-only selections. */
-export type MediaV2Value = string | number | boolean | readonly string[]
-/** Image or video workspace classification published by the media catalog. */
-export type MediaV2Kind = 'image' | 'video'
+/** JSON controls retained verbatim, including native nested objects and ordered arrays. */
+export type MediaV2Value = null | string | number | boolean | readonly MediaV2Value[] | { readonly [key: string]: MediaV2Value }
+/** Media workspace classification published by the media catalog. */
+export type MediaV2Kind = 'image' | 'video' | 'audio'
 /** Explicit input workflow retained independently from provider quality or mode controls. */
 export type MediaV2Intent = 'text' | 'reference' | 'frames' | 'transform'
 /** One named material input with its media type, native cardinality and published constraints. */
@@ -22,6 +22,8 @@ export interface MediaV2Model {
   readonly model_version: string
   readonly description?: string
   readonly parameters_schema: Readonly<Record<string, unknown>>
+  /** Published native dependencies, preserved for local validation. */
+  readonly conditions?: unknown
   readonly asset_fields: readonly MediaV2AssetField[]
   readonly intents: readonly { readonly id: MediaV2Intent; readonly label: string; readonly requires_assets: boolean }[]
   readonly pricing: { readonly display: string; readonly credits_per_yuan: number; readonly quote_required: true }
@@ -39,6 +41,7 @@ export interface MediaV2Asset {
   readonly sha256: string
   readonly expires_at: number
   readonly duration_seconds?: number
+  readonly fps?: number
   readonly width?: number
   readonly height?: number
 }
@@ -94,7 +97,7 @@ export interface MediaV2Record {
 }
 /** Selectable model definitions, product credit scale and an optional Host-configured polling interval. */
 export interface MediaV2Catalog {
-  readonly capabilities: { readonly same_operation_configuration_requote: boolean }
+  readonly capabilities: { readonly same_operation_configuration_requote: boolean; readonly max_upload_bytes?: number }
   readonly models: readonly MediaV2Model[]
   readonly credits_per_yuan: number
   readonly poll_after_ms?: number
@@ -114,6 +117,25 @@ export type MediaV2Transport = (path: string, init?: RequestInit) => Promise<unk
  */
 export function mediaV2Object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+/**
+ * Admit finite JSON controls before retaining draft or original operation values.
+ * @param value - Unknown JSON value from storage or a Host response.
+ * @returns Whether the value can be retained without coercion or field loss.
+ */
+export function isMediaV2Value(value: unknown): value is MediaV2Value {
+  let nodes = 0
+  const read = (entry: unknown, depth: number): boolean => {
+    if (++nodes > 10000 || depth > 12) return false
+    if (entry === null || typeof entry === 'boolean') return true
+    if (typeof entry === 'string') return entry.length <= 100000
+    if (typeof entry === 'number') return Number.isFinite(entry)
+    if (Array.isArray(entry)) return entry.length <= 1000 && entry.every(item => read(item, depth + 1))
+    const object = mediaV2Object(entry)
+    return object !== null && Object.keys(object).length <= 100
+      && Object.entries(object).every(([key, item]) => /^[A-Za-z][A-Za-z0-9_]{0,95}$/u.test(key) && read(item, depth + 1))
+  }
+  return read(value, 0) && new TextEncoder().encode(JSON.stringify(value)).byteLength <= 1024 * 1024
 }
 const text = (value: unknown): value is string => typeof value === 'string' && value !== ''
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
@@ -142,10 +164,12 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
     || data.poll_after_ms < 1 || data.poll_after_ms > 60_000)) throw new Error('MEDIA_V2_CATALOG_INVALID')
   const capabilities = mediaV2Object(data.capabilities)
   const configurationRequote = capabilities?.same_operation_configuration_requote
+  const maxUploadBytes = capabilities?.max_upload_bytes
+  if (maxUploadBytes !== undefined && (!finite(maxUploadBytes) || !Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1)) throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (configurationRequote !== undefined && typeof configurationRequote !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   const models = data.models.map((value): MediaV2Model => {
     const row = mediaV2Object(value), pricing = mediaV2Object(row?.pricing), schema = mediaV2Object(row?.parameters_schema)
-    if (!text(row?.id) || !text(row.display_name) || !text(row.model_version) || row.kind !== 'image' && row.kind !== 'video'
+    if (!text(row?.id) || !text(row.display_name) || !text(row.model_version) || !mediaKind(row.kind)
       || schema === null || !Array.isArray(row.asset_fields) || !Array.isArray(row.intents) || typeof row.enabled !== 'boolean'
       || pricing === null || typeof pricing.display !== 'string' || !finite(pricing.credits_per_yuan) || pricing.credits_per_yuan <= 0 || pricing.quote_required !== true) throw new Error('MEDIA_V2_CATALOG_INVALID')
     const fields = row.asset_fields.map((value): MediaV2AssetField => {
@@ -164,11 +188,13 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
     })
     return { id: row.id, display_name: row.display_name, model_version: row.model_version, kind: row.kind, enabled: row.enabled,
       parameters_schema: schema, asset_fields: fields, intents,
+      ...row.conditions === undefined ? {} : { conditions: row.conditions },
       pricing: { display: pricing.display, credits_per_yuan: pricing.credits_per_yuan, quote_required: true },
       ...typeof row.description === 'string' ? { description: row.description } : {} }
   })
   return { models, credits_per_yuan: data.credits_per_yuan,
-    capabilities: { same_operation_configuration_requote: configurationRequote === true },
+    capabilities: { same_operation_configuration_requote: configurationRequote === true,
+      ...maxUploadBytes === undefined ? {} : { max_upload_bytes: maxUploadBytes } },
     ...data.poll_after_ms === undefined ? {} : { poll_after_ms: data.poll_after_ms } }
 }
 /**
@@ -181,9 +207,13 @@ export function parseMediaV2Asset(value: unknown): MediaV2Asset {
   if (!text(row?.asset_id) || !text(row.client_asset_id) || !text(row.model) || row.state !== 'ready' || !mediaKind(row.media_kind)
     || !text(row.mime_type) || !finite(row.bytes) || row.bytes <= 0 || !text(row.sha256) || !/^[a-f0-9]{64}$/u.test(row.sha256)
     || !finite(row.expires_at)) throw new Error('MEDIA_V2_ASSET_INVALID')
+  for (const key of ['duration_seconds', 'width', 'height', 'fps'] as const) {
+    if (row[key] !== undefined && (!finite(row[key]) || row[key] <= 0)) throw new Error('MEDIA_V2_ASSET_INVALID')
+  }
   return { asset_id: row.asset_id, client_asset_id: row.client_asset_id, model: row.model, state: 'ready', media_kind: row.media_kind,
     mime_type: row.mime_type, bytes: row.bytes, sha256: row.sha256, expires_at: row.expires_at,
     ...finite(row.duration_seconds) ? { duration_seconds: row.duration_seconds } : {},
+    ...finite(row.fps) ? { fps: row.fps } : {},
     ...finite(row.width) ? { width: row.width } : {}, ...finite(row.height) ? { height: row.height } : {} }
 }
 /**
@@ -198,7 +228,7 @@ export function parseMediaV2Record(value: unknown): MediaV2Record {
     || !text(request?.client_operation_id) || !text(request.model) || !text(request.model_version) || !intent(request.intent) || parameters === null || assets === null) throw new Error('MEDIA_V2_RECORD_INVALID')
   const admittedParameters: Record<string, MediaV2Value> = {}, admittedAssets: Record<string, readonly string[]> = {}
   for (const [name, value] of Object.entries(parameters)) {
-    if (typeof value !== 'string' && typeof value !== 'boolean' && !finite(value) && !(Array.isArray(value) && value.every(text))) throw new Error('MEDIA_V2_RECORD_INVALID')
+    if (!isMediaV2Value(value)) throw new Error('MEDIA_V2_RECORD_INVALID')
     admittedParameters[name] = value
   }
   for (const [name, value] of Object.entries(assets)) {
@@ -225,7 +255,7 @@ export function parseMediaV2Record(value: unknown): MediaV2Record {
   let admittedTask: MediaV2Task | undefined
   if (row.task !== undefined) {
     const task = mediaV2Object(row.task)
-    if (!text(task?.id) || !text(task.model) || task.kind !== 'image' && task.kind !== 'video' || typeof task.is_final !== 'boolean'
+    if (!text(task?.id) || !text(task.model) || !mediaKind(task.kind) || typeof task.is_final !== 'boolean'
       || !['pending', 'running', 'succeeded', 'failed', 'unknown'].includes(String(task.status)) || !Array.isArray(task.artifacts)) throw new Error('MEDIA_V2_RECORD_INVALID')
     const artifacts = task.artifacts.map((value): MediaV2Artifact => {
       const artifact = mediaV2Object(value)

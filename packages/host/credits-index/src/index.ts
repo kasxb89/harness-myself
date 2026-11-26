@@ -65,6 +65,7 @@ import { createDemandProxy, type DemandProxyOptions } from './demand-proxy.ts'
 import { MediaV2Client } from './media-v2-client.ts'
 import { createMediaV2Proxy } from './media-v2-proxy.ts'
 import { registerMediaV2Tools } from './media-v2-tools.ts'
+import { readMediaV2File } from './media-v2-file.ts'
 import { createCommunityProxy } from './community-proxy.ts'
 import { createForumProxy } from './forum-proxy.ts'
 import { createShowcaseProxy } from './showcase-proxy.ts'
@@ -151,6 +152,10 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Local streaming-upload ceiling; the server's declared ceiling and material rules can only lower it. */
+  mediaV2MaxUploadBytes?: number
+  /** Complete deadline for one native-media upload, including local spooling and response reading. */
+  mediaV2UploadTimeoutMs?: number
   /** Complete deadline for a human-engineer demand JSON request. */
   demandRequestTimeoutMs?: number
   /** Complete deadline for one bounded resumable-upload chunk. */
@@ -283,6 +288,8 @@ export const Config: z<Config> = z.object({
   creditsPerYuan: z.number().min(1).default(1000),
   stateDir: z.string().default(''),
   timeoutMs: z.number().step(1).min(1).default(15_000),
+  mediaV2MaxUploadBytes: z.natural().min(1).max(1_073_741_824).default(1_073_741_824),
+  mediaV2UploadTimeoutMs: z.natural().min(1).max(3_600_000).default(300_000),
   demandRequestTimeoutMs: z.natural().min(1).max(3_600_000).default(20_000),
   demandUploadTimeoutMs: z.natural().min(1).max(3_600_000).default(120_000),
   demandDownloadTimeoutMs: z.natural().min(1).max(3_600_000).default(300_000),
@@ -2632,6 +2639,7 @@ export function apply(ctx: Context, config: Config): void {
   }
   const serviceGalleryProxy = createServiceGalleryProxy(demandProxyOptions)
   const mediaV2Client = new MediaV2Client({ baseUrl: apiBaseUrl, directory: join(stateDir, 'media-v2'), timeoutMs: resolved.timeoutMs,
+    maxUploadBytes: resolved.mediaV2MaxUploadBytes, uploadTimeoutMs: resolved.mediaV2UploadTimeoutMs,
     creditsPerYuan: resolved.creditsPerYuan,
     pollIntervalMs: resolved.videoPollIntervalMs,
     maxArtifactBytes: resolved.videoProjectDownloadMaxBytes,
@@ -2655,22 +2663,7 @@ export function apply(ctx: Context, config: Config): void {
   registerMediaV2Tools(ctx, { client: mediaV2Client, capture: captureMediaV2Account,
     pollIntervalMs: resolved.videoPollIntervalMs,
     taskTimeoutMs: Math.max(resolved.videoTaskTimeoutMs, resolved.imageTaskTimeoutMs),
-    readAsset: async (value, exec) => {
-      const attached = await readChatImageReference(value, exec.agent?.session, ctx.get('attachments'), ctx.get('fs'), 50 * 1024 * 1024, exec.signal)
-      if (attached !== undefined) return { filename: attached.ref.name ?? `reference.${attached.ref.mediaType === 'image/jpeg' ? 'jpg' : 'png'}`, mime: attached.ref.mediaType, bytes: attached.data }
-      const workspaceRoot = exec.agent?.session.header.cwd, fileSystem = ctx.get('fs')
-      if (workspaceRoot === undefined || !isAbsolute(workspaceRoot) || fileSystem === undefined) throw new Error('Workspace unavailable')
-      const root = await fileSystem.resolve(workspaceRoot, { signal: exec.signal })
-      const target = await fileSystem.resolve(value, { cwd: workspaceRoot, signal: exec.signal })
-      const entry = await fileSystem.lstat(value, { cwd: workspaceRoot }, exec.signal)
-      if (entry?.type !== 'file' || !fileSystem.contains(root, target) || entry.size !== undefined && entry.size > 50 * 1024 * 1024) throw new Error('Reference is not an authorized workspace file')
-      const bytes = Buffer.from(await fileSystem.readBytes(target, exec.signal, 50 * 1024 * 1024))
-      const known = [...ALLOWED_ASSET_TYPES, ...ALLOWED_REFERENCE_VIDEO_TYPES, ...ALLOWED_REFERENCE_AUDIO_TYPES]
-        .find(type => referenceSignature(bytes, type))
-      const filename = basename(fileSystem.processPath(target))
-      const mime = known ?? (['GIF87a', 'GIF89a'].includes(bytes.toString('ascii', 0, 6)) ? 'image/gif' : 'application/octet-stream')
-      return { filename, mime, bytes }
-    } })
+    readAsset: (value, exec, maximum) => readMediaV2File(value, exec.agent?.session, ctx.get('attachments'), ctx.get('fs'), maximum, exec.signal) })
   const showcaseProxy = createShowcaseProxy({ ...demandProxyOptions,
     limits: () => ({ ...demandProxyOptions.limits(), maxJsonResponseBytes: resolved.communityMaxJsonResponseBytes }),
   })

@@ -1,9 +1,9 @@
 /** Frozen media-generation-v2 wire decoder; never contains a relay credential. @module */
-export type MediaV2Kind = 'image' | 'video'
+export type MediaV2Kind = 'image' | 'video' | 'audio'
 /** Input intent, independent from a provider quality or mode value. */
 export type MediaV2Intent = 'text' | 'reference' | 'frames' | 'transform'
-/** Declared scalar controls and schema-declared primitive-array selections. */
-export type MediaV2Value = string | number | boolean | readonly (string | number | boolean)[]
+/** Bounded JSON parameter data; nested controls retain their exact values through quote and recovery. */
+export type MediaV2Value = string | number | boolean | null | readonly MediaV2Value[] | { readonly [key: string]: MediaV2Value }
 /** One named native material role with its declared shape and constraints. */
 export interface MediaV2AssetField {
   name: string
@@ -22,6 +22,7 @@ export interface MediaV2Model {
   model_version: string
   description?: string
   parameters_schema: Record<string, unknown>
+  conditions?: MediaV2Value
   asset_fields: readonly MediaV2AssetField[]
   intents: readonly { id: MediaV2Intent; label: string; requires_assets: boolean; description?: string }[]
   pricing: { display: string; credits_per_yuan: number; quote_required: true }
@@ -35,6 +36,7 @@ export interface MediaV2Catalog {
     durable_operation_receipt: true
     all_artifacts: true
     same_operation_configuration_requote?: boolean
+    max_upload_bytes?: number
   }
   models: readonly MediaV2Model[]
   credits_per_yuan: number
@@ -160,13 +162,23 @@ function fieldName(value: string): string { return /^[A-Za-z][A-Za-z0-9_]{0,95}$
 function params(value: unknown): Record<string, MediaV2Value> {
   const entries = Object.entries(mediaV2Object(value))
   if (entries.length > 100) invalid()
-  const scalar = (entry: unknown): string | number | boolean => {
+  let nodes = 0
+  const read = (entry: unknown, depth = 0): MediaV2Value => {
+    if (++nodes > 10_000 || depth > 12) return invalid()
+    if (entry === null) return null
     if (typeof entry === 'string' && entry.length <= 100_000) return entry
     if (typeof entry === 'number' && Number.isFinite(entry) || typeof entry === 'boolean') return entry
+    if (Array.isArray(entry)) return array(entry, item => read(item, depth + 1), 1000)
+    if (typeof entry === 'object' && Object.getPrototypeOf(entry) === Object.prototype) {
+      const fields = Object.entries(entry)
+      if (fields.length > 100) return invalid()
+      return Object.fromEntries(fields.map(([name, item]) => [fieldName(name), read(item, depth + 1)]))
+    }
     return invalid()
   }
-  return Object.fromEntries(entries.map(([key, entry]) => [fieldName(key),
-    Array.isArray(entry) ? array(entry, scalar, 100) : scalar(entry)]))
+  const result = Object.fromEntries(entries.map(([key, entry]) => [fieldName(key), read(entry)]))
+  if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024) invalid()
+  return result
 }
 function assets(value: unknown): Record<string, readonly string[]> {
   const entries = Object.entries(mediaV2Object(value))
@@ -208,7 +220,7 @@ export function parseMediaV2Asset(value: unknown): MediaV2Asset {
  */
 export function parseMediaV2Task(value: unknown): MediaV2Task {
   const row = mediaV2Object(value)
-  const result: MediaV2Task = { id: mediaV2Id(row.id), model: mediaV2Id(row.model), kind: oneOf(row.kind, ['image', 'video']),
+  const result: MediaV2Task = { id: mediaV2Id(row.id), model: mediaV2Id(row.model), kind: oneOf(row.kind, ['image', 'video', 'audio']),
     status: oneOf(row.status, ['pending', 'running', 'succeeded', 'failed', 'unknown']), is_final: bool(row.is_final),
     artifacts: array(row.artifacts, (item) => {
       const art = mediaV2Object(item)
@@ -255,7 +267,7 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
   for (const key of ['media_generation_v2', 'quote_required', 'durable_operation_receipt', 'all_artifacts']) if (caps[key] !== true) invalid()
   const models = array(row.models, (item): MediaV2Model => {
     const model = mediaV2Object(item), pricing = mediaV2Object(model.pricing)
-    const result: MediaV2Model = { id: mediaV2Id(model.id), display_name: text(model.display_name, 500), kind: oneOf(model.kind, ['image', 'video']),
+    const result: MediaV2Model = { id: mediaV2Id(model.id), display_name: text(model.display_name, 500), kind: oneOf(model.kind, ['image', 'video', 'audio']),
       model_version: text(model.model_version), parameters_schema: mediaV2Object(model.parameters_schema), enabled: bool(model.enabled),
       asset_fields: array(model.asset_fields, (raw) => {
         const field = mediaV2Object(raw)
@@ -270,7 +282,8 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
         ...item.description === undefined ? {} : { description: text(item.description, 2000, true) } } }, 4),
       pricing: { display: text(pricing.display, 1000),
         credits_per_yuan: number(pricing.credits_per_yuan, Number.MIN_VALUE), quote_required: true },
-      ...model.description === undefined ? {} : { description: text(model.description, 4000, true) } }
+      ...model.description === undefined ? {} : { description: text(model.description, 4000, true) },
+      ...model.conditions === undefined ? {} : { conditions: params({ conditions: model.conditions }).conditions } }
     if (pricing.quote_required !== true || new Set(result.asset_fields.map(field => field.name)).size !== result.asset_fields.length
       || new Set(result.intents.map(item => item.id)).size !== result.intents.length || result.intents.length === 0) invalid()
     return result
@@ -280,6 +293,7 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
     media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true,
     ...caps.same_operation_configuration_requote === undefined ? {}
       : { same_operation_configuration_requote: bool(caps.same_operation_configuration_requote) },
+    ...caps.max_upload_bytes === undefined ? {} : { max_upload_bytes: number(caps.max_upload_bytes, 1, true) },
   }, models, credits_per_yuan: number(row.credits_per_yuan, Number.MIN_VALUE),
   ...row.poll_after_ms === undefined ? {} : { poll_after_ms: number(row.poll_after_ms, 1, true) } }
 }

@@ -13,6 +13,7 @@
     "packages/client/ui-demands/src/client/case-showcase-types.ts"
   ],
   "include": [
+    "apps/web/tests/yc-native-media.e2e.ts",
     "apps/web/tests/session-delete.e2e.ts",
     "apps/web/tests/sidebar-login-reminder.e2e.ts",
     "apps/web/tests/onboarding-survey.e2e.ts",

@@ -1,6 +1,6 @@
 /** Receipt-first typed media transport with private, restart-safe operation records. @module */
-import { createHash } from 'node:crypto'
-import { mkdir, readFile, readdir } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { mkdir, open, readFile, readdir, unlink } from 'node:fs/promises'
 import { dirname, isAbsolute, join } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 import { writePrivateState } from './private-state-file.ts'
@@ -14,6 +14,19 @@ import { mediaV2Id, mediaV2Object, mediaV2UUID, parseMediaV2Asset, parseMediaV2C
 /** Captured account identity and a credential-owning fetch; credentials never enter this module's records. */
 export interface MediaV2Account { owner: string
   fetch(path: string, init: RequestInit): Promise<Response> }
+/** Authorized original bytes; a source factory must cancel pending reads when its upload signal aborts. */
+export type MediaV2UploadSource = { bytes: Uint8Array } | {
+  stream: AsyncIterable<Uint8Array> | ((signal: AbortSignal) => AsyncIterable<Uint8Array>)
+  size?: number
+}
+/** Original upload identity and the exact declared material role, when selected. */
+export type MediaV2UploadInput = {
+  model: string
+  clientAssetId: string
+  filename: string
+  mime: string
+  field?: string
+} & MediaV2UploadSource
 /** Append-only explicit configuration quotation action; the original request is never overwritten. */
 export interface MediaV2ConfigurationRequote {
   requested_at: number
@@ -64,6 +77,8 @@ export class MediaV2Client {
     creditsPerYuan: number
     pollIntervalMs?: number
     maxArtifactBytes?: number
+    maxUploadBytes?: number
+    uploadTimeoutMs?: number
     output?: (signal: AbortSignal) => Promise<CapturedMediaOutput> }) {}
 
   private path(owner: string, id: string): string {
@@ -137,6 +152,13 @@ export class MediaV2Client {
     }
     return row.data
   }
+  private uploadCeiling(): number {
+    const maximum = this.options.maxUploadBytes ?? 50 * 1024 * 1024
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 1024 * 1024 * 1024) {
+      throw new MediaV2Error('invalid_request', '素材上传部署上限无效。', 500)
+    }
+    return maximum
+  }
   /**
    * Read executable models and published native controls without requesting generation.
    * @param account - Captured account scope and its credential-owning fetch closure.
@@ -149,8 +171,36 @@ export class MediaV2Client {
       const model = mediaV2Object(value), pricing = mediaV2Object(model.pricing)
       return { ...model, pricing: { ...pricing, credits_per_yuan: this.options.creditsPerYuan } }
     }) : raw.models
-    return parseMediaV2Catalog({ ...raw, models, credits_per_yuan: this.options.creditsPerYuan,
+    const catalog = parseMediaV2Catalog({ ...raw, models, credits_per_yuan: this.options.creditsPerYuan,
       ...this.options.pollIntervalMs === undefined ? {} : { poll_after_ms: this.options.pollIntervalMs } })
+    // This is the Host's effective upload cap, not a claim that an older server declared a larger limit.
+    return { ...catalog, capabilities: { ...catalog.capabilities,
+      max_upload_bytes: Math.min(this.uploadCeiling(), catalog.capabilities.max_upload_bytes ?? 50 * 1024 * 1024) } }
+  }
+  /**
+   * Intersect published server/material limits with the deployment ceiling before reading a file.
+   * @param account - Current credential-owning account.
+   * @param model - Exact model selected for this upload.
+   * @param signal - Free catalog-read cancellation.
+   * @param field - Selected material field; omission permits the largest compatible declared role.
+   * @param mime - Known actual MIME, if already inspected by the authorized reader.
+   * @returns Effective byte ceiling; an absent server declaration keeps the 50 MiB compatibility limit.
+   */
+  async uploadLimit(account: MediaV2Account, model: string, signal: AbortSignal, field?: string, mime?: string): Promise<number> {
+    const catalog = await this.catalog(account, signal)
+    const selected = catalog.models.find(item => item.id === model && item.enabled)
+    if (selected === undefined) throw new MediaV2Error('model_not_available', '当前型号暂不可上传素材，请保留原选择并核对目录。', 404)
+    const server = catalog.capabilities.max_upload_bytes ?? 50 * 1024 * 1024
+    const fields = selected.asset_fields.filter(item => (field === undefined || item.name === field)
+      && (mime === undefined || mime === 'application/octet-stream' || item.mime_types.length === 0 || item.mime_types.includes(mime)))
+    if (fields.length === 0) throw new MediaV2Error('invalid_parameters', '当前型号或素材字段不支持这种素材，请核对素材用途和格式。', 400)
+    const limits = fields.map((item) => {
+      const value = item.constraints.max_bytes
+      if (value === undefined) return server
+      if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1) throw new MediaV2Error('invalid_parameters', '当前素材大小限制无效，请核对型号目录。', 400)
+      return value
+    })
+    return Math.min(server, Math.max(...limits))
   }
   /**
    * Upload exact bytes once. An unknown response must be recovered with assetByClientId.
@@ -160,40 +210,100 @@ export class MediaV2Client {
    * @returns The immutable original upload receipt; an uncertain upload is queried, never reposted.
    */
   async upload(account: MediaV2Account,
-    input: { model: string; clientAssetId: string; filename: string; mime: string; bytes: Uint8Array },
+    input: MediaV2UploadInput,
     signal: AbortSignal): Promise<MediaV2Asset> {
-    if (input.bytes.byteLength === 0 || input.bytes.byteLength > 50 * 1024 * 1024) throw new MediaV2Error('invalid_request', '素材必须为非空文件且不超过 50 MiB。', 413)
+    if (input.filename === '' || input.filename.length > 256 || /[\u0000-\u001f\u007f/\\]/u.test(input.filename)
+      || !/^[\w.+-]+\/[\w.+-]+$/u.test(input.mime)) throw new MediaV2Error('invalid_request', '素材文件名或格式无效。', 400)
     return await this.single(account, input.clientAssetId, async () => {
       const receiptPath = this.path(account.owner, input.clientAssetId).replace(/\.json$/u, '.upload.json')
-      const digest = createHash('sha256').update(input.bytes).digest('hex')
-      const claim = { model: mediaV2Id(input.model), client_asset_id: mediaV2UUID(input.clientAssetId),
-        sha256: digest, bytes: input.bytes.byteLength }
       let previous: Record<string, unknown> | undefined
       try { previous = mediaV2Object(JSON.parse(await readFile(receiptPath, 'utf8'))) }
       catch (error) { if (!(error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT')) throw error }
-      if (previous !== undefined) {
-        if (previous.model !== claim.model || previous.sha256 !== digest || previous.bytes !== claim.bytes) throw new MediaV2Error('asset_binding_mismatch', '原上传编号不能改绑到其他素材。')
-        const asset = previous.asset === undefined
-          ? await this.assetByClientId(account, input.clientAssetId, input.model, signal) : parseMediaV2Asset(previous.asset)
-        if (asset.sha256 !== digest || asset.bytes !== claim.bytes) throw new MediaV2Error('asset_binding_mismatch', '原上传回执与素材不匹配。')
-        return asset
+      const maximum = previous === undefined ? await this.uploadLimit(account, input.model, signal, input.field, input.mime)
+        : typeof previous.bytes === 'number' && Number.isSafeInteger(previous.bytes)
+          && previous.bytes > 0 && previous.bytes <= 1024 * 1024 * 1024
+          ? previous.bytes : 0
+      if (maximum < 1) throw new MediaV2Error('asset_binding_mismatch', '原上传大小记录无法核对，请查询原上传编号。')
+      const expectedSize = 'bytes' in input ? input.bytes.byteLength : input.size
+      if (expectedSize !== undefined && (!Number.isSafeInteger(expectedSize) || expectedSize < 1 || expectedSize > maximum)) {
+        throw new MediaV2Error(previous === undefined ? 'invalid_request' : 'asset_binding_mismatch', '素材为空、超过有效大小限制，或与原上传不一致。', 413)
       }
       await mkdir(dirname(receiptPath), { recursive: true, mode: 0o700 })
-      await writePrivateState(receiptPath, JSON.stringify(claim) + '\n')
-      const form = new FormData()
-      form.set('model', mediaV2Id(input.model)); form.set('client_asset_id', mediaV2UUID(input.clientAssetId))
-      form.set('file', new Blob([new Uint8Array(input.bytes)], { type: input.mime }), input.filename)
-      const response = await account.fetch('/v1/media-v2/assets', { method: 'POST', body: form,
-        signal: AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs)]) })
-      const row = mediaV2Object(JSON.parse((await readMediaBytes(response, 1024 * 1024, signal)).toString('utf8')))
-      if (!response.ok || row.success !== true) throw new MediaV2Error('asset_not_ready', '素材上传结果尚未确认，请查询原上传编号，不要重复上传。', response.status)
-      const asset = parseMediaV2Asset(row.data)
-      if (asset.client_asset_id !== input.clientAssetId || asset.model !== input.model
-      || asset.sha256 !== createHash('sha256').update(input.bytes).digest('hex') || asset.bytes !== input.bytes.byteLength) {
-        throw new MediaV2Error('asset_binding_mismatch', '素材原字节与回执不匹配，尚未提交生成。')
-      }
-      await writePrivateState(receiptPath, JSON.stringify({ ...claim, asset }) + '\n')
-      return asset
+      const temporary = join(dirname(receiptPath), `.upload-${randomUUID()}.tmp`)
+      const transferSignal = AbortSignal.any([signal, AbortSignal.timeout(this.options.uploadTimeoutMs ?? this.options.timeoutMs)])
+      try {
+        const file = await open(temporary, 'wx', 0o600), hash = createHash('sha256')
+        let size = 0
+        try {
+          const source = 'bytes' in input ? [input.bytes]
+            : typeof input.stream === 'function' ? input.stream(transferSignal) : input.stream
+          for await (const chunk of source) {
+            transferSignal.throwIfAborted()
+            if (!(chunk instanceof Uint8Array)) throw new MediaV2Error('invalid_request', '无法读取原素材字节。', 400)
+            size += chunk.byteLength
+            if (size > maximum) throw new MediaV2Error('invalid_request', '素材超过有效大小限制，未上传或提交生成。', 413)
+            hash.update(chunk)
+            await file.writeFile(chunk)
+          }
+          if (size === 0 || expectedSize !== undefined && size !== expectedSize) throw new MediaV2Error('invalid_request', '素材实际大小发生变化，未上传或提交生成。', 400)
+          await file.sync()
+        } finally { await file.close() }
+        transferSignal.throwIfAborted()
+        const digest = hash.digest('hex'), claim = { model: mediaV2Id(input.model),
+          client_asset_id: mediaV2UUID(input.clientAssetId), sha256: digest, bytes: size }
+        if (previous !== undefined) {
+          if (previous.model !== claim.model || previous.sha256 !== digest || previous.bytes !== size) throw new MediaV2Error('asset_binding_mismatch', '原上传编号不能改绑到其他素材。')
+          const asset = previous.asset === undefined
+            ? await this.assetByClientId(account, input.clientAssetId, input.model, transferSignal) : parseMediaV2Asset(previous.asset)
+          if (asset.client_asset_id !== input.clientAssetId || asset.model !== input.model
+            || asset.sha256 !== digest || asset.bytes !== size) {
+            throw new MediaV2Error('asset_binding_mismatch', '原上传回执与素材不匹配。')
+          }
+          return asset
+        }
+        await writePrivateState(receiptPath, JSON.stringify(claim) + '\n')
+        const boundary = `yunshu-${randomUUID()}`
+        const prefix = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="model"\r\n\r\n${claim.model}\r\n--${boundary}\r\nContent-Disposition: form-data; name="client_asset_id"\r\n\r\n${claim.client_asset_id}\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${input.filename.replaceAll('"', '%22')}"\r\nContent-Type: ${input.mime}\r\n\r\n`)
+        const suffix = Buffer.from(`\r\n--${boundary}--\r\n`)
+        const staged = await open(temporary, 'r')
+        const multipart = (async function* () {
+          try {
+            yield prefix
+            for (;;) {
+              transferSignal.throwIfAborted()
+              const chunk = Buffer.allocUnsafe(1024 * 1024)
+              const { bytesRead } = await staged.read(chunk, 0, chunk.byteLength, null)
+              if (bytesRead === 0) break
+              yield chunk.subarray(0, bytesRead)
+            }
+            yield suffix
+          } finally { await staged.close() }
+        })()
+        const body = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            try { const chunk = await multipart.next(); if (chunk.done) controller.close(); else controller.enqueue(chunk.value) }
+            catch (error) { controller.error(error) }
+          },
+          async cancel() { await multipart.return(undefined); await staged.close() },
+        })
+        const init: RequestInit & { duplex: 'half' } = { method: 'POST', body, duplex: 'half', signal: transferSignal,
+          headers: { 'content-type': `multipart/form-data; boundary=${boundary}`,
+            'content-length': String(prefix.byteLength + size + suffix.byteLength) } }
+        let response: Response
+        try { response = await account.fetch('/v1/media-v2/assets', init) }
+        finally { await body.cancel().catch(() => undefined); await multipart.return(undefined); await staged.close() }
+        const row = mediaV2Object(JSON.parse((await readMediaBytes(response, 1024 * 1024, transferSignal)).toString('utf8')))
+        if (!response.ok || row.success !== true) {
+          throw new MediaV2Error('asset_not_ready', '素材上传结果尚未确认，请查询原上传编号，不要重复上传。', response.status)
+        }
+        const asset = parseMediaV2Asset(row.data)
+        if (asset.client_asset_id !== input.clientAssetId || asset.model !== input.model
+          || asset.sha256 !== digest || asset.bytes !== size) {
+          throw new MediaV2Error('asset_binding_mismatch', '素材原字节与回执不匹配，尚未提交生成。')
+        }
+        await writePrivateState(receiptPath, JSON.stringify({ ...claim, asset }) + '\n')
+        return asset
+      } finally { await unlink(temporary).catch(() => undefined) }
     })
   }
   /**

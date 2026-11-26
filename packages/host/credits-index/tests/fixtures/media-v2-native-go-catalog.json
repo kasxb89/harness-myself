@@ -1,0 +1,1382 @@
+{
+  "success": true,
+  "data": {
+    "capabilities": {
+      "media_generation_v2": true,
+      "quote_required": true,
+      "durable_operation_receipt": true,
+      "all_artifacts": true
+    },
+    "models": [
+      {
+        "id": "ycapi-gpt-image-2.6-flare",
+        "display_name": "GT Image 2.6 Flare",
+        "kind": "image",
+        "model_version": "b3975ecd3a3c99dbcfcd69a2ce02ed1e8849871d268a2b18b17502a887d9fbf5",
+        "parameters_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "aspect_ratio": {
+              "default": "1:1",
+              "description": "图片的宽高比例。",
+              "enum": [
+                "1:1",
+                "auto",
+                "3:2",
+                "2:3",
+                "4:3",
+                "3:4",
+                "5:4",
+                "4:5",
+                "16:9",
+                "9:16",
+                "21:9",
+                "9:21"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": true,
+                "available_when": {
+                  "output_format": [
+                    "png",
+                    "jpeg"
+                  ]
+                },
+                "default": "1:1",
+                "description": "图片的宽高比例。",
+                "enum": [
+                  "1:1",
+                  "auto",
+                  "3:2",
+                  "2:3",
+                  "4:3",
+                  "3:4",
+                  "5:4",
+                  "4:5",
+                  "16:9",
+                  "9:16",
+                  "21:9",
+                  "9:21"
+                ],
+                "label": {
+                  "zh": "图片比例"
+                },
+                "options": [
+                  {
+                    "description": "1024x1024 / 2048x2048 / 2880x2880",
+                    "is_default": true,
+                    "label": "1:1 正方形",
+                    "value": "1:1"
+                  },
+                  {
+                    "description": "由模型按画面内容选择比例 (有参考图时跟参考图形状)",
+                    "label": "自适应",
+                    "value": "auto"
+                  },
+                  {
+                    "description": "1536x1024 / 3072x2048 / 3456x2304",
+                    "label": "3:2 横版",
+                    "value": "3:2"
+                  },
+                  {
+                    "description": "1024x1536 / 2048x3072 / 2304x3456",
+                    "label": "2:3 竖版",
+                    "value": "2:3"
+                  },
+                  {
+                    "description": "1280x960 / 2560x1920 / 3200x2400",
+                    "label": "4:3 横版",
+                    "value": "4:3"
+                  },
+                  {
+                    "description": "960x1280 / 1920x2560 / 2400x3200",
+                    "label": "3:4 竖版",
+                    "value": "3:4"
+                  },
+                  {
+                    "description": "1280x1024 / 2560x2048 / 3216x2576",
+                    "label": "5:4 横版",
+                    "value": "5:4"
+                  },
+                  {
+                    "description": "1024x1280 / 2048x2560 / 2576x3216",
+                    "label": "4:5 竖版",
+                    "value": "4:5"
+                  },
+                  {
+                    "description": "1920x1088 / 2048x1152 / 3840x2160",
+                    "label": "16:9 横屏",
+                    "value": "16:9"
+                  },
+                  {
+                    "description": "1088x1920 / 1152x2048 / 2160x3840",
+                    "label": "9:16 竖屏",
+                    "value": "9:16"
+                  },
+                  {
+                    "description": "2016x864 / 2688x1152 / 3840x1648",
+                    "label": "21:9 超宽",
+                    "value": "21:9"
+                  },
+                  {
+                    "description": "864x2016 / 1152x2688 / 1648x3840",
+                    "label": "9:21 超长",
+                    "value": "9:21"
+                  }
+                ],
+                "pixel_size": {
+                  "aspect_max": 3,
+                  "max_edge": 3840,
+                  "max_pixels": 8294400,
+                  "min_pixels": 1310720,
+                  "multiple_of": 16
+                },
+                "required": false,
+                "type": "enum",
+                "ui_widget": "dropdown"
+              }
+            },
+            "count": {
+              "default": 1,
+              "description": "一次生成的图片数量（1-50）。",
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "default": 1,
+                "description": "一次生成的图片数量（1-50）。",
+                "label": {
+                  "zh": "生成数量"
+                },
+                "max": 50,
+                "min": 1,
+                "required": false,
+                "type": "int",
+                "ui_widget": "input"
+              }
+            },
+            "frame_count": {
+              "default": 9,
+              "description": "GIF 动图的帧数 2–16，默认 9 帧；帧数越多动作越细，每帧画面越小。",
+              "maximum": 16,
+              "minimum": 2,
+              "type": "integer",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "available_when": {
+                  "output_format": [
+                    "gif"
+                  ]
+                },
+                "default": 9,
+                "description": "GIF 动图的帧数 2–16，默认 9 帧；帧数越多动作越细，每帧画面越小。",
+                "label": {
+                  "en": "Frame count",
+                  "zh": "动图帧数"
+                },
+                "max": 16,
+                "min": 2,
+                "required": false,
+                "type": "int",
+                "ui_widget": "slider"
+              }
+            },
+            "frame_duration_ms": {
+              "default": 200,
+              "description": "GIF 每一帧停留的时间，单位毫秒，20–655350，默认 200；数值越小播放越快。",
+              "maximum": 655350,
+              "minimum": 20,
+              "type": "integer",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "available_when": {
+                  "output_format": [
+                    "gif"
+                  ]
+                },
+                "default": 200,
+                "description": "GIF 每一帧停留的时间，单位毫秒，20–655350，默认 200；数值越小播放越快。",
+                "label": {
+                  "en": "Frame duration (ms)",
+                  "zh": "每帧时长（毫秒）"
+                },
+                "max": 655350,
+                "min": 20,
+                "required": false,
+                "type": "int",
+                "ui_widget": "input"
+              }
+            },
+            "images": {
+              "description": "上传图片作为参考",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 16,
+              "type": "array",
+              "x-media-native-shape": "multiple",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "description": "上传图片作为参考",
+                "label": {
+                  "zh": "参考图片"
+                },
+                "max_bytes": 26214400,
+                "max_items": 16,
+                "required": false,
+                "type": "upload",
+                "ui_widget": "upload"
+              }
+            },
+            "mode": {
+              "default": "text-to-image",
+              "description": "生成模式: text-to-image=纯文本生成图片 / image-edit=基于已有图片编辑 / multi-reference=基于多张参考图融合生成. 该模型支持的具体模式见下方可选值.",
+              "enum": [
+                "text-to-image",
+                "image-edit",
+                "multi-reference"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "default": "text-to-image",
+                "description": "生成模式: text-to-image=纯文本生成图片 / image-edit=基于已有图片编辑 / multi-reference=基于多张参考图融合生成. 该模型支持的具体模式见下方可选值.",
+                "enum": [
+                  "text-to-image",
+                  "image-edit",
+                  "multi-reference"
+                ],
+                "label": {
+                  "zh": "生成模式"
+                },
+                "options": [
+                  {
+                    "description": "纯文本描述, AI 从零生成图片",
+                    "is_default": true,
+                    "label": "文生图",
+                    "value": "text-to-image"
+                  },
+                  {
+                    "description": "上传 1 张待编辑图, AI 按提示词改写",
+                    "label": "图编辑",
+                    "ref_max": 1,
+                    "value": "image-edit"
+                  },
+                  {
+                    "label": "多图融合",
+                    "value": "multi-reference"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "radio"
+              }
+            },
+            "moderation": {
+              "default": "low",
+              "description": "宽松：减少对合规内容的误拦截（默认）；标准：使用模型默认审核强度。",
+              "enum": [
+                "low",
+                "auto"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "default": "low",
+                "description": "宽松：减少对合规内容的误拦截（默认）；标准：使用模型默认审核强度。",
+                "enum": [
+                  "low",
+                  "auto"
+                ],
+                "label": {
+                  "en": "Moderation",
+                  "zh": "内容审核"
+                },
+                "options": [
+                  {
+                    "description": "减少误拦截（默认）",
+                    "is_default": true,
+                    "label": "宽松",
+                    "value": "low"
+                  },
+                  {
+                    "description": "模型默认审核强度",
+                    "label": "标准",
+                    "value": "auto"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "radio"
+              }
+            },
+            "output_format": {
+              "default": "jpeg",
+              "description": "PNG 无损，文件较大；JPEG 体积小，适合分享与快速加载；GIF 为循环动图；SVG 为矢量图，可任意缩放不失真。",
+              "enum": [
+                "png",
+                "jpeg",
+                "gif",
+                "svg"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "default": "jpeg",
+                "description": "PNG 无损，文件较大；JPEG 体积小，适合分享与快速加载；GIF 为循环动图；SVG 为矢量图，可任意缩放不失真。",
+                "enum": [
+                  "png",
+                  "jpeg",
+                  "gif",
+                  "svg"
+                ],
+                "label": {
+                  "zh": "输出格式"
+                },
+                "options": [
+                  {
+                    "description": "无损，体积大",
+                    "label": "PNG",
+                    "value": "png"
+                  },
+                  {
+                    "description": "有损，体积小",
+                    "is_default": true,
+                    "label": "JPEG",
+                    "value": "jpeg"
+                  },
+                  {
+                    "description": "循环动图，尺寸由帧数决定，不支持选比例和分辨率",
+                    "label": "GIF 动图",
+                    "value": "gif"
+                  },
+                  {
+                    "description": "矢量图，可任意缩放不失真，不支持选比例、分辨率和画质",
+                    "label": "SVG 矢量图",
+                    "value": "svg"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "radio"
+              }
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "quality": {
+              "default": "low",
+              "description": "生成图片的质量。档位越高细节越好、价格越高。",
+              "enum": [
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": true,
+                "available_when": {
+                  "output_format": [
+                    "png",
+                    "jpeg"
+                  ]
+                },
+                "default": "low",
+                "description": "生成图片的质量。档位越高细节越好、价格越高。",
+                "enum": [
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh",
+                  "max"
+                ],
+                "label": {
+                  "zh": "图片质量"
+                },
+                "options": [
+                  {
+                    "description": "成本最低",
+                    "is_default": true,
+                    "label": "低",
+                    "value": "low"
+                  },
+                  {
+                    "description": "均衡",
+                    "label": "中",
+                    "value": "medium"
+                  },
+                  {
+                    "description": "细节与质感更好",
+                    "label": "高",
+                    "value": "high"
+                  },
+                  {
+                    "description": "生成更精细、出图更慢，价格明显更高",
+                    "label": "超高",
+                    "value": "xhigh"
+                  },
+                  {
+                    "description": "生成最精细、出图最慢，价格最高",
+                    "label": "极致",
+                    "value": "max"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "dropdown"
+              }
+            },
+            "resolution": {
+              "default": "1K",
+              "description": "图片清晰度。部分比例只能选部分分辨率。",
+              "enum": [
+                "1K",
+                "2K",
+                "4K"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": true,
+                "available_when": {
+                  "output_format": [
+                    "png",
+                    "jpeg"
+                  ]
+                },
+                "default": "1K",
+                "description": "图片清晰度。部分比例只能选部分分辨率。",
+                "enum": [
+                  "1K",
+                  "2K",
+                  "4K"
+                ],
+                "label": {
+                  "zh": "分辨率"
+                },
+                "options": [
+                  {
+                    "description": "约1024像素，生成速度快",
+                    "is_default": true,
+                    "label": "1K 标清",
+                    "value": "1K"
+                  },
+                  {
+                    "description": "约2048像素，画质清晰",
+                    "label": "2K 高清",
+                    "value": "2K"
+                  },
+                  {
+                    "description": "约2880-3840像素，超高清",
+                    "label": "4K 超清",
+                    "value": "4K"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "dropdown"
+              }
+            }
+          },
+          "required": null,
+          "type": "object",
+          "x-media-assets": [
+            {
+              "name": "images",
+              "media_kind": "image",
+              "shape": "multiple",
+              "min": 0,
+              "max": 16,
+              "mime_types": [],
+              "ordered": true
+            }
+          ],
+          "x-model-kind": "image"
+        },
+        "enabled": true,
+        "asset_fields": [
+          {
+            "name": "images",
+            "media_kind": "image",
+            "native_shape": "multiple",
+            "min_items": 0,
+            "max_items": 16,
+            "mime_types": [
+              "image/png",
+              "image/jpeg",
+              "image/webp",
+              "image/gif"
+            ],
+            "constraints": {
+              "affects_l2": false,
+              "description": "上传图片作为参考",
+              "label": {
+                "zh": "参考图片"
+              },
+              "max_bytes": 26214400,
+              "max_items": 16,
+              "required": false,
+              "type": "upload",
+              "ui_widget": "upload"
+            }
+          }
+        ],
+        "intents": [
+          {
+            "id": "text",
+            "label": "文字生成",
+            "requires_assets": false
+          },
+          {
+            "id": "reference",
+            "label": "参考素材生成",
+            "requires_assets": true
+          },
+          {
+            "id": "frames",
+            "label": "首尾帧／关键帧",
+            "requires_assets": true
+          },
+          {
+            "id": "transform",
+            "label": "素材编辑／复刻",
+            "requires_assets": true
+          }
+        ],
+        "pricing": {
+          "display": "按所选规格显示费用",
+          "credits_per_yuan": 1000,
+          "quote_required": true
+        },
+        "description": "文生图 · 图生图"
+      },
+      {
+        "id": "ycapi-seedance-2-5",
+        "display_name": "Seedance 2.5 · 官方直连",
+        "kind": "video",
+        "model_version": "7be3448a0020bee8b61ff253e32e12e19941ab8e1e3258b403aea989fbcdbaf2",
+        "parameters_schema": {
+          "additionalProperties": false,
+          "properties": {
+            "aspect_ratio": {
+              "default": "16:9",
+              "description": "文生视频时生效；首帧/首尾帧模式下画面比例由首帧图决定，本项不显示。",
+              "enum": [
+                "16:9",
+                "9:16",
+                "21:9",
+                "3:4",
+                "1:1",
+                "4:3"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "available_when": {
+                  "mode": [
+                    "text-to-video",
+                    "reference"
+                  ]
+                },
+                "default": "16:9",
+                "description": "文生视频时生效；首帧/首尾帧模式下画面比例由首帧图决定，本项不显示。",
+                "enum": [
+                  "16:9",
+                  "9:16",
+                  "21:9",
+                  "3:4",
+                  "1:1",
+                  "4:3"
+                ],
+                "label": {
+                  "zh": "视频比例"
+                },
+                "options": [
+                  {
+                    "description": "宽屏, 适合电脑/电视",
+                    "is_default": true,
+                    "label": "横屏 16:9",
+                    "label_en": "16:9 Landscape",
+                    "value": "16:9"
+                  },
+                  {
+                    "description": "适合短视频平台",
+                    "label": "竖屏 9:16",
+                    "label_en": "9:16 Portrait",
+                    "value": "9:16"
+                  },
+                  {
+                    "description": "电影感宽银幕",
+                    "label": "超宽 21:9",
+                    "label_en": "21:9 Ultrawide",
+                    "value": "21:9"
+                  },
+                  {
+                    "label": "3:4 竖",
+                    "label_en": "3:4 Portrait",
+                    "value": "3:4"
+                  },
+                  {
+                    "label": "方形 1:1",
+                    "label_en": "1:1 Square",
+                    "value": "1:1"
+                  },
+                  {
+                    "description": "传统电视比例",
+                    "label": "横屏 4:3",
+                    "label_en": "4:3 Landscape",
+                    "value": "4:3"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "dropdown"
+              }
+            },
+            "audios": {
+              "description": "参考音频 (≤10 个, 单个 2~30 秒)。可配图使用, 也可只传音频做纯音频驱动。prompt 用 @音频1~@音频N 引用。",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10,
+              "type": "array",
+              "x-media-native-shape": "multiple",
+              "x-ycapi-contract": {
+                "accept_formats": [
+                  "mp3",
+                  "wav"
+                ],
+                "affects_l2": false,
+                "description": "参考音频 (≤10 个, 单个 2~30 秒)。可配图使用, 也可只传音频做纯音频驱动。prompt 用 @音频1~@音频N 引用。",
+                "label": {
+                  "zh": "参考音频"
+                },
+                "max_bytes": 52428800,
+                "max_items": 10,
+                "max_items_by_mode": {
+                  "edit": 10,
+                  "extend": 10,
+                  "first-frame": 0,
+                  "first-last": 0,
+                  "reference": 10,
+                  "text-to-video": 0
+                },
+                "max_total_duration_sec": 30,
+                "min_duration_sec": 1.8,
+                "required": false,
+                "type": "upload",
+                "ui_widget": "upload"
+              }
+            },
+            "count": {
+              "default": 1,
+              "description": "一次生成的视频数量（1-50）。",
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "default": 1,
+                "description": "一次生成的视频数量（1-50）。",
+                "label": {
+                  "zh": "生成数量"
+                },
+                "max": 50,
+                "min": 1,
+                "required": false,
+                "type": "int",
+                "ui_widget": "input"
+              }
+            },
+            "draft": {
+              "description": "先用 480P 出一条样片，确认画面、镜头和动作是否符合预期，满意后在结果上点「生成正式版」出 1080P 成片（沿用样片的提示词、素材、时长和比例）。样片和正式版分开计费；样片 7 天内可转正式版。仅部分线路支持。API：生成正式版时再调用本模型，params 只传 draft_task_id=<样片任务号>。",
+              "type": "boolean",
+              "x-ycapi-contract": {
+                "affects_l2": true,
+                "available_when": {
+                  "mode": [
+                    "text-to-video",
+                    "reference"
+                  ]
+                },
+                "description": "先用 480P 出一条样片，确认画面、镜头和动作是否符合预期，满意后在结果上点「生成正式版」出 1080P 成片（沿用样片的提示词、素材、时长和比例）。样片和正式版分开计费；样片 7 天内可转正式版。仅部分线路支持。API：生成正式版时再调用本模型，params 只传 draft_task_id=<样片任务号>。",
+                "label": {
+                  "zh": "样片模式"
+                },
+                "required": false,
+                "type": "bool",
+                "ui_widget": "switch"
+              }
+            },
+            "duration": {
+              "default": "5",
+              "description": "4~30 秒可选，按秒计费（时长越长价越高）。⚠ 计费秒数 = **输出秒 + 参考视频总秒**（传了参考视频就一起计，见 videos 参数）。⚠ mode=edit 时本参数**不起作用**：输出时长跟随原视频，计费也按原视频时长算。",
+              "enum": [
+                "4",
+                "5",
+                "6",
+                "7",
+                "8",
+                "9",
+                "10",
+                "11",
+                "12",
+                "13",
+                "14",
+                "15",
+                "16",
+                "17",
+                "18",
+                "19",
+                "20",
+                "21",
+                "22",
+                "23",
+                "24",
+                "25",
+                "26",
+                "27",
+                "28",
+                "29",
+                "30"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": true,
+                "default": "5",
+                "description": "4~30 秒可选，按秒计费（时长越长价越高）。⚠ 计费秒数 = **输出秒 + 参考视频总秒**（传了参考视频就一起计，见 videos 参数）。⚠ mode=edit 时本参数**不起作用**：输出时长跟随原视频，计费也按原视频时长算。",
+                "enum": [
+                  "4",
+                  "5",
+                  "6",
+                  "7",
+                  "8",
+                  "9",
+                  "10",
+                  "11",
+                  "12",
+                  "13",
+                  "14",
+                  "15",
+                  "16",
+                  "17",
+                  "18",
+                  "19",
+                  "20",
+                  "21",
+                  "22",
+                  "23",
+                  "24",
+                  "25",
+                  "26",
+                  "27",
+                  "28",
+                  "29",
+                  "30"
+                ],
+                "label": {
+                  "zh": "视频时长"
+                },
+                "options": [
+                  {
+                    "description": "最省",
+                    "label": "4秒",
+                    "value": "4"
+                  },
+                  {
+                    "description": "推荐",
+                    "is_default": true,
+                    "label": "5秒",
+                    "value": "5"
+                  },
+                  {
+                    "label": "6秒",
+                    "value": "6"
+                  },
+                  {
+                    "label": "7秒",
+                    "value": "7"
+                  },
+                  {
+                    "label": "8秒",
+                    "value": "8"
+                  },
+                  {
+                    "label": "9秒",
+                    "value": "9"
+                  },
+                  {
+                    "label": "10秒",
+                    "value": "10"
+                  },
+                  {
+                    "label": "11秒",
+                    "value": "11"
+                  },
+                  {
+                    "label": "12秒",
+                    "value": "12"
+                  },
+                  {
+                    "label": "13秒",
+                    "value": "13"
+                  },
+                  {
+                    "label": "14秒",
+                    "value": "14"
+                  },
+                  {
+                    "label": "15秒",
+                    "value": "15"
+                  },
+                  {
+                    "label": "16秒",
+                    "value": "16"
+                  },
+                  {
+                    "label": "17秒",
+                    "value": "17"
+                  },
+                  {
+                    "label": "18秒",
+                    "value": "18"
+                  },
+                  {
+                    "label": "19秒",
+                    "value": "19"
+                  },
+                  {
+                    "description": "长视频",
+                    "label": "20秒",
+                    "value": "20"
+                  },
+                  {
+                    "label": "21秒",
+                    "value": "21"
+                  },
+                  {
+                    "label": "22秒",
+                    "value": "22"
+                  },
+                  {
+                    "label": "23秒",
+                    "value": "23"
+                  },
+                  {
+                    "label": "24秒",
+                    "value": "24"
+                  },
+                  {
+                    "description": "长视频",
+                    "label": "25秒",
+                    "value": "25"
+                  },
+                  {
+                    "label": "26秒",
+                    "value": "26"
+                  },
+                  {
+                    "label": "27秒",
+                    "value": "27"
+                  },
+                  {
+                    "label": "28秒",
+                    "value": "28"
+                  },
+                  {
+                    "description": "长视频",
+                    "label": "29秒",
+                    "value": "29"
+                  },
+                  {
+                    "description": "最长",
+                    "label": "30秒",
+                    "value": "30"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "dropdown"
+              }
+            },
+            "images": {
+              "description": "图生视频 / 多模态参考用 (≤30 张)。纯文生留空。prompt 用 @图片1~@图片N 引用。单图时画面比例跟随该图。",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 30,
+              "type": "array",
+              "x-media-native-shape": "multiple",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "aspect_max": 2.5,
+                "aspect_min": 0.4,
+                "description": "图生视频 / 多模态参考用 (≤30 张)。纯文生留空。prompt 用 @图片1~@图片N 引用。单图时画面比例跟随该图。",
+                "label": {
+                  "zh": "参考图片"
+                },
+                "max_bytes": 5242880,
+                "max_edge_px": 6000,
+                "max_items": 30,
+                "max_items_by_mode": {
+                  "edit": 30,
+                  "extend": 30,
+                  "first-frame": 30,
+                  "first-last": 30,
+                  "reference": 30,
+                  "text-to-video": 0
+                },
+                "max_items_by_quality": {
+                  "flash": 10,
+                  "标准": 30
+                },
+                "min_edge_px": 300,
+                "required": false,
+                "type": "upload",
+                "ui_widget": "upload"
+              }
+            },
+            "mode": {
+              "default": "first-frame",
+              "description": "text-to-video=纯文生 (只写描述) / first-frame=图生视频 (1 张图作首帧) / reference=多模态参考 (多图 + 音频融合) / edit=视频编辑 (必传参考视频, 用文字说要改什么; **输出时长跟随原视频, duration 不起作用也不计入计费**) / extend=视频延长 (必传 1 段参考视频, 从最后一帧接着往后演进; **duration 是新增部分**, 交付 = 原视频 + 新增, 上传的原视频另计费)。⚠ edit/extend 仅部分厂商支持, 且两者都必须上传参考视频 —— 未传时按普通生成处理。\n\n⚠ 首帧 / 首尾帧比「多模态参考」贵: 厂商对**不带参考视频**的请求按更贵一档计价, 而这两个模式厂商禁止混用参考媒体、拿不到便宜档 ⇒ 同参数下总价约为该档的 **1.5 倍** (实测 1.47×)。只是想让图影响画面 → 用「多模态参考」更省; 需要画面**从这张图开始动** → 首帧才值这个价。",
+              "enum": [
+                "text-to-video",
+                "first-frame",
+                "reference",
+                "first-last",
+                "edit",
+                "extend"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "default": "first-frame",
+                "description": "text-to-video=纯文生 (只写描述) / first-frame=图生视频 (1 张图作首帧) / reference=多模态参考 (多图 + 音频融合) / edit=视频编辑 (必传参考视频, 用文字说要改什么; **输出时长跟随原视频, duration 不起作用也不计入计费**) / extend=视频延长 (必传 1 段参考视频, 从最后一帧接着往后演进; **duration 是新增部分**, 交付 = 原视频 + 新增, 上传的原视频另计费)。⚠ edit/extend 仅部分厂商支持, 且两者都必须上传参考视频 —— 未传时按普通生成处理。\n\n⚠ 首帧 / 首尾帧比「多模态参考」贵: 厂商对**不带参考视频**的请求按更贵一档计价, 而这两个模式厂商禁止混用参考媒体、拿不到便宜档 ⇒ 同参数下总价约为该档的 **1.5 倍** (实测 1.47×)。只是想让图影响画面 → 用「多模态参考」更省; 需要画面**从这张图开始动** → 首帧才值这个价。",
+                "enum": [
+                  "text-to-video",
+                  "first-frame",
+                  "reference",
+                  "first-last",
+                  "edit",
+                  "extend"
+                ],
+                "label": {
+                  "zh": "生成模式"
+                },
+                "options": [
+                  {
+                    "description": "只写描述, 无需上传",
+                    "label": "文生视频",
+                    "value": "text-to-video"
+                  },
+                  {
+                    "description": "上传 1 张参考图作首帧 (⚠ 约为「多模态参考」1.5 倍价)",
+                    "is_default": true,
+                    "label": "图生视频",
+                    "ref_min": 1,
+                    "value": "first-frame"
+                  },
+                  {
+                    "description": "多图 + 参考音频融合生成",
+                    "label": "多模态参考",
+                    "value": "reference"
+                  },
+                  {
+                    "description": "首+尾图控制过渡 (⚠ 约为「多模态参考」1.5 倍价)",
+                    "label": "首尾帧",
+                    "ref_min": 2,
+                    "value": "first-last"
+                  },
+                  {
+                    "description": "上传视频 + 用文字描述要改什么 (改颜色/换元素/改风格), 时长跟随原视频",
+                    "label": "视频编辑",
+                    "ref_min_videos": 1,
+                    "value": "edit"
+                  },
+                  {
+                    "description": "上传 1 段视频, 从最后一帧接着往后拍; 时长选的是**新增部分**, 成片 = 原视频 + 新增 (原视频另计费)",
+                    "label": "视频延长",
+                    "ref_min_videos": 1,
+                    "value": "extend"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "radio"
+              }
+            },
+            "prompt": {
+              "type": "string"
+            },
+            "quality": {
+              "default": "标准",
+              "description": "标准：常规出片；Flash：更快更省的新型号（仅 720P，不支持样片模式），支持的清晰度与参考素材上限以界面按档位显示的为准。",
+              "enum": [
+                "标准",
+                "flash"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": true,
+                "default": "标准",
+                "description": "标准：常规出片；Flash：更快更省的新型号（仅 720P，不支持样片模式），支持的清晰度与参考素材上限以界面按档位显示的为准。",
+                "enum": [
+                  "标准",
+                  "flash"
+                ],
+                "enum_values_by_quality": {
+                  "flash": [
+                    "flash"
+                  ],
+                  "标准": [
+                    "标准"
+                  ]
+                },
+                "label": {
+                  "zh": "版本档位"
+                },
+                "options": [
+                  {
+                    "description": "常规出片",
+                    "is_default": true,
+                    "label": "标准",
+                    "value": "标准"
+                  },
+                  {
+                    "description": "更快更省",
+                    "label": "Flash",
+                    "value": "flash"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "radio"
+              }
+            },
+            "resolution": {
+              "default": "480p",
+              "description": "480P / 720P / 1080P 可选，清晰度越高价越高（480P 最省）。",
+              "enum": [
+                "480p",
+                "720p",
+                "1080p"
+              ],
+              "type": "string",
+              "x-ycapi-contract": {
+                "affects_l2": true,
+                "default": "480p",
+                "description": "480P / 720P / 1080P 可选，清晰度越高价越高（480P 最省）。",
+                "enum": [
+                  "480p",
+                  "720p",
+                  "1080p"
+                ],
+                "enum_values_by_quality": {
+                  "flash": [
+                    "480p",
+                    "720p"
+                  ],
+                  "标准": [
+                    "1080p",
+                    "480p",
+                    "720p"
+                  ]
+                },
+                "label": {
+                  "zh": "清晰度"
+                },
+                "options": [
+                  {
+                    "description": "半价, 最省",
+                    "is_default": true,
+                    "label": "480P 经济",
+                    "value": "480p"
+                  },
+                  {
+                    "label": "720P 高清",
+                    "value": "720p"
+                  },
+                  {
+                    "description": "最贵档",
+                    "label": "1080P 全高清",
+                    "value": "1080p"
+                  }
+                ],
+                "required": false,
+                "type": "enum",
+                "ui_widget": "dropdown"
+              }
+            },
+            "return_last_frame": {
+              "description": "额外返回成片最后一帧的图片，方便把它当作下一段的首帧接着往下拍（接镜/续写）。不额外收费。部分线路不提供。",
+              "type": "boolean",
+              "x-ycapi-contract": {
+                "affects_l2": false,
+                "description": "额外返回成片最后一帧的图片，方便把它当作下一段的首帧接着往下拍（接镜/续写）。不额外收费。部分线路不提供。",
+                "label": {
+                  "zh": "同时输出末帧图"
+                },
+                "required": false,
+                "type": "bool",
+                "ui_widget": "switch"
+              }
+            },
+            "videos": {
+              "description": "参考视频 (≤10 个, 单条 1.8~30 秒 —— 视频编辑模式要求 ≥4 秒, 总时长 ≤30 秒, 仅部分厂商开放)。传视频后按「视频总秒+输出秒」计费。prompt 用 @视频1~@视频N 引用。",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10,
+              "type": "array",
+              "x-media-native-shape": "multiple",
+              "x-ycapi-contract": {
+                "accept_formats": [
+                  "mp4",
+                  "mov"
+                ],
+                "affects_l2": false,
+                "aspect_max": 2.5,
+                "aspect_min": 0.4,
+                "description": "参考视频 (≤10 个, 单条 1.8~30 秒 —— 视频编辑模式要求 ≥4 秒, 总时长 ≤30 秒, 仅部分厂商开放)。传视频后按「视频总秒+输出秒」计费。prompt 用 @视频1~@视频N 引用。",
+                "label": {
+                  "zh": "参考视频"
+                },
+                "max_bytes": 209715200,
+                "max_edge_px": 6000,
+                "max_fps": 59.94,
+                "max_items": 10,
+                "max_items_by_mode": {
+                  "edit": 10,
+                  "extend": 1,
+                  "first-frame": 0,
+                  "first-last": 0,
+                  "reference": 10,
+                  "text-to-video": 0
+                },
+                "max_items_by_quality": {
+                  "flash": 5,
+                  "标准": 10
+                },
+                "max_pixels": 8295044,
+                "max_total_duration_sec": 30,
+                "min_duration_sec": 1.8,
+                "min_duration_sec_by_mode": {
+                  "edit": 4
+                },
+                "min_edge_px": 300,
+                "min_fps": 24,
+                "min_pixels": 409600,
+                "required": false,
+                "type": "upload",
+                "ui_widget": "upload"
+              }
+            }
+          },
+          "required": null,
+          "type": "object",
+          "x-media-assets": [
+            {
+              "name": "audios",
+              "media_kind": "audio",
+              "shape": "multiple",
+              "min": 0,
+              "max": 10,
+              "mime_types": [
+                "audio/mpeg",
+                "audio/wav"
+              ],
+              "ordered": true
+            },
+            {
+              "name": "images",
+              "media_kind": "image",
+              "shape": "multiple",
+              "min": 0,
+              "max": 30,
+              "mime_types": [],
+              "ordered": true
+            },
+            {
+              "name": "videos",
+              "media_kind": "video",
+              "shape": "multiple",
+              "min": 0,
+              "max": 10,
+              "mime_types": [
+                "video/mp4",
+                "video/quicktime"
+              ],
+              "ordered": true
+            }
+          ],
+          "x-model-kind": "video"
+        },
+        "enabled": true,
+        "asset_fields": [
+          {
+            "name": "audios",
+            "media_kind": "audio",
+            "native_shape": "multiple",
+            "min_items": 0,
+            "max_items": 10,
+            "mime_types": [
+              "audio/mpeg",
+              "audio/wav"
+            ],
+            "constraints": {
+              "accept_formats": [
+                "mp3",
+                "wav"
+              ],
+              "affects_l2": false,
+              "description": "参考音频 (≤10 个, 单个 2~30 秒)。可配图使用, 也可只传音频做纯音频驱动。prompt 用 @音频1~@音频N 引用。",
+              "label": {
+                "zh": "参考音频"
+              },
+              "max_bytes": 52428800,
+              "max_items": 10,
+              "max_items_by_mode": {
+                "edit": 10,
+                "extend": 10,
+                "first-frame": 0,
+                "first-last": 0,
+                "reference": 10,
+                "text-to-video": 0
+              },
+              "max_total_duration_sec": 30,
+              "min_duration_sec": 1.8,
+              "required": false,
+              "type": "upload",
+              "ui_widget": "upload"
+            }
+          },
+          {
+            "name": "images",
+            "media_kind": "image",
+            "native_shape": "multiple",
+            "min_items": 0,
+            "max_items": 30,
+            "mime_types": [
+              "image/png",
+              "image/jpeg",
+              "image/webp",
+              "image/gif"
+            ],
+            "constraints": {
+              "affects_l2": false,
+              "aspect_max": 2.5,
+              "aspect_min": 0.4,
+              "description": "图生视频 / 多模态参考用 (≤30 张)。纯文生留空。prompt 用 @图片1~@图片N 引用。单图时画面比例跟随该图。",
+              "label": {
+                "zh": "参考图片"
+              },
+              "max_bytes": 5242880,
+              "max_edge_px": 6000,
+              "max_items": 30,
+              "max_items_by_mode": {
+                "edit": 30,
+                "extend": 30,
+                "first-frame": 30,
+                "first-last": 30,
+                "reference": 30,
+                "text-to-video": 0
+              },
+              "max_items_by_quality": {
+                "flash": 10,
+                "标准": 30
+              },
+              "min_edge_px": 300,
+              "required": false,
+              "type": "upload",
+              "ui_widget": "upload"
+            }
+          },
+          {
+            "name": "videos",
+            "media_kind": "video",
+            "native_shape": "multiple",
+            "min_items": 0,
+            "max_items": 10,
+            "mime_types": [
+              "video/mp4",
+              "video/quicktime"
+            ],
+            "constraints": {
+              "accept_formats": [
+                "mp4",
+                "mov"
+              ],
+              "affects_l2": false,
+              "aspect_max": 2.5,
+              "aspect_min": 0.4,
+              "description": "参考视频 (≤10 个, 单条 1.8~30 秒 —— 视频编辑模式要求 ≥4 秒, 总时长 ≤30 秒, 仅部分厂商开放)。传视频后按「视频总秒+输出秒」计费。prompt 用 @视频1~@视频N 引用。",
+              "label": {
+                "zh": "参考视频"
+              },
+              "max_bytes": 209715200,
+              "max_edge_px": 6000,
+              "max_fps": 59.94,
+              "max_items": 10,
+              "max_items_by_mode": {
+                "edit": 10,
+                "extend": 1,
+                "first-frame": 0,
+                "first-last": 0,
+                "reference": 10,
+                "text-to-video": 0
+              },
+              "max_items_by_quality": {
+                "flash": 5,
+                "标准": 10
+              },
+              "max_pixels": 8295044,
+              "max_total_duration_sec": 30,
+              "min_duration_sec": 1.8,
+              "min_duration_sec_by_mode": {
+                "edit": 4
+              },
+              "min_edge_px": 300,
+              "min_fps": 24,
+              "min_pixels": 409600,
+              "required": false,
+              "type": "upload",
+              "ui_widget": "upload"
+            }
+          }
+        ],
+        "intents": [
+          {
+            "id": "text",
+            "label": "文字生成",
+            "requires_assets": false
+          },
+          {
+            "id": "reference",
+            "label": "参考素材生成",
+            "requires_assets": true
+          },
+          {
+            "id": "frames",
+            "label": "首尾帧／关键帧",
+            "requires_assets": true
+          },
+          {
+            "id": "transform",
+            "label": "素材编辑／复刻",
+            "requires_assets": true
+          }
+        ],
+        "pricing": {
+          "display": "按所选规格显示费用",
+          "credits_per_yuan": 1000,
+          "quote_required": true
+        },
+        "description": "文生视频 · 图生视频 · 多模态参考 · 参考视频 · 参考音频 · 480p · 720p · 长视频30秒 · 原生音轨 · 按秒"
+      }
+    ],
+    "credits_per_yuan": 1000,
+    "poll_after_ms": 6000
+  }
+}

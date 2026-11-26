@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { appPath } from './app-path.ts'
 import { VideoPlayer } from './VideoPlayer.tsx'
 import { mediaV2En, mediaV2Zh, type MediaV2Labels } from './media-v2-locales.ts'
-import { mediaV2Available, mediaV2Choices, mediaV2Defaults, mediaV2Fields, mediaV2FormIssues, type MediaV2SelectedAsset } from './media-v2-form.ts'
-import { mediaV2Data, mediaV2Object, parseMediaV2Asset, parseMediaV2Catalog, parseMediaV2Record,
+import { mediaV2AssetLimit, mediaV2Available, mediaV2Choices, mediaV2Defaults, mediaV2Fields, mediaV2FormIssues, type MediaV2SelectedAsset } from './media-v2-form.ts'
+import { isMediaV2Value, mediaV2Data, mediaV2Object, parseMediaV2Asset, parseMediaV2Catalog, parseMediaV2Record,
   type MediaV2Kind, type MediaV2Intent, type MediaV2Model, type MediaV2Record, type MediaV2Request, type MediaV2Transport, type MediaV2Value } from './media-v2-types.ts'
 import css from './MediaV2Composer.module.css'
 
@@ -56,6 +56,35 @@ function restoreAssets(value: unknown): MediaV2SelectedAsset[] {
   })
 }
 
+/** Advanced controls retain complete JSON while ordinary native controls remain compact. */
+function JsonParameter({ label, value, disabled, invalid, onChange, onValidity }: {
+  readonly label: string
+  readonly value: MediaV2Value | undefined
+  readonly disabled: boolean
+  readonly invalid: string
+  readonly onChange: (value: MediaV2Value | undefined) => void
+  readonly onValidity: (valid: boolean) => void
+}): ReactNode {
+  const canonical = value === undefined ? '' : JSON.stringify(value, null, 2)
+  const [draft, setDraft] = useState(canonical), [valid, setValid] = useState(true)
+  const committed = useRef(canonical)
+  useEffect(() => {
+    if (canonical !== committed.current) { committed.current = canonical; setDraft(canonical); setValid(true); onValidity(true) }
+  }, [canonical, onValidity])
+  return <><label>{label}<textarea className={css.json} value={draft} disabled={disabled} rows={5} aria-invalid={!valid}
+    onChange={(event) => {
+      const text = event.target.value
+      setDraft(text)
+      let parsed: MediaV2Value | undefined
+      try {
+        const candidate: unknown = text.trim() === '' ? undefined : JSON.parse(text)
+        if (candidate !== undefined && !isMediaV2Value(candidate)) throw new Error('MEDIA_V2_JSON_INVALID')
+        parsed = candidate
+      } catch { setValid(false); onValidity(false); return }
+      committed.current = parsed === undefined ? '' : JSON.stringify(parsed, null, 2)
+      setValid(true); onValidity(true); onChange(parsed)
+    }} /></label>{!valid && <p className={css.error}>{invalid}</p>}</>
+}
 /**
  * Offer only declared controls and retain original operation and upload IDs before I/O.
  * @param props - Current signed-in account, media kind and carrier-local transport.
@@ -76,6 +105,8 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now() / 1000)
+  const [invalidJson, setInvalidJson] = useState<Readonly<Record<string, boolean>>>({})
+  const [uploadLimit, setUploadLimit] = useState(50 * 1024 * 1024)
   const epoch = useRef(0), inFlight = useRef(false)
   const model = models.find(item => item.id === modelId) ?? null
   const current = records.find(item => item.record.request.client_operation_id === currentId)
@@ -84,8 +115,9 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
     && current.record.request.model === model.id && quotedVersion !== model.model_version
   const originalUnsettled = currentId !== null && (current === undefined || current.record.state !== 'quoted')
   const locked = busy || originalUnsettled
-  const issues = useMemo(() => model === null ? [] : mediaV2FormIssues(model, intent, parameters, assets, now),
-    [model, intent, parameters, assets, now])
+  const issues = useMemo(() => model === null ? [] : [...mediaV2FormIssues(model, intent, parameters, assets, now),
+    ...Object.keys(invalidJson).filter(name => invalidJson[name]).map(field => ({ field, reason: 'invalid' as const }))],
+  [model, intent, parameters, assets, now, invalidJson])
   const fields = model === null ? [] : mediaV2Fields(model)
   const replaceRecord = useCallback((value: ViewRecord): void => {
     const id = value.record.request.client_operation_id
@@ -128,6 +160,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
       })
       if (captured !== epoch.current) return
       setPollAfterMs(catalog.poll_after_ms)
+      setUploadLimit(catalog.capabilities.max_upload_bytes ?? 50 * 1024 * 1024)
       setConfigurationRequote(catalog.capabilities.same_operation_configuration_requote)
       setModels(catalog.models.filter(item => item.kind === kind && item.enabled))
       setRecords(views)
@@ -139,8 +172,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
         const savedValues = mediaV2Object(restored?.parameters)
         const values: Record<string, MediaV2Value> = mediaV2Defaults(selected)
         if (savedValues !== null) for (const [key, value] of Object.entries(savedValues)) {
-          if (typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)
-            || Array.isArray(value) && value.every(item => typeof item === 'string')) values[key] = value
+          if (isMediaV2Value(value)) values[key] = value
         }
         setParameters(values)
         setIntent(restored?.intent === 'reference' || restored?.intent === 'frames' || restored?.intent === 'transform' ? restored.intent : 'text')
@@ -154,7 +186,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   useEffect(() => {
     epoch.current += 1
     setModels([]); setRecords([]); setAssets([]); setCurrentId(null); setModelId(''); setParameters({}); setPollAfterMs(undefined)
-    setBusy(false); setConfigurationRequote(false)
+    setBusy(false); setConfigurationRequote(false); setInvalidJson({})
     void load()
     return () => { epoch.current += 1 }
   }, [load])
@@ -187,6 +219,14 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   const upload = async (field: string, files: readonly File[]): Promise<void> => {
     if (model === null || locked || inFlight.current || files.length === 0) return
     const captured = epoch.current, selectedModel = model
+    const role = model.asset_fields.find(item => item.name === field)
+    if (role === undefined) return
+    const constraints = { ...fields.find(item => item.name === field)?.native, ...role.constraints }
+    const byteLimit = typeof constraints.max_bytes === 'number' ? Math.min(uploadLimit, constraints.max_bytes) : uploadLimit
+    if (files.some(file => file.size <= 0 || file.size > byteLimit || !role.mime_types.includes(file.type))
+      || assets.filter(item => item.field === field && item.role === 'generation').length + files.length > mediaV2AssetLimit(role.max_items, constraints, parameters)) {
+      setError(labels.limit); return
+    }
     let selectedAssets = assets
     inFlight.current = true; setBusy(true)
     try {
@@ -198,7 +238,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
         // Commit the original key before starting a request. A failed response never triggers a repeated POST.
         saveDraft({ assets: selectedAssets, currentId: null }); setAssets(selectedAssets); setCurrentId(null)
         try {
-          const asset = parseMediaV2Asset(mediaV2Data(await transport(`${PREFIX}/assets?model=${encodeURIComponent(selectedModel.id)}&client_asset_id=${encodeURIComponent(clientId)}`, {
+          const asset = parseMediaV2Asset(mediaV2Data(await transport(`${PREFIX}/assets?model=${encodeURIComponent(selectedModel.id)}&client_asset_id=${encodeURIComponent(clientId)}&field=${encodeURIComponent(field)}`, {
             method: 'POST', body: file, headers: { 'content-type': file.type || 'application/octet-stream', 'x-file-name': encodeURIComponent(file.name) },
           })))
           if (captured !== epoch.current) return
@@ -312,12 +352,25 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
     finally { inFlight.current = false; if (captured === epoch.current) setBusy(false) }
   }
   const issueText = (reason: ReturnType<typeof mediaV2FormIssues>[number]['reason']): string => reason === 'intent' ? labels.intentError : reason === 'unknown' ? labels.unknownAsset : labels[reason]
+  const moveAsset = (selected: MediaV2SelectedAsset, direction: -1 | 1): void => {
+    if (locked) return
+    const group = assets.filter(item => item.field === selected.field)
+    const index = group.findIndex(item => item.clientId === selected.clientId), other = group[index + direction]
+    if (other === undefined) return
+    const next = [...assets], first = next.indexOf(selected), second = next.indexOf(other)
+    next[first] = other; next[second] = selected
+    changeAssets(next)
+  }
   const renderAsset = (selected: MediaV2SelectedAsset): ReactNode => <li key={selected.clientId} className={css.asset}>
     <span className={css.assetName}>{selected.name}</span>
     <span className={css.hint}>{selected.asset === undefined ? labels.unknownAsset : `${(selected.asset.bytes / 1024 / 1024).toFixed(2)} MB${selected.asset.duration_seconds === undefined ? '' : ` · ${selected.asset.duration_seconds}s`}`}</span>
     <select aria-label={`${selected.name}: ${labels.intent}`} value={selected.role} disabled={locked} onChange={(event) => { changeAssets(assets.map(item => item.clientId === selected.clientId ? { ...item, role: event.target.value === 'writing' ? 'writing' : 'generation' } : item)) }}>
       <option value="generation">{labels.generation}</option><option value="writing">{labels.writing}</option>
     </select>
+    {assets.filter(item => item.field === selected.field).length > 1 && <span className={css.order}>
+      <button type="button" disabled={locked || assets.find(item => item.field === selected.field)?.clientId === selected.clientId} aria-label={`${labels.moveUp}: ${selected.name}`} onClick={() => { moveAsset(selected, -1) }}>↑</button>
+      <button type="button" disabled={locked || assets.filter(item => item.field === selected.field).at(-1)?.clientId === selected.clientId} aria-label={`${labels.moveDown}: ${selected.name}`} onClick={() => { moveAsset(selected, 1) }}>↓</button>
+    </span>}
     {selected.state !== 'ready' && <button type="button" disabled={busy} onClick={() => { void recoverAsset(selected) }}>{labels.recoverAsset}</button>}
     <button type="button" disabled={locked} aria-label={`${labels.remove}: ${selected.name}`} onClick={() => { changeAssets(assets.filter(item => item.clientId !== selected.clientId)) }}>{labels.remove}</button>
   </li>
@@ -330,7 +383,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
           if (next === undefined) return
           const defaults = mediaV2Defaults(next)
           saveDraft({ modelId: next.id, parameters: defaults, currentId: null })
-          setModelId(next.id); setParameters(defaults); setCurrentId(null); setError(null)
+          setModelId(next.id); setParameters(defaults); setCurrentId(null); setError(null); setInvalidJson({})
         }}>{models.map(item => <option key={item.id} value={item.id}>{item.display_name}{item.pricing.display === '' ? '' : ` · ${item.pricing.display}`}</option>)}</select></label>
         <label>{labels.intent}<select value={intent} disabled={locked} onChange={(event) => {
           const next = event.target.value
@@ -345,16 +398,20 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
         const label = fieldName(model, field.name, language, labels), fieldIssues = issues.filter(issue => issue.field === field.name)
         const multiple = field.schema.type === 'array' || field.native.type === 'multi_enum'
         return <div key={field.name} className={`${css.field} ${field.name === 'prompt' ? css.wide : ''}`}>
-          {field.schema.type === 'boolean' ? <label className={css.boolean}><input type="checkbox" checked={value === true} disabled={locked || !available} onChange={(event) => { update(field.name, event.target.checked) }} />{label}</label>
-            : choices.length > 0 ? multiple ? <fieldset disabled={locked || !available}><legend>{label}</legend><div className={css.choices}>{choices.map(choice => <label key={choice.value}><input type="checkbox" checked={Array.isArray(value) && value.includes(choice.value)} disabled={!choice.available} onChange={(event) => {
-              const selected = Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+          {field.schema.type === 'boolean' && choices.length === 0 ? <label className={css.boolean}><input type="checkbox" checked={value === true} disabled={locked || !available} onChange={(event) => { update(field.name, event.target.checked) }} />{label}</label>
+            : choices.length > 0 ? multiple ? <fieldset disabled={locked || !available}><legend>{label}</legend><div className={css.choices}>{choices.map(choice => <label key={`${typeof choice.value}:${String(choice.value)}`}><input type="checkbox" checked={Array.isArray(value) && value.includes(choice.value)} disabled={!choice.available} onChange={(event) => {
+              const selected = Array.isArray(value) ? value.filter(isMediaV2Value) : []
               update(field.name, event.target.checked ? [...selected, choice.value] : selected.filter(item => item !== choice.value))
             }} />{choice.label}</label>)}</div></fieldset>
-              : <label>{label}<select value={typeof value === 'string' ? value : ''} disabled={locked || !available} onChange={(event) => { update(field.name, event.target.value === '' ? undefined : event.target.value) }}><option value="">{labels.empty}</option>{choices.map(choice => <option key={choice.value} value={choice.value} disabled={!choice.available}>{choice.label}</option>)}</select></label>
-              : field.name === 'prompt' || field.native.ui_widget === 'textarea' ? <label>{label}<textarea value={typeof value === 'string' ? value : ''} rows={4} disabled={locked || !available} onChange={(event) => { update(field.name, event.target.value) }} /></label>
-                : <label>{label}<input type={field.schema.type === 'number' || field.schema.type === 'integer' ? 'number' : 'text'} value={typeof value === 'number' || typeof value === 'string' ? value : ''}
-                  min={typeof field.schema.minimum === 'number' ? field.schema.minimum : undefined} max={typeof field.schema.maximum === 'number' ? field.schema.maximum : undefined} step={field.schema.type === 'integer' ? 1 : 'any'}
-                  disabled={locked || !available} onChange={(event) => { update(field.name, event.target.value === '' ? undefined : field.schema.type === 'integer' || field.schema.type === 'number' ? Number(event.target.value) : event.target.value) }} /></label>}
+              : <label>{label}<select value={typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? String(value) : ''} disabled={locked || !available} onChange={(event) => { update(field.name, event.target.value === '' ? undefined : choices.find(choice => String(choice.value) === event.target.value)?.value) }}><option value="">{labels.empty}</option>{choices.map(choice => <option key={`${typeof choice.value}:${String(choice.value)}`} value={String(choice.value)} disabled={!choice.available}>{choice.label}</option>)}</select></label>
+              : field.schema.type === 'object' || field.schema.type === 'array' || field.schema.properties !== undefined ? <JsonParameter label={label} value={value} disabled={locked || !available} invalid={labels.invalidJson}
+                onChange={(next) => { update(field.name, next) }} onValidity={(valid) => {
+                  setInvalidJson(previous => previous[field.name] === !valid ? previous : { ...previous, [field.name]: !valid })
+                }} />
+                : field.name === 'prompt' || field.native.ui_widget === 'textarea' ? <label>{label}<textarea value={typeof value === 'string' ? value : ''} rows={4} disabled={locked || !available} onChange={(event) => { update(field.name, event.target.value) }} /></label>
+                  : <label>{label}<input type={field.schema.type === 'number' || field.schema.type === 'integer' ? 'number' : 'text'} value={typeof value === 'number' || typeof value === 'string' ? value : ''}
+                    min={typeof field.schema.minimum === 'number' ? field.schema.minimum : undefined} max={typeof field.schema.maximum === 'number' ? field.schema.maximum : undefined} step={field.schema.type === 'integer' ? 1 : 'any'}
+                    disabled={locked || !available} onChange={(event) => { update(field.name, event.target.value === '' ? undefined : field.schema.type === 'integer' || field.schema.type === 'number' ? Number(event.target.value) : event.target.value) }} /></label>}
           {typeof field.schema.description === 'string' && <p className={css.hint}>{field.schema.description}</p>}
           {fieldIssues.map((issue, index) => <p key={index} className={css.error}>{issueText(issue.reason)}</p>)}
           {value !== undefined && (!available || fieldIssues.length > 0) && <button type="button" disabled={locked} onClick={() => { update(field.name, undefined) }}>{labels.clear}</button>}
@@ -363,6 +420,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
       {Object.keys(parameters).filter(name => !fields.some(field => field.name === name) || model.asset_fields.some(field => field.name === name)).map(name => <div key={name} className={css.field}><span>{name}</span><p className={css.error}>{labels.unavailable}</p><button type="button" disabled={locked} onClick={() => { update(name, undefined) }}>{labels.clear}</button></div>)}
       <div className={css.materials}>{model.asset_fields.map(field => <section key={field.name} className={css.materialField}>
         <div className={css.row}><h3>{fieldName(model, field.name, language, labels)}</h3><label className={css.upload}>{labels.add}<input type="file" aria-label={`${labels.add}: ${fieldName(model, field.name, language, labels)}`} accept={field.mime_types.join(',')} multiple={field.native_shape === 'multiple'} disabled={locked} onChange={(event) => { void upload(field.name, [...event.target.files ?? []]); event.target.value = '' }} /></label></div>
+        <p className={css.hint}>{field.media_kind} · {field.min_items}–{mediaV2AssetLimit(field.max_items, field.constraints, parameters)} · {Math.floor(Math.min(uploadLimit, typeof field.constraints.max_bytes === 'number' ? field.constraints.max_bytes : uploadLimit) / 1024 / 1024)} MiB · {field.mime_types.join(', ')}</p>
         <ul className={css.assets}>{assets.filter(item => item.field === field.name).map(renderAsset)}</ul>
         {issues.filter(issue => issue.field === field.name).map((issue, index) =>
           <p key={index} className={css.error}>{issueText(issue.reason)}</p>)}
@@ -373,7 +431,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
           {assets.filter(item => !model.asset_fields.some(field => field.name === item.field)).map(renderAsset)}
         </ul>
       </section>}
-      {issues.filter(issue => issue.field === 'intent').map((issue, index) => <p key={index} className={css.error}>{issueText(issue.reason)}</p>)}
+      {issues.filter(issue => issue.field === 'intent' || issue.field === 'parameters').map((issue, index) => <p key={index} className={css.error}>{issueText(issue.reason)}</p>)}
       {configurationChanged && <p className={css.error} role="alert">{configurationRequote
         ? labels.configurationChanged : labels.configurationRequoteUnsupported}</p>}
       <div className={css.actions}>

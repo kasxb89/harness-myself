@@ -70,8 +70,20 @@ export function createMediaV2Proxy(options: MediaV2ProxyOptions): MediaV2Proxy {
             if (filename === '' || filename.length > 256 || /[\u0000-\u001f\u007f/\\]/u.test(filename)) throw new MediaV2Error('invalid_request', '请选择有效的素材文件名。', 400)
             data = await options.client.upload(account, { model: mediaV2Id(url.searchParams.get('model')),
               clientAssetId: mediaV2UUID(url.searchParams.get('client_asset_id')), filename,
+              ...url.searchParams.has('field') ? { field: url.searchParams.get('field') ?? '' } : {},
               mime: (request.headers['content-type'] ?? 'application/octet-stream').split(';')[0] ?? 'application/octet-stream',
-              bytes: await bytes(request, 50 * 1024 * 1024, signal) }, signal)
+              ...request.headers['content-length'] === undefined ? {} : { size: Number(request.headers['content-length']) },
+              stream: uploadSignal => (async function* () {
+                const stop = (): void => { request.destroy(new Error('Media upload cancelled', { cause: uploadSignal.reason })) }
+                uploadSignal.addEventListener('abort', stop, { once: true })
+                try {
+                  uploadSignal.throwIfAborted()
+                  for await (const chunk of request) {
+                    if (!(chunk instanceof Uint8Array)) throw new MediaV2Error('invalid_request', '无法读取素材原字节。', 400)
+                    yield chunk
+                  }
+                } finally { uploadSignal.removeEventListener('abort', stop) }
+              })() }, signal)
           } else if (content !== null && (method === 'GET' || method === 'HEAD')) {
             const upstream = await options.client.content(account, mediaV2Id(decodeURIComponent(content[1] ?? '')),
               mediaV2Id(decodeURIComponent(content[2] ?? '')), { method,

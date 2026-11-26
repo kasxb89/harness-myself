@@ -112,10 +112,14 @@ describe('V2 original-operation generation', () => {
   })
 })
 
-it('rejects lost reference intent, reference-to-text coercion and nested parameter objects', () => {
+it('rejects lost references and text coercion while preserving declared recursive JSON parameters', () => {
   expect(() => parseMediaV2Request({ ...request, assets: {} })).toThrow()
   expect(() => parseMediaV2Request({ ...request, intent: 'text' })).toThrow()
-  expect(() => parseMediaV2Request({ ...request, parameters: { prompt: { source: 'bad' } } })).toThrow()
+  const nested = { frames: [{ time: 1, options: { enabled: true, mask: null } }] }
+  expect(parseMediaV2Request({ ...request, parameters: nested }).parameters).toEqual(nested)
+  for (const invalid of [NaN, undefined, new Uint8Array([1])]) {
+    expect(() => parseMediaV2Request({ ...request, parameters: { invalid } })).toThrow()
+  }
   expect(parseMediaV2Request(request).parameters.features).toEqual(['a', 'b'])
 })
 
@@ -130,7 +134,16 @@ it('recovers one immutable lost upload, never repeating its multipart POST or re
   const input = { model: request.model, clientAssetId: '37f2db36-f4aa-47cc-a7db-9d9233c3ca4c', filename: 'source.png', mime: 'image/png', bytes: Buffer.from('exact original synthetic bytes') }
   const asset = { asset_id: 'ma2-original', client_asset_id: input.clientAssetId, model: input.model, state: 'ready', media_kind: 'image',
     mime_type: input.mime, bytes: input.bytes.length, sha256: createHash('sha256').update(input.bytes).digest('hex'), expires_at: 2000000000 }
-  send.mockImplementationOnce(async (path, init) => { calls.push({ path, method: init.method ?? 'GET', body: undefined }); throw new Error('lost upload receipt') })
+  send.mockImplementation(async (path, init) => {
+    calls.push({ path, method: init.method ?? 'GET', body: undefined })
+    if (path.endsWith('/models')) return new Response(JSON.stringify({ success: true, data: {
+      capabilities: { media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true },
+      models: [{ id: input.model, display_name: 'Image', kind: 'image', model_version: 'version-1', enabled: true,
+        parameters_schema: {}, asset_fields: [{ name: 'images', media_kind: 'image', native_shape: 'multiple', min_items: 0,
+          max_items: 2, mime_types: ['image/png'], constraints: {} }],
+        intents: [{ id: 'reference', label: 'Reference', requires_assets: true }], pricing: { display: 'quote', quote_required: true } }] } }))
+    throw new Error('lost upload receipt')
+  })
   await expect(client.upload(account, input, new AbortController().signal)).rejects.toThrow('lost upload receipt')
   const restarted = new MediaV2Client({ baseUrl: 'http://127.0.0.1:1/harness', directory, timeoutMs: 1000, creditsPerYuan: 1000 })
   send.mockImplementationOnce(async (path, init) => { calls.push({ path, method: init.method ?? 'GET', body: undefined }); return new Response(JSON.stringify({ success: true, data: asset })) })

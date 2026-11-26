@@ -63,7 +63,7 @@ kind: "package-library"
 | `Tooltip` | 锚定在克隆子元素上的悬停与键盘聚焦提示；可选的 `delayMs` 控制悬停延迟，`focusDelayMs` 控制键盘聚焦延迟，均默认为 0 毫秒。可通过 `portal` 渲染到外层，避免被容器裁剪，或受祖先层叠上下文限制其 z-index。 |
 | `HoverCard` | 指针可停留、可选中的悬停预览；可选带复制按钮。 |
 | `ImageLightbox` | 共享图片浮层，支持焦点恢复与 Esc 关闭。 |
-| `MediaV2Composer` | 按服务端目录显示图片、视频及处理工具的参数表单。请求前保留素材和操作 UUID，不兼容参考素材会阻止提交；显示产品积分报价、恢复原任务并展示和下载全部产物。Host 可选的 `poll_after_ms` 启用串行原操作 GET，退出或换账号即停止。GIF 保留动图，SVG 仅下载。`language` 选择语言，载体提供账号身份，中转凭据保留在 Host。 |
+| `MediaV2Composer` | 按服务端目录显示账号的生成与处理表单，也接受音频模型／任务数据，但不代表线上音频已可用。保留有界递归 JSON 值、类型化选项、素材用途和可调整的参考顺序。根据已有素材元数据核对原生帧率、时长及合计预算；不支持的条件或组合规则会明确显示并阻止报价。请求前保留素材和操作 UUID，显示产品积分报价，恢复原任务时不重放生成，并展示和下载全部产物。Host 可选的 `poll_after_ms` 启用串行原操作 GET，退出或换账号即停止。GIF 保留动图，SVG 仅下载。`language` 选择语言，载体提供账号身份，中转凭据保留在 Host。 |
 | `Toast` | 顶部居中的瞬时横幅，保持时长由所有者的 `holdMs` 决定。 |
 | `SettingsForm`、`SettingsValueField`、`SettingsSecretField` | 插件设置页的框架与控件：框架以 `labels` 接收文案，只在按钮点击时保存，卸载即丢弃；值字段显示暂存文本以及已覆盖标签和重置；密文字段每次为空，请求浏览器不要自动填入已保存的密码，只报告是否已配置。 |
 | `SettingsFormModel`、`settingsNumberField`、`settingsTextField` | 这类页面背后基于设置 scope 的暂存编辑模型：草稿先暂存、保存时写入，字段是否被覆盖看用户层是否含有它，未落地的保存保留草稿。 |

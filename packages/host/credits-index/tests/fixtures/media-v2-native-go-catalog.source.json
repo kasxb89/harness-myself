@@ -1,0 +1,7 @@
+{
+  "source": "/Users/kasxbls/Documents/新科技/output/diagnostics/media-complete-integration-20261123/client-real-go-continuation-r02/catalog.json",
+  "sha256": "aa5f550b1192416ef443cc336374379717db8827fb73e8662b6b2d935ff908e4",
+  "basis": "Previously captured actual Go output; static credential-free catalog only. No old fixture reopened or requests replayed.",
+  "models": 2,
+  "not_all_native_candidates": true
+}

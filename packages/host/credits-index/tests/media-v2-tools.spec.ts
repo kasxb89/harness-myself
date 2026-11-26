@@ -1,4 +1,5 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -40,17 +41,41 @@ it('runs the real model-tool/job registry, sends once, and job_output returns ev
   await ctx.agents.register(agent)
   const id = '92908b6b-6de4-4652-9b72-00d58376a722'
   const request = { client_operation_id: id, model: 'image-layers', model_version: 'schema', intent: 'text',
-    parameters: { prompt: '原创分层图' }, assets: {} }
+    parameters: { prompt: '原创分层图', controls: { layers: [{ name: 'front', mask: null }] } }, assets: {} }
   const quote = { ...request, quote_id: 'quote-original', request_sha256: 'a'.repeat(64), retail_cny: '0.3',
     expires_at: Math.floor(Date.now() / 1000) + 600, operation_state: 'quoted' }
   const task = { id: 'task-original', model: request.model, kind: 'image', status: 'succeeded', is_final: true,
     created_at: 1, updated_at: 2, artifacts: ['one', 'two'].map((key, order) => ({ key, order, type: 'image',
       mime_type: 'image/gif', content_url: `/v1/tasks/task-original/artifacts/${key}/content` })) }
-  let submissions = 0
+  const recursiveSchema = { type: 'object', properties: { prompt: { type: 'string' }, controls: { type: 'object',
+    properties: { layers: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, mask: { type: 'null' } } } } } } } }
+  const audioModel = { id: 'synthetic-audio', display_name: 'Synthetic audio compatibility', kind: 'audio', model_version: 'audio-schema',
+    enabled: true, parameters_schema: recursiveSchema, conditions: { control: { when: { mode: ['custom'] }, required: ['lyrics'] } },
+    asset_fields: [], intents: [{ id: 'text', label: 'Text', requires_assets: false }], pricing: { display: 'quote required', quote_required: true } }
+  const bytes = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 7]), uploadId = '81fb485c-9f4c-490c-a9d7-dced6974d04e'
+  const asset = { asset_id: 'ma2-original-image', client_asset_id: uploadId, model: request.model, state: 'ready', media_kind: 'image',
+    mime_type: 'image/png', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'), expires_at: 2000000000 }
+  let submissions = 0, assetReads = 0, uploads = 0
   const account = { owner: 'synthetic-no-credential', fetch: async (path: string, init: RequestInit): Promise<Response> => {
     let data: unknown
-    if (path.endsWith('/models')) data = { capabilities: { media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true }, models: [{ id: request.model, display_name: 'Layer image', kind: 'image', model_version: 'schema', enabled: true, parameters_schema: { properties: { prompt: { type: 'string' } } }, asset_fields: [], intents: [{ id: 'text', label: 'Text', requires_assets: false }], pricing: { display: 'quote required', quote_required: true } }] }
-    else if (path.endsWith('/quotes')) data = quote
+    if (path.endsWith('/models')) data = { capabilities: { media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true }, models: [{ id: request.model, display_name: 'Layer image', kind: 'image', model_version: 'schema', enabled: true, parameters_schema: recursiveSchema,
+      asset_fields: [{ name: 'images', media_kind: 'image', native_shape: 'multiple', min_items: 0, max_items: 2, mime_types: ['image/png'], constraints: { max_bytes: 5 * 1024 * 1024 } }],
+      intents: [{ id: 'text', label: 'Text', requires_assets: false }], pricing: { display: 'quote required', quote_required: true } }, audioModel] }
+    else if (path.endsWith('/quotes')) {
+      if (typeof init.body !== 'string') throw new Error('Missing original quote JSON')
+      expect(JSON.parse(init.body)).toEqual(request); data = quote
+    }
+    else if (path.endsWith('/assets')) {
+      uploads += 1
+      const form = await new Request('https://synthetic.invalid/assets', init).formData()
+      const file = form.get('file')
+      if (!(file instanceof File)) throw new Error('Missing original uploaded file')
+      expect(Buffer.from(await file.arrayBuffer())).toEqual(bytes)
+      const receivedId = form.get('client_asset_id')
+      if (typeof receivedId !== 'string') throw new Error('Missing original upload identity')
+      asset.client_asset_id = receivedId; data = asset
+    }
+    else if (path.includes('/assets/by-client-id/')) data = asset
     else if (path.endsWith('/tasks')) { submissions += 1; data = { task, replayed: false } }
     else if (path.includes('/operations/')) data = { client_operation_id: id, quote_id: quote.quote_id, state: 'accepted', task }
     else if (path.endsWith('/tasks/task-original')) data = { task }
@@ -66,10 +91,12 @@ it('runs the real model-tool/job registry, sends once, and job_output returns ev
     registerVideoGenerationIntent(scope)
     scope.inject(['tools', 'jobs'], (owner) => {
       registerMediaV2Tools(owner, { client, pollIntervalMs: 1, taskTimeoutMs: 2000, capture: async () => account,
-        readAsset: async () => { throw new Error('Unused') } })
+        readAsset: async (_path, _exec, maximum) => {
+          assetReads += 1; expect(maximum).toBe(5 * 1024 * 1024)
+          return { filename: 'source.png', mime: 'image/png', bytes }
+        } })
     })
   })
-  await client.quote(account, request, new AbortController().signal)
   session.append('turn/start', { turn: 1 })
   session.append('user/message', createUserMessage({ source: { kind: 'user' },
     content: [{ type: 'text', text: '按已选模型生成分层图片' }] }), { surfaceOp: 'append' })
@@ -86,6 +113,16 @@ it('runs the real model-tool/job registry, sends once, and job_output returns ev
   const details = mediaV2Object(JSON.parse(await call('list_media_models_v2', { model: request.model })))
   expect(details.details_included).toBe(true)
   expect(JSON.stringify(details)).toContain('parameters_schema')
+  expect(mediaV2Object(details.models instanceof Array ? details.models[0] : {}).parameters_schema).toEqual(recursiveSchema)
+  const audio = mediaV2Object(JSON.parse(await call('list_media_models_v2', { kind: 'audio', model: audioModel.id })))
+  expect(audio.models).toEqual([{ ...audioModel, pricing: { ...audioModel.pricing, credits_per_yuan: 1000 } }])
+  expect(mediaV2Object(JSON.parse(await call('quote_media_operation', request))).quote).toMatchObject({ parameters: request.parameters })
+  const uploaded = mediaV2Object(JSON.parse(await call('upload_media_asset', { model: request.model, path: 'source.png', field: 'images' })))
+  // Read the stable Host-assigned upload identity from the actual result, rather than inventing another attempt.
+  const actualAsset = mediaV2Object(uploaded.asset)
+  expect(actualAsset.asset_id).toBe(asset.asset_id)
+  await call('upload_media_asset', { model: request.model, path: 'source.png', client_asset_id: actualAsset.client_asset_id })
+  expect(assetReads).toBe(1); expect(uploads).toBe(1)
   const first = mediaV2Object(JSON.parse(await call('generate_media_operation', { client_operation_id: id })))
   expect(first.status).toBe('background')
   const job = JobId(String(first.job_id))

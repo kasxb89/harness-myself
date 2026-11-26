@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import type { JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { MediaV2Client, MediaV2Error, type MediaV2Account, type MediaV2Record } from './media-v2-client.ts'
+import { MediaV2Client, MediaV2Error, type MediaV2Account, type MediaV2Record, type MediaV2UploadSource } from './media-v2-client.ts'
 import { hasCurrentHumanRequest, videoGenerationIntentOf } from './video-generation-intent.ts'
 
 /** Existing account, file authorization and configured polling used by native tools. */
@@ -13,7 +13,7 @@ export interface MediaV2ToolOptions {
   pollIntervalMs: number
   taskTimeoutMs: number
   capture(signal: AbortSignal): Promise<MediaV2Account>
-  readAsset(path: string, exec: ToolRunContext): Promise<{ filename: string; mime: string; bytes: Uint8Array }>
+  readAsset(path: string, exec: ToolRunContext, maximum: number): Promise<{ filename: string; mime: string } & MediaV2UploadSource>
 }
 declare module '@deepseek-ai/dsh-jobs/view' { interface JobKindMap { 'media-runtime': 'media-runtime' } }
 const output = { schema: { type: 'object' as const, properties: {}, additionalProperties: true },
@@ -88,8 +88,8 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
   }
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'list_media_models_v2',
-    description: 'Read executable native image/video generation and processing models, exact operation intents, typed parameters, asset roles/limits and indicative pricing. This is free. Use this path for motion replication, reference video, lip-sync/avatar, super-resolution, layer decomposition and other native controls not declared by legacy image/video tools. Ordinary mode/quality values remain distinct from text/reference/frames/transform intent. Never discover support through a paid trial. Without model, return a compact overview. Then call again with the exact model ID for its full typed schema before selecting parameters; do not put every model schema into chat context. Follow with upload_media_asset for real materials and quote_media_operation for exact product credits.',
-    parameters: { kind: { type: 'string', enum: ['image', 'video'] }, model: { type: 'string' } }, output,
+    description: 'Read executable native image/video/audio generation and processing models, exact operation intents, complete recursive JSON schemas, conditions, asset roles/limits and indicative pricing. This is free. Use this path for motion replication, reference video, lip-sync/avatar, super-resolution, layer decomposition and other native controls not declared by legacy image/video tools. Ordinary mode/quality values remain distinct from text/reference/frames/transform intent. Never discover support through a paid trial. Without model, return a compact overview. Then call again with the exact model ID for its full typed schema and conditions before selecting parameters; preserve nested objects, arrays, ordered frames and declared values exactly, and follow all required/conditional fields; do not put every model schema into chat context. Follow with upload_media_asset for real materials and quote_media_operation for exact product credits.',
+    parameters: { kind: { type: 'string', enum: ['image', 'video', 'audio'] }, model: { type: 'string' } }, output,
     async execute(args, exec): Promise<Record<string, unknown>> {
       try { const catalog = await options.client.catalog(await options.capture(exec.signal), exec.signal)
         const models = catalog.models.filter(model => (args.kind === undefined || model.kind === args.kind)
@@ -105,8 +105,8 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
   })), 'credits-index: V2 media catalog tool')
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'upload_media_asset',
-    description: 'Upload one real current-chat image or readable workspace image/video/audio as exact original bytes for a V2 model. Model-specific probing and immutable SHA are performed by the server. Do not supply URLs, old ma_ IDs, invented metadata or unrelated attachments. A repeated call for the same actual human request/model/path recovers the same original upload without another POST. After an unknown upload, preserve client_asset_id and use this same call to query its receipt; do not change the path or create a fresh ID.',
-    parameters: { model: { type: 'string', required: true }, path: { type: 'string', required: true }, client_asset_id: { type: 'string' } }, output,
+    description: 'Upload one real current-chat image or readable workspace image/video/audio as exact original bytes for a V2 model. Read the exact model details first; field is the declared material role receiving this file. Host intersects the server, role and deployment size limits; large authorized workspace files stream without a whole-file memory buffer. Model-specific probing and immutable SHA are performed by the server. Do not supply URLs, old ma_ IDs, invented metadata or unrelated attachments. A repeated call for the same actual human request/model/path recovers the same original upload without another POST. After an unknown upload, preserve client_asset_id and use this same call to query its receipt; do not change the path or create a fresh ID.',
+    parameters: { model: { type: 'string', required: true }, path: { type: 'string', required: true }, field: { type: 'string' }, client_asset_id: { type: 'string' } }, output,
     async execute(args, exec): Promise<Record<string, unknown>> {
       let id = args.client_asset_id
       try {
@@ -114,7 +114,9 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
         const account = await options.capture(exec.signal)
         const asset = args.client_asset_id === undefined
           ? await options.client.upload(account,
-            { model: args.model, clientAssetId: id, ...await options.readAsset(args.path, exec) }, exec.signal)
+            { model: args.model, clientAssetId: id, ...args.field === undefined ? {} : { field: args.field },
+              ...await options.readAsset(args.path, exec,
+                await options.client.uploadLimit(account, args.model, exec.signal, args.field)) }, exec.signal)
           : await options.client.assetByClientId(account, id, args.model, exec.signal)
         return { status: 'ready', asset }
       } catch (error) { return { ...failure(error), client_asset_id: id, model: args.model } }
@@ -122,7 +124,7 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
   })), 'credits-index: V2 original reference tool')
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'quote_media_operation',
-    description: 'Obtain an exact free native-media quote before generation. Read list_media_models_v2, preserve every selected field and ordered asset ID, and supply the declared intent. Reference/frames/transform with missing materials is rejected; never substitute text. Parameters contain only declared scalar or multi-enum values, including prompt when the operation accepts one. Asset bindings are separate exact field -> ordered asset_id arrays, including singleton fields. Omit client_operation_id for the first quote: Host assigns one stable operation for this actual human request/model/work_key. Repeated calls recover the original record even with a different tool-call ID. Reuse that ID for quote correction, generation and recovery. work_key identifies a concrete separately requested output, not an attempt counter; native count belongs in parameters. Do not invent another work_key to retry an unknown or accepted task. No generation or wallet reservation occurs here.',
+    description: 'Obtain an exact free native-media quote before generation. Read list_media_models_v2, preserve every selected field and ordered asset ID, and supply the declared intent. Reference/frames/transform with missing materials is rejected; never substitute text. Parameters contain only fields declared by the exact model schema, including nested objects, arrays, null or prompt only when that schema accepts them. Preserve recursive structure, array order and values; do not stringify objects, flatten frames, truncate arrays or invent fields. Check model conditions and material constraints before quoting; an unsupported reference remains a reference error, never text fallback. Asset bindings are separate exact field -> ordered asset_id arrays, including singleton fields. Omit client_operation_id for the first quote: Host assigns one stable operation for this actual human request/model/work_key. Repeated calls recover the original record even with a different tool-call ID. Reuse that ID for quote correction, generation and recovery. work_key identifies a concrete separately requested output, not an attempt counter; native count belongs in parameters. Do not invent another work_key to retry an unknown or accepted task. No generation or wallet reservation occurs here.',
     parameters: { model: { type: 'string', required: true }, model_version: { type: 'string', required: true },
       intent: { type: 'string', enum: ['text', 'reference', 'frames', 'transform'], required: true },
       parameters: { type: 'object', properties: {}, additionalProperties: true, required: true },

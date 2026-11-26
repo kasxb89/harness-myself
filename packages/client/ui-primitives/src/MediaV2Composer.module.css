@@ -41,3 +41,7 @@
 .artifact a { color: var(--dsw-alias-state-business-primary); }
 .saved { padding-left: 20px; font-size: 12px; overflow-wrap: anywhere; }
 @media (max-width: 620px) { .selectors, .fields { grid-template-columns: 1fr; } .wide { grid-column: auto; } .header { align-items: flex-start; } .asset { gap: 8px; } }
+
+.json { font-family: var(--dsw-font-mono, monospace); }
+.order { display: inline-flex; gap: 4px; }
+.order button { min-width: 36px; }

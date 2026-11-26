@@ -978,7 +978,7 @@ export interface Config {
 ## `@deepseek-ai/dsh-credits-index`
 
 - `inject`: `webServer` · `tools`
-- `source`: [`packages/host/credits-index/src/index.ts:145`](../packages/host/credits-index/src/index.ts)
+- `source`: [`packages/host/credits-index/src/index.ts:146`](../packages/host/credits-index/src/index.ts)
 
 ```ts config-catalog
 /** Plugin config: platform origin, display rate, and where the session file lives. */
@@ -991,6 +991,10 @@ export interface Config {
   stateDir?: string
   /** Deadline for one platform call, in milliseconds. */
   timeoutMs?: number
+  /** Local streaming-upload ceiling; the server's declared ceiling and material rules can only lower it. */
+  mediaV2MaxUploadBytes?: number
+  /** Complete deadline for one native-media upload, including local spooling and response reading. */
+  mediaV2UploadTimeoutMs?: number
   /** Complete deadline for a human-engineer demand JSON request. */
   demandRequestTimeoutMs?: number
   /** Complete deadline for one bounded resumable-upload chunk. */

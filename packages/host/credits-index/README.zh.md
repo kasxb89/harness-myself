@@ -353,9 +353,11 @@ H3 原任务查询固定使用 canonical `/v1/tasks/:id` 路由。失败或取�
 
 ### 原生模型处理
 
-原生图片、视频处理器通过独立声明的 `media-generation-v2` 协议接入 `/credits/api/media-v2`。中转密钥只保存在 Host；上传保留不超过 50 MiB 的原始字节，服务端实际探测文件、尺寸和时长。素材角色、输入意图和参数均明确传递；缺少或不兼容的参考素材会阻止报价，不会变成文生请求。已有普通图片、视频接口继续使用。
+原生生成与处理通过独立声明的 `media-generation-v2` 协议接入 `/credits/api/media-v2`。模型与任务数据在图片、视频之外也接受音频类型；这不代表音频型号已启用或通过资格验证。Host 保留有界递归 JSON 参数、具名素材用途和参考素材顺序。共享表单支持类型化选项与已声明的原生限制，包括实际探测的帧率、时长和素材合计预算。不支持的条件或组合 schema 规则会明确显示并阻止报价；表单不支持任意 JSON Schema。已有普通媒体接口继续独立使用。
 
-原操作 UUID、完整请求、报价和任务回执保存在 `media-v2` 下的私有版本 1 记录中。Host 在报价前保存请求，在任务提交前保存提交围栏。报价或提交失答后只 GET 原操作恢复；404、未知状态都不允许自动再次提交。用户积分沿用本插件已有的 `creditsPerYuan`，按 `Math.round(retail_cny * creditsPerYuan)` 换算，不使用上游 quota 冒充积分。过期但未提交的报价可明确沿同一操作重新核价。服务声明 `same_operation_configuration_requote` 时，明确 GET 核实尚未受理的原操作可追加新版本报价行动，原正文与 UUID 保持。新费用必须重新由用户确认；并发续报价时，已受理的原快照优先。
+上传通过对应提供方读取当前聊天的附件或调用方工作区。聊天图片仍受 50 MiB 缓冲读取上限约束；文件附件，包括视频和音频，以流读取原始字节。工作区文件使用有界分块读取并核对版本。Host 在发送前将完整源数据校验到权限为 `0600` 的私有临时文件。`mediaV2MaxUploadBytes` 默认提供 1 GiB 的部署上限；实际限制还取服务器 `max_upload_bytes` 与兼容素材用途／MIME 限制的交集。服务器未声明上限时，保留 50 MiB 兼容限制。`mediaV2UploadTimeoutMs` 默认为 300000 ms，独立取消源文件暂存与上传 POST；普通目录和状态查询仍使用 `timeoutMs`。成功、失败或取消后均清除临时文件。媒体元数据与执行资格仍由服务端实际探测和验证。
+
+原操作 UUID、完整请求、报价和任务回执保存在 `media-v2` 下的私有版本 1 记录中。Host 在报价前保存请求，在任务提交前保存提交围栏。报价或提交失答后只 GET 原操作恢复；404、未知状态都不允许自动再次提交。上传结果不确定时保留原上传 UUID，查询原回执，不再次 POST 上传。用户积分沿用本插件已有的 `creditsPerYuan`，按 `Math.round(retail_cny * creditsPerYuan)` 换算，不使用上游 quota 冒充积分。过期但未提交的报价可明确沿同一操作重新核价。服务声明 `same_operation_configuration_requote` 时，明确 GET 核实尚未受理的原操作可追加新版本报价行动，原正文与 UUID 保持。新费用必须重新由用户确认；并发续报价时，已受理的原快照优先。
 
 内置工具通过 `list_media_models_v2`、`upload_media_asset`、`quote_media_operation`、`generate_media_operation` 和 `query_media_operation` 使用相同参数与回执。生成由当前账号的后台任务执行；查询和部分下载恢复只读取原任务，保存所有分层图片、GIF 和矢量文件。SVG 作为文件下载，不插入应用 DOM。停止本地等待不代表取消已被上游接受的任务。
 

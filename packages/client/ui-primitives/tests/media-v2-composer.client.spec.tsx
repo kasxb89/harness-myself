@@ -1,8 +1,10 @@
 // @vitest-environment jsdom
+import { readFileSync } from 'node:fs'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MediaV2Composer } from '../src/MediaV2Composer.tsx'
 import { mediaV2FormIssues } from '../src/media-v2-form.ts'
+import { mediaV2Data, parseMediaV2Catalog } from '../src/media-v2-types.ts'
 import type { MediaV2Asset, MediaV2Model, MediaV2Record, MediaV2Request, MediaV2Transport } from '../src/media-v2-types.ts'
 
 const prefix = '/credits/api/media-v2'
@@ -40,7 +42,8 @@ function backend(models: readonly MediaV2Model[] = [source], initial: readonly M
     if (path === `${prefix}/operations`) return envelope({ operations: records })
     if (path.startsWith(`${prefix}/assets?`)) {
       const url = new URL(path, 'http://localhost'), id = url.searchParams.get('client_asset_id') ?? '', model = url.searchParams.get('model') ?? ''
-      const field = models.find(item => item.id === model)?.asset_fields[0]
+      const fields = models.find(item => item.id === model)?.asset_fields
+      const field = fields?.find(item => item.name === url.searchParams.get('field')) ?? fields?.[0]
       const value = { ...asset(id, model), media_kind: field?.media_kind ?? 'image' as const, mime_type: field?.mime_types[0] ?? 'image/png', ...field?.media_kind === 'video' ? { duration_seconds: 5.2 } : {} }; uploaded.set(id, value); return envelope(value)
     }
     if (path.startsWith(`${prefix}/assets/by-client-id/`)) {
@@ -495,4 +498,202 @@ describe('media-v2 conditional field validation', () => {
     expect(mediaV2FormIssues(model, 'reference', {}, selected, Date.now() / 1000)).toContainEqual({ field: 'images', reason: 'binding' })
     expect(selected).toHaveLength(1)
   })
+})
+
+it('keeps native number and boolean choices typed and supports standard array item enums', async () => {
+  const model: MediaV2Model = { ...source, asset_fields: [], parameters_schema: { properties: {
+    fps: { type: 'integer', enum: [24, 30], default: 24 },
+    sound: { type: 'boolean', enum: [false, true], default: false },
+    layers: { type: 'array', items: { type: 'string', enum: ['foreground', 'background'] } },
+  } } }
+  const api = backend([model]); await opened(api.transport)
+  fireEvent.change(screen.getByLabelText('fps'), { target: { value: '30' } })
+  fireEvent.change(screen.getByLabelText('sound'), { target: { value: 'true' } })
+  fireEvent.click(screen.getByLabelText('foreground'))
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+  await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.parameters).toEqual({ fps: 30, sound: true, layers: ['foreground'] })
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('retains complete nested native JSON, blocks malformed editing and restores valid values without coercion', async () => {
+  const model: MediaV2Model = { ...source, asset_fields: [], parameters_schema: { properties: {
+    timeline: { type: 'array', items: { type: 'object', required: ['time', 'visible'], additionalProperties: false, properties: {
+      time: { type: 'number', minimum: 0 }, visible: { type: 'boolean' }, note: { type: 'null' },
+    } } },
+  } } }
+  const api = backend([model]); const view = await opened(api.transport)
+  fireEvent.change(screen.getByLabelText('timeline'), { target: { value: '[{"time":0,"visible":true,"note":null}]' } })
+  fireEvent.change(screen.getByLabelText('timeline'), { target: { value: '[{' } })
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(screen.getByText('请输入有效的 JSON，原参数保留且不会提交')).toBeTruthy()
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  fireEvent.change(screen.getByLabelText('timeline'), { target: { value: '[{"time":1.5,"visible":false,"note":null}]' } })
+  view.unmount(); await opened(api.transport)
+  expect(screen.getByLabelText('timeline')).toHaveProperty('value', JSON.stringify([{ time: 1.5, visible: false, note: null }], null, 2))
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+  await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.parameters.timeline).toEqual([{ time: 1.5, visible: false, note: null }])
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('blocks an invalid nested member before any quote and retains its complete draft for correction', async () => {
+  const model: MediaV2Model = { ...source, asset_fields: [], parameters_schema: { properties: {
+    motion: { type: 'object', additionalProperties: false, required: ['strength'], properties: { strength: { type: 'number', minimum: 0, maximum: 1 } } },
+  } } }
+  const api = backend([model]); await opened(api.transport)
+  fireEvent.change(screen.getByLabelText('motion'), { target: { value: '{"strength":2}' } })
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(screen.getByLabelText('motion')).toHaveProperty('value', '{"strength":2}')
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  fireEvent.change(screen.getByLabelText('motion'), { target: { value: '{"strength":0.8}' } })
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false)
+})
+
+it('preserves explicit asset order across movement and restoration in the quoted request', async () => {
+  const api = backend(); const view = await opened(api.transport); await upload(api.transport, ['first.png', 'last.png'])
+  fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+  fireEvent.click(screen.getByRole('button', { name: '上移: last.png' }))
+  const before = JSON.parse(sessionStorage.getItem('dsh:media-v2:draft-v1:image:account-a')!) as { assets: { name: string; asset: MediaV2Asset }[] }
+  expect(before.assets.map(item => item.name)).toEqual(['last.png', 'first.png'])
+  view.unmount(); await opened(api.transport)
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+  await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.assets.images).toEqual(before.assets.map(item => item.asset.asset_id))
+  expect(api.transport.mock.calls.filter(call => call[0].startsWith(`${prefix}/assets?`))).toHaveLength(2)
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('admits audio alongside images and videos, restores its original task and renders its original audio artifact', async () => {
+  const audio: MediaV2Model = { ...source, id: 'native-audio', kind: 'audio', display_name: '原生音频', asset_fields: [], parameters_schema: { properties: { prompt: { type: 'string' } } } }
+  const request: MediaV2Request = { client_operation_id: 'original-audio', model: audio.id, model_version: audio.model_version, intent: 'text', parameters: { prompt: '环境声' }, assets: {} }
+  const original: MediaV2Record = { ...quoted(request), state: 'accepted', task: { id: 'original-audio-task', model: audio.id, kind: 'audio', status: 'succeeded', is_final: true,
+    artifacts: [{ key: 'original-sound', type: 'audio', mime_type: 'audio/mpeg', order: 0, filename: '环境声.mp3' }] } }
+  const api = backend([source, audio], [original])
+  render(<MediaV2Composer kind="audio" accountKey="account-a" transport={api.transport} onExit={() => undefined} />)
+  await screen.findByRole('combobox', { name: '模型' })
+  expect(screen.getByRole('combobox', { name: '模型' }).textContent).toContain('原生音频')
+  const link = await screen.findByRole('link', { name: '下载原文件' })
+  expect(link.getAttribute('href')).toContain('/tasks/original-audio-task/artifacts/original-sound/content?download=1')
+  expect(document.querySelector('audio')?.getAttribute('src')).toContain('/tasks/original-audio-task/artifacts/original-sound/content')
+  fireEvent.click(screen.getByRole('button', { name: '更新原任务' }))
+  await waitFor(() => { expect(calls(api.transport, `${prefix}/operations/original-audio`)).toBe(1) })
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('preserves unknown model conditions and visibly blocks quote instead of dropping the rule', async () => {
+  const model: MediaV2Model = { ...source, asset_fields: [], conditions: [{ unsupported_rule: { parameter: 'count' } }] }
+  const api = backend([model]); await opened(api.transport)
+  expect(screen.getByText('当前客户端尚不支持这项参数规则，已停止报价，请更新后再使用')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('checks the declared upload byte cap before creating an upload identity or making a POST', async () => {
+  const limited: MediaV2Model = { ...source, asset_fields: [{ ...source.asset_fields[0]!, constraints: { max_bytes: 2 } }] }
+  const api = backend([limited]); await opened(api.transport)
+  fireEvent.change(screen.getByLabelText('添加素材: 参考图'), { target: { files: [new File(['png'], 'too-large.png', { type: 'image/png' })] } })
+  await screen.findByRole('alert')
+  expect(api.transport.mock.calls.filter(call => call[0].startsWith(`${prefix}/assets?`))).toHaveLength(0)
+  expect(screen.queryByText('too-large.png')).toBeNull()
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+})
+
+it('uses the shared video and audio duration budget before quote without discarding either reference', async () => {
+  const model: MediaV2Model = { ...source, id: 'native-reference-video', kind: 'video', parameters_schema: { properties: {
+    videos: { type: 'array' }, audios: { type: 'array' },
+  } }, intents: [{ id: 'reference', label: '多模态参考', requires_assets: true }], asset_fields: [
+    { name: 'videos', media_kind: 'video', native_shape: 'multiple', min_items: 0, max_items: 10, mime_types: ['video/mp4'], constraints: { combined_duration_budget: true, max_total_duration_sec: 30 } },
+    { name: 'audios', media_kind: 'audio', native_shape: 'multiple', min_items: 0, max_items: 10, mime_types: ['audio/mpeg'], constraints: { combined_duration_budget: true, max_total_duration_sec: 30 } },
+  ] }
+  const video = { ...asset('video', model.id), media_kind: 'video', mime_type: 'video/mp4', duration_seconds: 20, width: 1280, height: 720, fps: 30 }
+  const audio = { ...asset('audio', model.id), media_kind: 'audio', mime_type: 'audio/mpeg', duration_seconds: 20 }
+  sessionStorage.setItem('dsh:media-v2:draft-v1:video:account-a', JSON.stringify({ modelId: model.id, intent: 'reference', parameters: {}, currentId: null,
+    assets: [{ clientId: 'video', model: model.id, field: 'videos', name: 'video.mp4', role: 'generation', state: 'ready', asset: video },
+      { clientId: 'audio', model: model.id, field: 'audios', name: 'audio.mp3', role: 'generation', state: 'ready', asset: audio }] }))
+  const api = backend([model]); await opened(api.transport, 'video')
+  expect(screen.getByText('video.mp4')).toBeTruthy(); expect(screen.getByText('audio.mp3')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  fireEvent.change(screen.getByLabelText('audio.mp3: 使用方式'), { target: { value: 'writing' } })
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+  await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.assets).toEqual({ videos: ['ma2_video'] })
+  expect(screen.getByText('audio.mp3')).toBeTruthy()
+})
+
+it.each([
+  ['frame rate', { fps: 60 }, { min_fps: 24, max_fps: 59.94 }],
+  ['mode minimum', { duration_seconds: 3.9 }, { min_duration_sec: 1.8, min_duration_sec_by_mode: { edit: 4 } }],
+  ['mode maximum', { duration_seconds: 4 }, { max_clip_duration_sec_by_mode: { edit: 3 } }],
+  ['pixel count', { width: 640, height: 480 }, { min_pixels: 409600 }],
+  ['aspect ratio', { width: 1920, height: 300 }, { aspect_max: 2.5 }],
+  ['reference plus output', { duration_seconds: 21 }, { max_ref_plus_output_sec: 30 }],
+] as const)('blocks a server-observed %s violation before quote while keeping the original file', async (_case, metadata, constraints) => {
+  const model: MediaV2Model = { ...source, id: 'native-metadata', kind: 'video', parameters_schema: { properties: { videos: { type: 'array' }, mode: { type: 'string', default: 'edit' }, duration: { type: 'string', default: '10' } } },
+    intents: [{ id: 'transform', label: '视频处理', requires_assets: true }], asset_fields: [{ name: 'videos', media_kind: 'video', native_shape: 'single', min_items: 1, max_items: 1, mime_types: ['video/mp4'], constraints }] }
+  const original = { ...asset('metadata', model.id), media_kind: 'video', mime_type: 'video/mp4', width: 1280, height: 720, fps: 30, duration_seconds: 5, ...metadata }
+  sessionStorage.setItem('dsh:media-v2:draft-v1:video:account-a', JSON.stringify({ modelId: model.id, intent: 'transform', parameters: {}, currentId: null,
+    assets: [{ clientId: 'metadata', model: model.id, field: 'videos', name: 'original.mp4', role: 'generation', state: 'ready', asset: original }] }))
+  const api = backend([model]); await opened(api.transport, 'video')
+  expect(screen.getByText('original.mp4')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('checks combined count and visual dependencies for audio references across named material fields', () => {
+  const model: MediaV2Model = { ...source, id: 'native-combined', kind: 'video', parameters_schema: { properties: {
+    images: { type: 'array' }, audios: { type: 'array' }, keep_original_audio: { type: 'boolean', 'x-ycapi-contract': { requires_media: ['videos'] } },
+  } }, asset_fields: [
+    { ...source.asset_fields[0]!, constraints: { max_combined_items: 2 } },
+    { name: 'audios', media_kind: 'audio', native_shape: 'multiple', min_items: 0, max_items: 4, mime_types: ['audio/mpeg'], constraints: { requires_visual_reference: true } },
+  ], intents: [{ id: 'reference', label: '多模态参考', requires_assets: true }] }
+  const audio = { clientId: 'sound', model: model.id, field: 'audios', name: 'sound.mp3', role: 'generation' as const, state: 'ready' as const,
+    asset: { ...asset('sound', model.id), media_kind: 'audio' as const, mime_type: 'audio/mpeg', duration_seconds: 5 } }
+  expect(mediaV2FormIssues(model, 'reference', { keep_original_audio: true }, [audio], Date.now() / 1000)).toContainEqual({ field: 'audios', reason: 'required' })
+  expect(mediaV2FormIssues(model, 'reference', { keep_original_audio: true }, [audio], Date.now() / 1000)).toContainEqual({ field: 'keep_original_audio', reason: 'required' })
+  const images = ['one', 'two'].map(id => ({ clientId: id, model: model.id, field: 'images', name: `${id}.png`, role: 'generation' as const, state: 'ready' as const, asset: asset(id, model.id) }))
+  const issues = mediaV2FormIssues(model, 'reference', { keep_original_audio: false }, [audio, ...images], Date.now() / 1000)
+  expect(issues).toContainEqual({ field: 'images', reason: 'limit' })
+  expect(issues).not.toContainEqual({ field: 'keep_original_audio', reason: 'required' })
+})
+
+
+it('uses the retained actual Go image catalog for reference editing without a text fallback', async () => {
+  const captured: unknown = JSON.parse(readFileSync('packages/host/credits-index/tests/fixtures/media-v2-native-go-catalog.json', 'utf8'))
+  const models = parseMediaV2Catalog(mediaV2Data(captured)).models
+  const api = backend(models); await opened(api.transport)
+  fireEvent.change(screen.getByLabelText('生成模式'), { target: { value: 'image-edit' } })
+  fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+  fireEvent.change(screen.getByLabelText('添加素材: 参考图片'), { target: { files: [new File(['png'], 'source.png', { type: 'image/png' })] } })
+  await waitFor(() => { expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false) })
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+  await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.model).toBe('ycapi-gpt-image-2.6-flare')
+  expect(api.records()[0]?.request.intent).toBe('reference')
+  expect(api.records()[0]?.request.parameters.mode).toBe('image-edit')
+  expect(api.records()[0]?.request.assets.images).toHaveLength(1)
+  expect(api.transport.mock.calls.find(call => call[0].startsWith(`${prefix}/assets?`))?.[0]).toContain('&field=images')
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+
+it('applies shared declared budgets even when an unused marked media field is unavailable in the selected mode', async () => {
+  const model: MediaV2Model = { ...source, id: 'shared-budget-model', kind: 'video', parameters_schema: { properties: {
+    mode: { type: 'string', default: 'reference' }, videos: { type: 'array' }, audios: { type: 'array' },
+  } }, intents: [{ id: 'reference', label: '多模态参考', requires_assets: true }], asset_fields: [
+    { name: 'videos', media_kind: 'video', native_shape: 'multiple', min_items: 0, max_items: 10, mime_types: ['video/mp4'], constraints: { combined_duration_budget: true, max_total_duration_sec: 30 } },
+    { name: 'audios', media_kind: 'audio', native_shape: 'multiple', min_items: 0, max_items: 10, mime_types: ['audio/mpeg'], constraints: {
+      combined_duration_budget: true, max_total_duration_sec: 10, max_combined_items: 0, available_when: { mode: ['audio-only'] },
+    } },
+  ] }
+  const original = { ...asset('shared-budget-video', model.id), media_kind: 'video', mime_type: 'video/mp4', duration_seconds: 20 }
+  sessionStorage.setItem('dsh:media-v2:draft-v1:video:account-a', JSON.stringify({ modelId: model.id, intent: 'reference', parameters: {}, currentId: null,
+    assets: [{ clientId: 'shared-budget-video', model: model.id, field: 'videos', name: 'original.mp4', role: 'generation', state: 'ready', asset: original }] }))
+  const api = backend([model]); await opened(api.transport, 'video')
+  expect(screen.getByText('original.mp4')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(mediaV2FormIssues(model, 'reference', { mode: 'reference' }, [{ clientId: 'shared-budget-video', model: model.id, field: 'videos', name: 'original.mp4',
+    role: 'generation', state: 'ready', asset: { ...original, media_kind: 'video' } }], Date.now() / 1000)).toContainEqual({ field: 'videos', reason: 'limit' })
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
 })
