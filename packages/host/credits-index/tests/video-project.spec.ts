@@ -394,6 +394,158 @@ describe('explicit same-work funding retries', () => {
   const original = { messageId: 'original-human', seq: 1 }
   const later = { messageId: 'recharged-human', seq: 20 }
 
+  it('saves an accepted queued clip when another admission rejects account funding', async ({ signal }) => {
+    const f = await setup([30])
+    f.options.maxConcurrentSegments = 2
+    const phases = observedPhases(signal)
+    const append = f.job.append.bind(f.job)
+    f.job.append = (text, options) => {
+      append(text, options)
+      if (text.includes('编号 task-1 已记录')) phases.mark('accepted-receipt')
+    }
+    const originalSubmit = f.provider.submit.bind(f.provider)
+    const submit = vi.spyOn(f.provider, 'submit').mockImplementationOnce(originalSubmit)
+      .mockImplementationOnce(async () => {
+        await phases.wait('accepted-receipt')
+        throw new VideoSubmissionRejection('INSUFFICIENT_BALANCE', '余额不足，请充值', 'not_submitted')
+      }).mockRejectedValue(new Error('The unsubmitted third clip must remain pending'))
+    const provider: VideoProjectProvider = { ...f.provider, submissionMode: 'queued' }
+    const check = vi.spyOn(provider, 'check')
+    const download = vi.spyOn(provider, 'download')
+    const compose = vi.spyOn(f.editor, 'compose')
+    const manifest = await prepareVideoProject(f.options, { prompt: 'Retain the accepted original clip', totalDurationSeconds: 90 },
+      'chat-one', f.workspace, provider, f.editor, signal)
+    const attempts = manifest.segments.map(segment => segment.attemptId)
+    const outcome = await runVideoProject(f.options, manifest, provider, f.editor, f.job, signal)
+    expect(outcome).toMatchObject({ status: 'failed', detail: 'INSUFFICIENT_BALANCE' })
+    const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, provider.identity)
+    expect(retained.segments.map(segment => segment.status)).toEqual(['saved', 'failed', 'pending'])
+    expect(retained.segments[0]?.taskId).toBe('task-1')
+    expect(await readFile(retained.segments[0]!.path!, 'utf8')).toBe('30')
+    expect(await readFile(retained.segments[0]!.publishedPath!, 'utf8')).toBe('30')
+    expect(JSON.parse(outcome.result ?? '{}')).toMatchObject({ status: 'failed', code: 'INSUFFICIENT_BALANCE',
+      clip_paths: [retained.segments[0]!.publishedPath] })
+    expect(retained.segments[1]?.balanceRejection).toEqual({ code: 'INSUFFICIENT_BALANCE', submissionState: 'not_submitted' })
+    expect(retained.segments[2]?.taskId).toBeUndefined()
+    expect(retained.segments.map(segment => segment.attemptId)).toEqual(attempts)
+    expect(retained.segments.every(segment => segment.previousAttempts === undefined)).toBe(true)
+    expect(check).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(Object), expect.any(AbortSignal))
+    expect(download).toHaveBeenCalledOnce()
+    expect(submit).toHaveBeenCalledTimes(2)
+    expect(compose).not.toHaveBeenCalled()
+  })
+
+  it.for(['INSUFFICIENT_BALANCE', 'H3_SUBMISSION_NOT_SENT'] as const)(
+    'saves an accepted queued clip when another original task reports %s', async (code, { signal }) => {
+      const f = await setup([30])
+      f.options.maxConcurrentSegments = 2
+      const phases = observedPhases(signal)
+      const progress = f.job.updateProgress.bind(f.job)
+      f.job.updateProgress = (text) => {
+        progress(text)
+        if (text.includes('停止新增请求') || text.includes('正在停止，保留已有结果')) phases.mark('funding-reported')
+      }
+      const provider: VideoProjectProvider = { ...f.provider, submissionMode: 'queued',
+        async check(taskId, _request, observation) {
+          if (taskId === 'task-2') {
+            await phases.wait('peer-observed')
+            if (code === 'INSUFFICIENT_BALANCE') {
+              throw new VideoSubmissionRejection(code, '余额不足，请充值', 'not_submitted', taskId)
+            }
+            const proof = h3SubmissionQueryRejection('MiniMax-H3', 200, {
+              task_id: taskId, status: 'FAILURE', fail_reason: 'Insufficient account balance', submission_receipt: {
+                ...notSentContract.receipt, id: taskId, task_id: taskId, billing_state: 'not_charged',
+              },
+            }, taskId)
+            expect(proof?.code).toBe('H3_SUBMISSION_NOT_SENT')
+            if (proof === undefined) throw new Error('Expected the original complete H3 not-sent proof')
+            throw proof
+          }
+          expect(taskId).toBe('task-1')
+          phases.mark('peer-observed')
+          await phases.wait('funding-reported')
+          observation.throwIfAborted()
+          return { status: 'succeeded' }
+        },
+      }
+      const submit = vi.spyOn(provider, 'submit')
+      const check = vi.spyOn(provider, 'check')
+      const download = vi.spyOn(provider, 'download')
+      const compose = vi.spyOn(f.editor, 'compose')
+      const manifest = await prepareVideoProject(f.options, { prompt: 'Save after the peer funding rejection', totalDurationSeconds: 60 },
+        'chat-one', f.workspace, provider, f.editor, signal)
+      const attempts = manifest.segments.map(segment => segment.attemptId)
+      const outcome = await runVideoProject(f.options, manifest, provider, f.editor, f.job, signal)
+      expect(outcome).toMatchObject({ status: 'failed', detail: code })
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, provider.identity)
+      expect(retained.segments.map(segment => segment.status)).toEqual(['saved', 'failed'])
+      expect(retained.segments.map(segment => segment.taskId)).toEqual(['task-1', 'task-2'])
+      expect(await readFile(retained.segments[0]!.path!, 'utf8')).toBe('30')
+      expect(await readFile(retained.segments[0]!.publishedPath!, 'utf8')).toBe('30')
+      expect(JSON.parse(outcome.result ?? '{}')).toMatchObject({ status: 'failed', code,
+        clip_paths: [retained.segments[0]!.publishedPath] })
+      expect(retained.segments[1]?.balanceRejection).toEqual(code === 'INSUFFICIENT_BALANCE'
+        ? { code, submissionState: 'not_submitted', taskId: 'task-2' } : undefined)
+      expect(retained.segments.map(segment => segment.attemptId)).toEqual(attempts)
+      expect(retained.segments.every(segment => segment.previousAttempts === undefined)).toBe(true)
+      expect(check).toHaveBeenCalledTimes(2)
+      expect(download).toHaveBeenCalledExactlyOnceWith('task-1', expect.any(Object), expect.any(String), expect.any(AbortSignal))
+      expect(submit).toHaveBeenCalledTimes(2)
+      expect(compose).not.toHaveBeenCalled()
+    })
+
+  it.for(['cancelled', 'account-changed'] as const)(
+    'stops accepted queued output recovery when %s after a peer admission rejection', async (reason, { signal }) => {
+      const f = await setup([30])
+      f.options.maxConcurrentSegments = 2
+      const cancel = new AbortController()
+      const phases = observedPhases(signal)
+      const progress = f.job.updateProgress.bind(f.job)
+      f.job.updateProgress = (text) => {
+        progress(text)
+        if (!text.includes('停止新增请求')) return
+        if (reason === 'cancelled') cancel.abort()
+        else f.currentAccount = false
+        phases.mark('admission-stopped')
+      }
+      let activeChecks = 0
+      const provider: VideoProjectProvider = { ...f.provider, submissionMode: 'queued',
+        async check(taskId, _request, observation) {
+          activeChecks += 1
+          try {
+            if (taskId === 'task-2') {
+              await phases.wait('peer-observed')
+              throw new VideoSubmissionRejection('H3_SUBMISSION_NOT_SENT', '原任务未提交上游', 'not_submitted', taskId)
+            }
+            expect(taskId).toBe('task-1')
+            phases.mark('peer-observed')
+            await phases.wait('admission-stopped')
+            observation.throwIfAborted()
+            await f.provider.assertCurrent()
+            return { status: 'succeeded' }
+          } finally { activeChecks -= 1 }
+        },
+      }
+      const submit = vi.spyOn(provider, 'submit')
+      const download = vi.spyOn(provider, 'download')
+      const compose = vi.spyOn(f.editor, 'compose')
+      const manifest = await prepareVideoProject(f.options, { prompt: 'Respect the original recovery owner', totalDurationSeconds: 60 },
+        'chat-one', f.workspace, provider, f.editor, signal)
+      const attempts = manifest.segments.map(segment => segment.attemptId)
+      const running = ownConcurrentRun(runVideoProject(f.options, manifest, provider, f.editor, f.job, cancel.signal),
+        () => { cancel.abort() })
+      const outcome = await running
+      expect(outcome.status).toBe(reason === 'cancelled' ? 'killed' : 'failed')
+      const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, provider.identity)
+      expect(retained.segments.map(segment => segment.taskId)).toEqual(['task-1', 'task-2'])
+      expect(retained.segments.map(segment => segment.attemptId)).toEqual(attempts)
+      expect(retained.segments.every(segment => segment.path === undefined)).toBe(true)
+      expect(activeChecks).toBe(0)
+      expect(submit).toHaveBeenCalledTimes(2)
+      expect(download).not.toHaveBeenCalled()
+      expect(compose).not.toHaveBeenCalled()
+    })
+
   it('retains the original attempt and accepts one later human retry without unlocking same-submit replay', async () => {
     const f = await setup([4])
     const submit = vi.spyOn(f.provider, 'submit').mockRejectedValueOnce(new VideoSubmissionRejection(
@@ -743,7 +895,7 @@ describe('minimum-request video duration planning', () => {
     expect(check.mock.calls.map(([id]) => id)).toEqual(['task-1', 'task-1'])
   })
 
-  it.each(['not_charged', 'refunded'] as const)('settles an original H3 GET $0 proof without losing saved work or resubmitting accepted peers', async (billingState) => {
+  it.for(['not_charged', 'refunded'] as const)('settles an original H3 GET %s proof while saving accepted peers without another submission', async (billingState, { signal }) => {
     const f = await setup([4])
     f.options.maxConcurrentSegments = 2
     f.provider.parallelism = async () => 2
@@ -768,16 +920,18 @@ describe('minimum-request video duration planning', () => {
     if (proof === undefined) throw new Error('Expected the complete original H3 GET proof')
     const submit = vi.spyOn(f.provider, 'submit')
     const compose = vi.spyOn(f.editor, 'compose')
-    const peerObserved = Promise.withResolvers<undefined>()
+    const phases = observedPhases(signal)
+    const progress = f.job.updateProgress.bind(f.job)
+    f.job.updateProgress = (text) => {
+      progress(text)
+      if (text.includes('停止新增请求')) phases.mark('admission-stopped')
+    }
     const check = vi.spyOn(f.provider, 'check').mockImplementation(async (id, _request, signal) => {
-      if (id === rejected.taskId) { await peerObserved.promise; throw proof }
+      if (id === rejected.taskId) { await phases.wait('peer-observed'); throw proof }
       if (id !== peer.taskId) throw new Error('Only original retained tasks may be queried')
-      peerObserved.resolve(undefined)
-      await new Promise<never>((_resolve, reject) => {
-        const aborted = (): void => { reject(signal.reason instanceof Error ? signal.reason : new Error('Original observation stopped')) }
-        signal.addEventListener('abort', aborted, { once: true })
-        if (signal.aborted) aborted()
-      })
+      phases.mark('peer-observed')
+      await phases.wait('admission-stopped')
+      signal.throwIfAborted()
       return { status: 'succeeded' }
     })
     const outcome = await runVideoProject(f.options, manifest, f.provider, f.editor, f.job, f.signal)
@@ -785,14 +939,14 @@ describe('minimum-request video duration planning', () => {
     const retained = await readVideoProject(f.options, manifest.id, 'chat-one', f.workspace, f.provider.identity)
     expect(retained).toMatchObject({ failureCode: 'H3_SUBMISSION_NOT_SENT', segments: [
       { status: 'saved', taskId: 'task-1', path: saved.path }, { status: 'failed', taskId: 'task-2' },
-      { status: 'running', taskId: 'task-3' }, { status: 'pending' },
+      { status: 'saved', taskId: 'task-3' }, { status: 'pending' },
     ] })
-    expect(f.output.join('')).toContain('分镜 1/4 已保存\n分镜 2/4 失败\n分镜 3/4 查询已暂停，保留原任务\n分镜 4/4 尚未提交')
+    expect(f.output.join('')).toContain('分镜 1/4 已保存\n分镜 2/4 失败\n分镜 3/4 已保存\n分镜 4/4 尚未提交')
     check.mockRestore()
     const resumedChecks = vi.spyOn(f.provider, 'check')
     expect(await runVideoProject(f.options, retained, f.provider, f.editor, f.job, f.signal))
       .toMatchObject({ status: 'failed', detail: 'PROVIDER_TASK_FAILED' })
-    expect(resumedChecks.mock.calls.map(([id]) => id)).toEqual(['task-3'])
+    expect(resumedChecks).not.toHaveBeenCalled()
     expect(retained.segments.map(segment => segment.status)).toEqual(['saved', 'failed', 'saved', 'pending'])
     expect(await readFile(saved.path, 'utf8')).toBe('4')
     expect(submit).not.toHaveBeenCalled()
