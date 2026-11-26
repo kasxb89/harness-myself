@@ -1094,7 +1094,7 @@ export async function runVideoProject(
   }
 }
 
-/** Own workers and their stop barrier until every late submission receipt has settled. */
+/** Join every worker; confirmed admission rejection stops new clips without cancelling other original-task saves. */
 async function executeVideoSegments(
   options: VideoProjectOptions, manifest: VideoProjectManifest, provider: VideoProjectProvider, editor: VideoEditor,
   job: JobHandle, signal: AbortSignal, unsettled: Set<number>, onlyAccepted: boolean, progress: VideoProjectProgress,
@@ -1130,7 +1130,9 @@ async function executeVideoSegments(
   for (const task of tasks) task.activity.stage('preparing')
   const stop = new AbortController()
   let failure: { error: unknown } | undefined
-  const configurationStop = { active: false }
+  const admissionStop = { active: false }
+  // Another worker can stop admissions while this worker awaits preparation or persistence.
+  const admissionStopped = (): boolean => admissionStop.active
   let cursor = 0
   const execute = async (segment: VideoProjectSegment, activity: ReturnType<typeof creationTaskActivity>,
     submissionOnly = false): Promise<void> => {
@@ -1143,11 +1145,11 @@ async function executeVideoSegments(
       await validatePublication(options, manifest.publicationDirectory, clipSignal)
       await provider.assertCurrent()
       clipSignal.throwIfAborted()
-      if (stop.signal.aborted) return
+      if (stop.signal.aborted || admissionStopped()) return
       segment.status = 'submitting'
       try { await persist(options, manifest) }
       catch (error) { segment.status = 'pending'; throw error }
-      if (observation.aborted) {
+      if (observation.aborted || admissionStopped()) {
         segment.status = 'pending'
         await persist(options, manifest)
         clipSignal.throwIfAborted()
@@ -1269,21 +1271,22 @@ async function executeVideoSegments(
       const task = tasks[cursor++]
       if (task === undefined) return
       const { segment, activity } = task
-      if (configurationStop.active && segment.taskId === undefined) continue
+      if (admissionStopped() && (segment.taskId === undefined || segment.status === 'failed')) continue
       try { await execute(segment, activity, submissionOnly) }
       catch (error) {
         progress.stopped(segment)
-        if (error instanceof MediaModelConfigRejection) {
-          configurationStop.active = true
+        const admissionRejected = error instanceof VideoSubmissionRejection
+          && error.submissionState === 'not_submitted' && !error.upstreamSubmitted
+          || error instanceof VideoProjectTaskFailure && error.code === 'INSUFFICIENT_BALANCE'
+        if (error instanceof MediaModelConfigRejection || admissionRejected) {
+          admissionStop.active = true
           failure ??= { error }
-          progress.stage('模型配置已变化，停止新增请求并核对已受理分镜')
+          progress.stage(admissionRejected ? '停止新增请求，继续保存已受理分镜' : '模型配置已变化，停止新增请求并核对已受理分镜')
           return
         }
-        if (failure === undefined) {
-          failure = { error }
-          progress.stage('正在停止，保留已有结果')
-          stop.abort(error)
-        }
+        failure ??= { error }
+        progress.stage('正在停止，保留已有结果')
+        stop.abort(error)
         return
       } finally {
         if (!submissionOnly) {
@@ -1302,7 +1305,7 @@ async function executeVideoSegments(
     progress.stage('提交分镜至服务端等待队列')
     await runWorkers(true)
     cursor = 0
-    if ((failure === undefined || configurationStop.active) && !signal.aborted) {
+    if ((failure === undefined || admissionStopped()) && !signal.aborted) {
       progress.stage('核对原平台分镜任务')
       await runWorkers()
     }
