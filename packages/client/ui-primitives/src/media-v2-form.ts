@@ -1,5 +1,6 @@
 /** Typed form projection and validation for the public, server-owned media schema. */
 import { isMediaV2Value, mediaV2Object, type MediaV2Asset, type MediaV2Model, type MediaV2Value, type MediaV2Intent } from './media-v2-types.ts'
+import { mediaV2MaterialIssues } from './media-v2-material-conditions.ts'
 
 /** Window-owned material selection retaining its upload identity, explicit use and any ready receipt. */
 export interface MediaV2SelectedAsset {
@@ -12,7 +13,7 @@ export interface MediaV2SelectedAsset {
   readonly asset?: MediaV2Asset
 }
 /** One field-specific reason that prevents the current draft from requesting a quote. */
-export interface MediaV2FormIssue { readonly field: string; readonly reason: 'required' | 'unavailable' | 'limit' | 'invalid' | 'intent' | 'unknown' | 'binding' | 'unsupported' }
+export interface MediaV2FormIssue { readonly field: string; readonly reason: 'required' | 'unavailable' | 'limit' | 'invalid' | 'intent' | 'unknown' | 'binding' | 'unsupported' | 'condition' }
 /** A declared parameter property with its JSON Schema and retained native constraint annotations. */
 export interface MediaV2Field {
   readonly name: string
@@ -207,8 +208,7 @@ function assetMetadataIssue(asset: MediaV2Asset, native: Readonly<Record<string,
  */
 export function mediaV2FormIssues(model: MediaV2Model, intent: MediaV2Intent, values: Readonly<Record<string, MediaV2Value>>,
   assets: readonly MediaV2SelectedAsset[], now: number): readonly MediaV2FormIssue[] {
-  const issues: MediaV2FormIssue[] = []
-  if (model.conditions !== undefined && (!Array.isArray(model.conditions) || model.conditions.length > 0)) issues.push({ field: 'parameters', reason: 'unsupported' })
+  const issues: MediaV2FormIssue[] = [...mediaV2MaterialIssues(model, values, assets, now)]
   if (['$ref', 'oneOf', 'allOf', 'anyOf', 'if', 'then', 'else'].some(key => model.parameters_schema[key] !== undefined)) issues.push({ field: 'parameters', reason: 'unsupported' })
   const generation = assets.filter(asset => asset.role === 'generation')
   const selectedIntent = model.intents.find(item => item.id === intent)

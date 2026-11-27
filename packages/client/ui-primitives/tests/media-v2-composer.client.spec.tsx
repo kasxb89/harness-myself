@@ -642,6 +642,115 @@ it('preserves unknown model conditions and visibly blocks quote instead of dropp
   expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
 })
 
+const policyModel: MediaV2Model = { ...source, id: 'conditional-material-video', display_name: '素材组合视频', kind: 'video',
+  parameters_schema: { properties: {
+    prompt: { type: 'string', 'x-ycapi-contract': { label: { zh: '描述' } } },
+    mode: { type: 'string', enum: ['reference', 'first-frame'], 'x-ycapi-contract': { label: { zh: '素材模式' } } },
+    images: { type: 'array', 'x-ycapi-contract': { label: { zh: '参考图' } } },
+    videos: { type: 'array' }, audios: { type: 'array' },
+  } },
+  asset_fields: [{ ...source.asset_fields[0]!, max_items: 4, constraints: {} },
+    { name: 'videos', media_kind: 'video', native_shape: 'multiple', min_items: 0, max_items: 2, mime_types: ['video/mp4'], constraints: {} },
+    { name: 'audios', media_kind: 'audio', native_shape: 'multiple', min_items: 0, max_items: 2, mime_types: ['audio/mpeg'], constraints: {} }],
+  intents: [{ id: 'reference', label: '参考生成', requires_assets: true }],
+  conditions: { schema_version: 1, rules: [{ id: 'single-image-reference', when: { mode: ['reference'] }, asset_field: 'images',
+    disallowed_counts: [1], message: 'Source image count requires an explicit choice' }] },
+}
+function policyAsset(field: 'images' | 'videos' | 'audios', id: string, role: 'generation' | 'writing' = 'generation') {
+  return { clientId: id, model: policyModel.id, field, name: `${id}.media`, role, state: 'ready', asset: {
+    ...asset(id, policyModel.id), media_kind: field === 'images' ? 'image' : field === 'videos' ? 'video' : 'audio',
+    mime_type: field === 'images' ? 'image/png' : field === 'videos' ? 'video/mp4' : 'audio/mpeg',
+  } }
+}
+function policyDraft(assets: readonly ReturnType<typeof policyAsset>[]) {
+  sessionStorage.setItem('dsh:media-v2:draft-v1:video:account-a', JSON.stringify({ modelId: policyModel.id, intent: 'reference',
+    parameters: { prompt: 'Keep my original draft and roles', mode: 'reference' }, currentId: null, assets }))
+}
+
+it('explains a material condition without discarding files and accepts an explicitly chosen frame mode', async () => {
+  policyDraft([policyAsset('images', 'one')])
+  const api = backend([policyModel]); await opened(api.transport, 'video')
+  expect(screen.getByText('当前素材组合不符合所选模式的要求，请调整素材或模式；原素材已保留')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(screen.getByText('one.media')).toBeTruthy()
+  expect(screen.getByLabelText('描述')).toHaveProperty('value', 'Keep my original draft and roles')
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  fireEvent.change(screen.getByLabelText('素材模式'), { target: { value: 'first-frame' } })
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false)
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.parameters).toEqual({ prompt: 'Keep my original draft and roles', mode: 'first-frame' })
+  expect(api.records()[0]?.request.assets).toEqual({ images: ['ma2_one'] })
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(1); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('counts only generation-role images and quotes their original order after an explicit role change', async () => {
+  policyDraft([policyAsset('images', 'one'), policyAsset('images', 'two', 'writing')])
+  const api = backend([policyModel]); await opened(api.transport, 'video')
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(screen.getByRole('combobox', { name: 'two.media: 使用方式' })).toHaveProperty('value', 'writing')
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  fireEvent.change(screen.getByRole('combobox', { name: 'two.media: 使用方式' }), { target: { value: 'generation' } })
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false)
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.assets).toEqual({ images: ['ma2_one', 'ma2_two'] })
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(1); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('rejects audio without generation visual media and preserves both materials until the user changes the role', async () => {
+  const model: MediaV2Model = { ...policyModel, conditions: { schema_version: 1, rules: [{ id: 'visual-companion',
+    when: { mode: ['reference'] }, asset_field: 'audios', requires_any_assets: ['images', 'videos'], message: 'Audio requires visual media' }] } }
+  policyDraft([policyAsset('audios', 'sound'), policyAsset('images', 'visual', 'writing')])
+  const api = backend([model]); await opened(api.transport, 'video')
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(screen.getByText('sound.media')).toBeTruthy(); expect(screen.getByText('visual.media')).toBeTruthy()
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  fireEvent.change(screen.getByRole('combobox', { name: 'visual.media: 使用方式' }), { target: { value: 'generation' } })
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.assets).toEqual({ audios: ['ma2_sound'], images: ['ma2_visual'] })
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(1); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('permits audio with the remaining video role when images are disabled in the configured model', async () => {
+  const model: MediaV2Model = { ...policyModel, asset_fields: policyModel.asset_fields.filter(field => field.name !== 'images'),
+    conditions: { schema_version: 1, rules: [{ id: 'visual-companion', when: { mode: ['reference'] },
+      asset_field: 'audios', requires_any_assets: ['images', 'videos'], message: 'Audio requires visual media' }] } }
+  policyDraft([policyAsset('audios', 'sound'), policyAsset('videos', 'visual')])
+  const api = backend([model]); await opened(api.transport, 'video')
+  expect(screen.queryByLabelText('添加素材: 参考图')).toBeNull()
+  expect(screen.getByText('sound.media')).toBeTruthy(); expect(screen.getByText('visual.media')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false)
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.assets).toEqual({ audios: ['ma2_sound'], videos: ['ma2_visual'] })
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(1); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('shows a hidden primary zero-count rule and preserves the draft instead of silently disabling quote', async () => {
+  const model: MediaV2Model = { ...policyModel, conditions: { schema_version: 1, rules: [{ id: 'hidden-source-needed',
+    when: { mode: ['reference'] }, asset_field: 'hidden_primary', disallowed_counts: [0], message: 'Unavailable primary source' }] } }
+  policyDraft([policyAsset('images', 'original')])
+  const api = backend([model]); await opened(api.transport, 'video')
+  expect(screen.getByText('当前素材组合不符合所选模式的要求，请调整素材或模式；原素材已保留')).toBeTruthy()
+  expect(screen.getByText('original.media')).toBeTruthy()
+  expect(screen.getByLabelText('描述')).toHaveProperty('value', 'Keep my original draft and roles')
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(screen.queryByLabelText('添加素材: hidden primary')).toBeNull()
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('keeps original accepted UUID recovery available when the new catalog has unsupported material conditions', async () => {
+  const request: MediaV2Request = { client_operation_id: '10000000-0000-4000-8000-000000000099', model: policyModel.id,
+    model_version: 'old-version', intent: 'reference', parameters: { mode: 'reference', count: 2 }, assets: { videos: ['old-one', 'old-two'] } }
+  const record: MediaV2Record = { ...quoted(request), state: 'accepted', task: { id: 'original-task', model: policyModel.id,
+    kind: 'video', status: 'pending', is_final: false, artifacts: [] } }
+  const api = backend([{ ...policyModel, conditions: { schema_version: 999, rules: [] } }], [record]); await opened(api.transport, 'video')
+  fireEvent.click(screen.getByRole('button', { name: '更新原任务' }))
+  await waitFor(() => { expect(calls(api.transport, `${prefix}/operations/${request.client_operation_id}`)).toBe(1) })
+  expect(api.records()).toEqual([record])
+  expect(api.records()[0]?.request).toEqual(request)
+  expect(screen.getByText(`操作编号: ${request.client_operation_id}`)).toBeTruthy()
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
 it('checks the declared upload byte cap before creating an upload identity or making a POST', async () => {
   const limited: MediaV2Model = { ...source, asset_fields: [{ ...source.asset_fields[0]!, constraints: { max_bytes: 2 } }] }
   const api = backend([limited]); await opened(api.transport)

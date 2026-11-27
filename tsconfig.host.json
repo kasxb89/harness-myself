@@ -13,6 +13,7 @@
     "packages/client/ui-demands/src/client/case-showcase-types.ts"
   ],
   "include": [
+    "apps/web/tests/media-material-conditions.e2e.ts",
     "apps/web/tests/replica-workbench.e2e.ts",
     "apps/web/tests/yc-native-media.e2e.ts",
     "apps/web/tests/session-delete.e2e.ts",

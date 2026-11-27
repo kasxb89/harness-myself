@@ -36,6 +36,7 @@ export interface MediaV2Catalog {
     durable_operation_receipt: true
     all_artifacts: true
     same_operation_configuration_requote?: boolean
+    material_conditions_v1?: boolean
     max_upload_bytes?: number
   }
   models: readonly MediaV2Model[]
@@ -159,7 +160,7 @@ export function mediaV2UUID(value: unknown): string {
 function sha(value: unknown): string { const result = text(value, 64); return /^[a-f0-9]{64}$/u.test(result) ? result : invalid() }
 function intent(value: unknown): MediaV2Intent { return oneOf(value, ['text', 'reference', 'frames', 'transform']) }
 function fieldName(value: string): string { return /^[A-Za-z][A-Za-z0-9_]{0,95}$/u.test(value) ? value : invalid() }
-function params(value: unknown): Record<string, MediaV2Value> {
+function params(value: unknown, parameterKeys = true): Record<string, MediaV2Value> {
   const entries = Object.entries(mediaV2Object(value))
   if (entries.length > 100) invalid()
   let nodes = 0
@@ -172,11 +173,11 @@ function params(value: unknown): Record<string, MediaV2Value> {
     if (typeof entry === 'object' && Object.getPrototypeOf(entry) === Object.prototype) {
       const fields = Object.entries(entry)
       if (fields.length > 100) return invalid()
-      return Object.fromEntries(fields.map(([name, item]) => [fieldName(name), read(item, depth + 1)]))
+      return Object.fromEntries(fields.map(([name, item]) => [parameterKeys ? fieldName(name) : name, read(item, depth + 1)]))
     }
     return invalid()
   }
-  const result = Object.fromEntries(entries.map(([key, entry]) => [fieldName(key), read(entry)]))
+  const result = Object.fromEntries(entries.map(([key, entry]) => [parameterKeys ? fieldName(key) : key, read(entry)]))
   if (Buffer.byteLength(JSON.stringify(result)) > 1024 * 1024) invalid()
   return result
 }
@@ -283,7 +284,7 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
       pricing: { display: text(pricing.display, 1000),
         credits_per_yuan: number(pricing.credits_per_yuan, Number.MIN_VALUE), quote_required: true },
       ...model.description === undefined ? {} : { description: text(model.description, 4000, true) },
-      ...model.conditions === undefined ? {} : { conditions: params({ conditions: model.conditions }).conditions } }
+      ...model.conditions === undefined ? {} : { conditions: params({ conditions: model.conditions }, false).conditions } }
     if (pricing.quote_required !== true || new Set(result.asset_fields.map(field => field.name)).size !== result.asset_fields.length
       || new Set(result.intents.map(item => item.id)).size !== result.intents.length || result.intents.length === 0) invalid()
     return result
@@ -293,6 +294,7 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
     media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true,
     ...caps.same_operation_configuration_requote === undefined ? {}
       : { same_operation_configuration_requote: bool(caps.same_operation_configuration_requote) },
+    ...caps.material_conditions_v1 === undefined ? {} : { material_conditions_v1: bool(caps.material_conditions_v1) },
     ...caps.max_upload_bytes === undefined ? {} : { max_upload_bytes: number(caps.max_upload_bytes, 1, true) },
   }, models, credits_per_yuan: number(row.credits_per_yuan, Number.MIN_VALUE),
   ...row.poll_after_ms === undefined ? {} : { poll_after_ms: number(row.poll_after_ms, 1, true) } }

@@ -97,7 +97,11 @@ export interface MediaV2Record {
 }
 /** Selectable model definitions, product credit scale and an optional Host-configured polling interval. */
 export interface MediaV2Catalog {
-  readonly capabilities: { readonly same_operation_configuration_requote: boolean; readonly max_upload_bytes?: number }
+  readonly capabilities: {
+    readonly same_operation_configuration_requote: boolean
+    readonly material_conditions_v1?: boolean
+    readonly max_upload_bytes?: number
+  }
   readonly models: readonly MediaV2Model[]
   readonly credits_per_yuan: number
   readonly poll_after_ms?: number
@@ -164,9 +168,11 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
     || data.poll_after_ms < 1 || data.poll_after_ms > 60_000)) throw new Error('MEDIA_V2_CATALOG_INVALID')
   const capabilities = mediaV2Object(data.capabilities)
   const configurationRequote = capabilities?.same_operation_configuration_requote
+  const materialConditions = capabilities?.material_conditions_v1
   const maxUploadBytes = capabilities?.max_upload_bytes
   if (maxUploadBytes !== undefined && (!finite(maxUploadBytes) || !Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1)) throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (configurationRequote !== undefined && typeof configurationRequote !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
+  if (materialConditions !== undefined && typeof materialConditions !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   const models = data.models.map((value): MediaV2Model => {
     const row = mediaV2Object(value), pricing = mediaV2Object(row?.pricing), schema = mediaV2Object(row?.parameters_schema)
     if (!text(row?.id) || !text(row.display_name) || !text(row.model_version) || !mediaKind(row.kind)
@@ -194,6 +200,7 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
   })
   return { models, credits_per_yuan: data.credits_per_yuan,
     capabilities: { same_operation_configuration_requote: configurationRequote === true,
+      ...materialConditions === undefined ? {} : { material_conditions_v1: materialConditions },
       ...maxUploadBytes === undefined ? {} : { max_upload_bytes: maxUploadBytes } },
     ...data.poll_after_ms === undefined ? {} : { poll_after_ms: data.poll_after_ms } }
 }

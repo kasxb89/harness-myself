@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
-import { mediaV2Object, parseMediaV2Catalog, parseMediaV2Request, parseMediaV2Task } from '../src/media-v2-protocol.ts'
+import { mediaV2Object, parseMediaV2Catalog, parseMediaV2Operation, parseMediaV2Request, parseMediaV2Task } from '../src/media-v2-protocol.ts'
 
 const request = { client_operation_id: '02d6a836-08a6-4db8-8e08-1e562c50ee3c', model: 'synthetic-native',
   model_version: 'original-version', intent: 'reference', parameters: { prompt: '原画面' },
@@ -50,10 +50,64 @@ describe('native media protocol values', () => {
   it('continues to reject missing materials and reference-to-text coercion', () => {
     expect(() => parseMediaV2Request({ ...request, assets: {} })).toThrow()
     expect(() => parseMediaV2Request({ ...request, intent: 'text' })).toThrow()
+    expect(() => parseMediaV2Request({ ...request, parameters: { '$future-rule': true } })).toThrow()
   })
 })
 
 describe('catalog compatibility', () => {
+  it.each([true, false, undefined])('retains the optional material-condition capability without inventing support: %s', (advertised) => {
+    const parsed = parseMediaV2Catalog({ capabilities: {
+      ...capabilities, ...advertised === undefined ? {} : { material_conditions_v1: advertised },
+    }, credits_per_yuan: 1000, models: [syntheticAudio] })
+    expect(parsed.capabilities.material_conditions_v1).toBe(advertised)
+    expect('material_conditions_v1' in parsed.capabilities).toBe(advertised !== undefined)
+  })
+
+  it.each([[null], [1], ['true'], [{}], [[]]])('rejects a malformed advertised material-condition capability: %s', (advertised) => {
+    expect(() => parseMediaV2Catalog({ capabilities: { ...capabilities, material_conditions_v1: advertised },
+      credits_per_yuan: 1000, models: [syntheticAudio] })).toThrow()
+  })
+
+  it.each([
+    { schema_version: 1, rules: [{ id: 'reference-image-count', when: { mode: ['reference'] }, asset_field: 'images',
+      disallowed_counts: [1], message: 'Select explicit first-frame mode for one image' }] },
+    { schema_version: 1, rules: [{ id: 'reference-audio-requires-visual', when: { mode: ['reference'] }, asset_field: 'audios',
+      requires_any_assets: ['images', 'videos'], message: 'Reference audio needs a visual reference' }] },
+    { schema_version: 2, rules: [{ '$future-rule': { depends_on: ['images'] } }] },
+    { schema_version: 1, rules: 'unknown rule array' },
+  ])('preserves declared and unsupported condition data independently of other models', (conditions) => {
+    const input = { capabilities: { ...capabilities, material_conditions_v1: true }, credits_per_yuan: 1000,
+      models: [{ ...syntheticAudio, conditions }, { ...syntheticAudio, id: 'unaffected-model' }] }
+    const before = JSON.stringify(input), parsed = parseMediaV2Catalog(input)
+    expect(parsed.models[0]?.conditions).toEqual(conditions)
+    expect(parsed.models[1]?.conditions).toBeUndefined()
+    expect(JSON.stringify(input)).toBe(before)
+  })
+
+  it('keeps non-JSON or excessive condition data outside the catalog parser budget', () => {
+    const catalog = { capabilities, credits_per_yuan: 1000, models: [syntheticAudio] }
+    for (const conditions of [NaN, new Date(0), new Uint8Array([1]), { rules: 'x'.repeat(100_001) }]) {
+      expect(() => parseMediaV2Catalog({ ...catalog, models: [{ ...syntheticAudio, conditions }] })).toThrow()
+    }
+  })
+
+  it('decodes an accepted original receipt without consulting newer model conditions or quantity limits', () => {
+    const originalId = request.client_operation_id
+    const task = { id: 'old-original-task', model: request.model, kind: 'video', status: 'succeeded', is_final: true,
+      created_at: 1, updated_at: 2, artifacts: [{ key: 'original', type: 'video', mime_type: 'video/mp4', order: 0,
+        content_url: '/v1/tasks/old-original-task/artifacts/original/content', sha256: 'c'.repeat(64), bytes: 123 }] }
+    const quoted = { ...request, parameters: { mode: 'reference', count: 2 }, assets: { videos: ['first-video', 'second-video'] },
+      quote_id: 'original-quote', request_sha256: 'b'.repeat(64), retail_cny: '1.00', credits: 1000, credits_per_yuan: 1000,
+      expires_at: 1, operation_state: 'accepted', task }
+    const input = { client_operation_id: originalId, state: 'accepted', quote_id: quoted.quote_id, task, quote: quoted }
+    const before = JSON.stringify(input), parsed = parseMediaV2Operation(input)
+    expect(parsed.client_operation_id).toBe(originalId)
+    expect(parsed.quote?.parameters).toEqual({ mode: 'reference', count: 2 })
+    expect(parsed.quote?.assets).toEqual({ videos: ['first-video', 'second-video'] })
+    expect(parsed.task?.artifacts).toEqual(task.artifacts)
+    expect(JSON.stringify(input)).toBe(before)
+  })
+
   it('preserves the actual Go model definitions and all native constraints', async () => {
     const raw = await actualGoCatalog()
     const parsed = parseMediaV2Catalog({ ...raw, credits_per_yuan: 1000 })

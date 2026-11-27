@@ -12,6 +12,7 @@ export const mediaV2Zh = {
   queued: '等待处理', running: '处理中', succeeded: '已完成', failed: '未完成', quoted: '已报价，尚未生成', quoteRejected: '报价未通过，尚未生成', save: '保存全部产物', saved: '已保存',
   download: '下载原文件', results: '全部产物', requestFailure: '暂时无法完成请求，原记录已保留', unavailable: '当前组合不支持该选项，请修改或清除',
   required: '请补充必需的参数或素材', limit: '超出当前组合支持的范围，请调整', invalid: '参数或素材不符合当前模型要求',
+  condition: '当前素材组合不符合所选模式的要求，请调整素材或模式；原素材已保留',
   intentError: '使用方式与素材不匹配，请明确选择并保留所需素材', unknownAsset: '素材上传结果待确认，请核对原上传', binding: '素材属于原模型或已过期，请保留原记录并重新选择有效素材',
   uploadFailed: '上传结果尚未确认，仅可核对原上传', newDraft: '继续编辑新草稿', originalId: '操作编号', optional: '可选', noPrompt: '此处理工具无需画面描述',
 }
@@ -31,6 +32,7 @@ export const mediaV2En: MediaV2Labels = {
   queued: 'Queued', running: 'Processing', succeeded: 'Completed', failed: 'Failed', quoted: 'Quoted, not generated', quoteRejected: 'Quote rejected, not generated', save: 'Save every artifact', saved: 'Saved',
   download: 'Download original', results: 'All artifacts', requestFailure: 'Request unavailable. The original record is retained.', unavailable: 'This option is unavailable for the current combination. Change or clear it.',
   required: 'Complete the required parameter or media', limit: 'The current combination exceeds a published limit', invalid: 'The parameter or media does not match this model',
+  condition: 'This media combination does not meet the selected mode requirements. Adjust the media or mode; your files are retained.',
   intentError: 'The workflow and media do not match. Choose explicitly and keep the intended references.', unknownAsset: 'Upload outcome unconfirmed. Check the original upload.', binding: 'This asset belongs to the previous model or expired. Keep the original record and select valid media.',
   uploadFailed: 'Upload outcome unconfirmed. Only check the original upload.', newDraft: 'Edit a new draft', originalId: 'Operation ID', optional: 'Optional', noPrompt: 'This processor does not need a description',
 }
