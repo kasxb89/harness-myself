@@ -218,7 +218,7 @@ export function mediaV2FormIssues(model: MediaV2Model, intent: MediaV2Intent, va
   for (const name of Object.keys(values)) if (!fields.some(field => field.name === name) || model.asset_fields.some(field => field.name === name)) issues.push({ field: name, reason: 'unavailable' })
   const nativeMode = typeof values.mode === 'string' ? values.mode.toLowerCase().replaceAll('_', '-') : ''
   const textModes = ['text-to-image', 'text-to-video', 'text2image', 'text2video', 't2i', 't2v']
-  const materialModes = ['image-edit', 'multi-reference', 'layer-decompose', 'image-to-video', 'image-to-image', 'reference-to-video', 'video-to-video', 'i2v', 'i2i', 'r2v', 'v2v']
+  const materialModes = ['image-edit', 'reference', 'multi-reference', 'layer-decompose', 'image-to-video', 'image-to-image', 'reference-to-video', 'video-to-video', 'i2v', 'i2i', 'r2v', 'v2v']
   if (intent === 'text' && materialModes.includes(nativeMode) || intent !== 'text' && textModes.includes(nativeMode)) issues.push({ field: 'mode', reason: 'intent' })
   for (const field of fields.filter(item => !model.asset_fields.some(asset => asset.name === item.name))) {
     const value = values[field.name]

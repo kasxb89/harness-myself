@@ -38,6 +38,7 @@ const VIDEO_WORKFLOW = [
   '# Yunshu video direction and execution',
   '',
   'Native media-generation-v2 processors use list_media_models_v2, upload_media_asset, quote_media_operation, generate_media_operation and query_media_operation. When the requested motion replication, lip-sync, avatar, upscaling, layer decomposition or other operation is advertised there, preserve its exact typed controls and use that same V2 operation throughout. Never send a V2-only model to the legacy text/video generator. Keep the original operation ID after acceptance or an unknown response; query and save every original output rather than generating again. Existing ordinary creation workflows below remain unchanged for their supported models.',
+  'For reference-image/video reconstruction, viral-reference remakes, product/person replacement or motion transfer, load yunshu-reference-replica first. Analyze real image evidence and inspect_reference_video frames before proposing the matching native operation. An analysis-only request never authorizes generation.',
   VIDEO_DIRECTOR_PROMPT,
   '',
   '## Use the native workflow',
@@ -69,6 +70,30 @@ const VIDEO_WORKFLOW = [
   'When the actual generation model is MiniMax-H3, load yunshu-minimax-h3 only if its prompt notation is needed. Other generation models keep their own format. Do not fetch online guides at generation time.',
 ].join('\n')
 
+/** Evidence-first image/video reconstruction; execution remains with native tools and retained receipts. */
+const REFERENCE_REPLICA_WORKFLOW = [
+  '# 云枢参考图片与视频复刻',
+  CREATION_LANGUAGE_GUIDANCE,
+  VIDEO_REQUEST_GUIDANCE,
+  '',
+  '## 先分析用户实际提供的证据',
+  '适用于爆款图片复刻、对标视频复刻、商品/人物替换、画风与分镜重建、图像主体沿参考视频动作迁移。用户只要求分析、拆解、出方案或改提示词时，只读取证据并保存计划，不上传、不报价、不生成。用户明确要求开始生成或确认方案后，才沿原计划执行；确认不增加作品数量。',
+  '按实际文件名和附件顺序列出素材：源图/风格图、对标视频、商品素材、人物素材、首帧/尾帧等。逐项写明采用、排除和可修改内容；不要将图片和视频混作同一素材角色，也不要杜撰未收到的素材或图片内容。先通过现有图片读取/查看工具看真实源图。视频若在附件存储区，先通过现有文件工具将当前聊天已获读取授权的附件正常复制到工作区，调用 inspect_reference_video，再读取/查看返回的实际帧路径，保留每帧 time_seconds 和真实 duration_seconds。不能绕过附件授权直接读取原生路径、私有媒体、任意主机文件或网上猜测的地址。',
+  '输出分为“已观察”“推断”“未知”：已观察只描述实际源图与带时间点抽样帧可见内容；推断说明依据；未知列出未核实的动作中段、声音、台词、节奏、口型和完整转场。抽出三个静态帧不代表看完全部动作或听过音频；容器时长、存在音轨也不能证明对白或同步正确。没有真实视听能力时明确限制，不补写为已看过、已听过。',
+  '',
+  '## 将分析保存为同一份可执行计划',
+  '调用 update_creation_plan，包含必需 kind、title、brief、shots，每个shot有id、order、title、prompt。brief保留用户原始要求、明确模型/偏好、作品数量、复刻目标与已观察/推断/未知；assets的source_path_or_asset_id绑定真实源文件，prompt说明素材职责、保留与替换规则；shots保存逐段时间与动作、构图、运镜和待确认限制。分析得到的抽帧是证据，不能自动代替原视频作为动作输入。后续修改先get_creation_plan并保留原plan_id、素材/镜头id、已完成产物和原操作编号，不维护脱节的第二份分镜。',
+  '严格区分“动作迁移”和“风格/分镜重建”。用户给出主体图加动作对标视频并要求复刻动作时，必须选择当前目录明确支持图+视频的动作迁移/复刻操作，把主体图和原视频分别绑定其声明角色。只看抽帧再文生视频不等于动作迁移；不支持时说明缺口，不能丢弃视频改为纯文本。用户只要求借鉴风格、构图或分镜时，说明是重建而非精确动作复制；按其目标使用原图/视频和对应原生能力。商品与人物替换要逐项说明哪个主体身份保持、哪个被替换、姿态/场景/文字是否保留，不继承用户要求排除的标语、价格、水印或声音。',
+  '',
+  '## 读取精确模型、素材角色与报价后执行',
+  '保留用户显式选择的模型；未指定时先读取实际个人媒体偏好和当前目录，不让用户重复已保存的选择。用 list_media_models_v2 获取可执行型号，再带精确model读取完整 parameters_schema、asset_fields、conditions、intent、尺寸/时长和上传限制，之后才为每项素材调用upload_media_asset绑定精确field，并调用quote_media_operation。名称相近不代表能力相同；不能凭示例猜字段、压平嵌套参数、乱用首尾帧槽、遗漏必需视频或用收费试调用探测能力。没有合适能力或可核实报价时保留方案并报告缺口。',
+  '未指定数量默认一条；明确几条作品才做几条。分镜数量、抽帧数量、并发容量、质量检查或修改方案都不能自动新增收费版本。按照所选规格支持的最长合适单段时长减少付费片段，优先减少拼接，再减少多余生成秒数；多个视觉镜头可以写进同一单段提示词。尊重用户明确时长和静态参数，不静默切模型。并发仅加快既定作品/片段，不增加其数量。',
+  '向用户展示材料角色、保留/替换规则、实际模型/时长/规格、复刻方式、未知限制及精确报价。需要确认时等待当前方案确认；用户已经明确要求生成且无需额外选择时直接沿该方案执行，不要求重复授权。仅分析请求即使已经形成完整方案也不能进入生成。',
+  'V2报价返回的client_operation_id是这件作品的原操作身份。将它记回原计划brief或对应shot.prompt，与真实素材、参数和报价对应；确认后只用generate_media_operation执行该原编号。V2不走generate_video_project、generate_video或legacy resume_video_project；不能新建work_key绕开已接受、未知或中断的操作。普通确认、参数修订、查结果与保存失败恢复都保留同一计划和已有身份。未受理的参数修订遵从原quote允许的条件，不改写已受理请求。',
+  '已接受、提交未知、查询超时、404或部分保存失败时，只调用query_media_operation查询并保存原client_operation_id的全部产物，不另POST、不换模型、不盲用legacy resume、不新建work_key。停止本地等待不证明上游取消或退款。用户后来另行明确发起的新作品与原操作独立，不能把普通确认解释为新作品。',
+  '呈现实际返回的全部产物路径并链接文件，保留GIF、图层和其他输出，不只取第一项。成片必须真实查看后才评价画面；听过并对照时点后才评价声音、对白和口型，否则列为未核实。用已观察差异提出定向修改方案，修改方案本身不触发重新收费生成。',
+].join('\n')
+
 /**
  * Publish a directing skill through the existing optional skill registry.
  * @param ctx - Credits plugin context owning registration and its disposal.
@@ -81,6 +106,12 @@ export function registerCreationWorkflows(ctx: Context): void {
       description: 'Direct Yunshu video, storyboard, animation, dialogue and character/reference requests through the account model catalog and fixed background workflow. Complex plans read list_video_models and use generate_video_project; a simple single clip directly uses generate_video_project with its brief and actual Host defaults, without loading this skill. Preserve explicit model choice and use job progress without manual polling or assembly scripts.',
       source: 'bundled',
       content: VIDEO_WORKFLOW,
+    })
+    owner.skills.register({
+      name: 'yunshu-reference-replica',
+      description: 'Analyze and reconstruct real reference images/videos, viral examples, product/person replacements and image-plus-video motion transfer. Read actual images and inspect_reference_video frames, separate observations/inferences/unknowns, and save update_creation_plan. Analysis-only requests never generate. Confirmed execution reads the exact V2 model schema and material roles, quotes once, and preserves the same plan and original operation through recovery.',
+      source: 'bundled',
+      content: REFERENCE_REPLICA_WORKFLOW,
     })
     owner.skills.register({
       name: 'yunshu-minimax-h3',

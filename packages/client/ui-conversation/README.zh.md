@@ -29,6 +29,8 @@ kind: "package-reference"
 
 `ui-conversation` 拥有与 target 无关的 Conversation 组装和共享浏览器 shell。它消费 Session Controller 的 `SessionEventLikeEntry` feed，通过 `ctx.uiConversation` 暴露不依赖 React 的注册表与逐 Session binding，并通过 `ctx.uiSession` 提供 `useConversation`、`useInput` 和 `inputActions` 标准 props。它还拥有按会话的持久化图片 URL 缓存：`ctx.uiConversation.imageUrl(sessionId, attachment)` 为每个附件解析一个经会话授权的浏览器 URL，并随 Session binding 释放而撤销，因此所有 Conversation target 共享一次 `session.attachment` 读取。Chat 等具体 target 位于独立包，由各自包注册 Definition、快照 builder、View 和 renderer。
 
+`ctx.conversation.acceptDraft(binding, prompt, files)` 为已保留且为空的会话编辑器原子接入有序浏览器文件和文本。过期绑定、已有草稿或锁定的提交在消费文件前被拒绝，接入失败时只释放本次新建附件。返回 `true` 仅表示草稿已就绪供用户检查，不发送消息或开始生成。
+
 作用于当前 Session 的 `conversation/input-model-capabilities` 事件将归一化执行控制、逐项核实状态和渠道可用性发布到 `InputState.modelCapabilities`。待核实不锁定输入或删除附件，也不额外显示通用提示行。确认不兼容的文件、图片和桌面引用保留草稿并说明当前渠道限制。渠道不可用时仍允许携带完整草稿和附件提交一次，由 Host 在受理前选择账号有权使用且兼容的模型。更换模型后既有附件仍可见。明确的模型能力错误保留被拒绝的草稿，并区分渠道不可用与输入、历史不兼容；不匹配自然语言意图或数量。
 
 图片入口的局部故障使用独立的暂不可用文案，拦截图片粘贴、选取和提交。已有图片附件和文字草稿保留；移除图片后，文字及已暂存文件恢复发送。局部故障标志及原因按会话隔离，与整条渠道可用性和能力核实事实分开。

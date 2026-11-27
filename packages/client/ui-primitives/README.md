@@ -121,6 +121,10 @@ The atoms cannot read the application locale, so every piece of user-facing copy
 
 `productFailureKind` classifies observed failure codes for locale-owned display: sign-in, account credits, cancellation, connection, timeout, request validation, permission, rate limiting, service HTTP 5xx, explicit upstream failure and local storage stay distinct. Tool argument validation, incomplete or unsupported media specifications, and model-selection conflicts belong to request validation; exhausted user or token quotas belong to account credits. Connection and timeout categories do not establish whose infrastructure caused the failure. Unrecognized codes remain unknown; the helper matches exact codes and never reads or rewrites diagnostic text. Consumers preserve accepted tasks and unknown submission outcomes before choosing a failure summary.
 
+### Reference remix workbench
+
+`ReplicaWorkbench` previews a source image or video separately from subject images and passes ordered files plus an analysis-only request to a real normal-chat draft consumer. It retains local files on failure and account changes, validates positive integer counts without a global cap, and invents no cross-model output specifications. `prepareReplicaDraft` checks the Host account and login scope before connecting and immediately before atomic draft acceptance. The caller retains an unrevealed target during that second check and synchronously verifies the authoritative window account epoch before accepting and revealing it. Neither helper sends a message or submits generation.
+
 <a id="video-playback"></a>
 ### Video playback
 

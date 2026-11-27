@@ -3,7 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import {
   appPath, IconCloseOutlineRegular,
   IconPlusOutlineRegular, IconSearchOutlineRegular, IconSendOutlineRegular,
-  IconSparkleRegular, ImageLightbox, MediaV2Composer, productFailureKind, SegmentedTabs, Tooltip,
+  IconSparkleRegular, ImageLightbox, MediaV2Composer, ReplicaWorkbench, type ReplicaDraftRequest, type ReplicaDraftOutcome,
+  productFailureKind, SegmentedTabs, Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { HostObservable, InjectFace, PropsRenderFactories, PropsRuntime, PropsStore, StandardSourceBinding } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-prompt-assist/client'
@@ -15,6 +16,7 @@ import css from './ImagePage.module.css'
 
 /** Plain callbacks injected by this plugin's registration. */
 export interface ImagegenInjected {
+  readonly prepareReplicaDraft: (request: ReplicaDraftRequest) => Promise<ReplicaDraftOutcome>
   readonly t: (key: string, values?: Record<string, string>) => string
   readonly openVideo: () => void
   readonly openAudio?: () => void
@@ -185,6 +187,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
   const draft = props.useStore(state => state)
   const sessionId = props.useCreationSession(binding => binding.key)
   const [mediaV2, setMediaV2] = useState(false)
+  const [replica, setReplica] = useState(false)
   const {
     prompt, modelId, size, resolution, quality, background, format, compression, moderation, seed, count,
     references, uploading, uploadResult, generationStartedAt, sessionInvalid, message, failure, resultPaths: result,
@@ -685,6 +688,9 @@ export function ImagePage(props: ImagePageProps): ReactNode {
     promptField.current?.focus()
   }
 
+  if (replica) return <div className={css.page}><div className={css.content}><ReplicaWorkbench kind="image" language={language === 'en' ? 'en' : 'zh'} accountKey={accountIdentity}
+    onExit={() => { setReplica(false) }} onPrepareDraft={props.prepareReplicaDraft} /></div></div>
+
   if (mediaV2) return <div className={css.page}><div className={css.content}>
     <MediaV2Composer kind="image" accountKey={accountIdentity} language={language === 'en' ? 'en' : 'zh'} onExit={() => { setMediaV2(false) }} />
   </div></div>
@@ -695,6 +701,7 @@ export function ImagePage(props: ImagePageProps): ReactNode {
         <header className={css.header}>
           <h1 className={css.title}>{t('title')}</h1>
           <button type="button" className={css.textAction} onClick={() => { setMediaV2(true) }}>{t('modelsAndProcessing')}</button>
+          <button type="button" className={css.textAction} onClick={() => { setReplica(true) }}>{t('replica')}</button>
           <SegmentedTabs
             className={css.modeTabs}
             items={[

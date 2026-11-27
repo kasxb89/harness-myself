@@ -23,6 +23,8 @@ Create images from an editable prompt and model-supported references, with publi
 <a id="use-this-package"></a>
 ## Use this package
 
+**Reference remix** opens a role-separated local preview for the source image and optional product/person images. Keep/change notes, optional target specifications and a positive output count (default one) become an ordinary unsent chat draft. The Host account/login scope and authoritative window account epoch are rechecked after target connection and before attachment acceptance; an occupied composer or failed handoff preserves both drafts. Sending that draft uses normal chat billing and requests the reference-replica skill to analyze and plan without image/video generation. Plan confirmation precedes model-native parameter validation, exact pricing and generation in the same chat.
+
 The Audio tab appears only when the account media catalog includes audio models; selecting it opens the audio workspace without generating media.
 
 When a model publishes complete specifications, one selection sets quality, resolution and size together. Only a listed combination can be submitted; an empty list pauses generation. Models without complete specifications retain their existing parameter controls. Each material retains an explicit generation or writing-only use across model changes. New materials default to generation when the selected model supports image input, otherwise writing-only. Unmarked older materials remain generation references. A model or limit change preserves every material and blocks incompatible generation rather than truncating or switching to text. Only generation references determine edit specifications and enter the generation request; AI writing can still use every retained material.

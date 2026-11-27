@@ -51,12 +51,13 @@ function makeProps() {
     t,
     renderFactorySlot: vi.fn(() => null),
     openVideo: vi.fn(),
+    prepareReplicaDraft: vi.fn(async () => 'ready' as const),
     readDraft: getSnapshot,
     createReferencePreview: vi.fn((file: File) => `blob:${file.name}`),
     releaseReferencePreview: vi.fn(),
     actions: store.actions,
     useStore: select => select(useSyncExternalStore(subscribe, getSnapshot)),
-  } satisfies Pick<Parameters<typeof ImagePage>[0], 'useCreationSession' | 'useCreationContent' | 'useLocale' | 'refreshContent' | 't' | 'renderFactorySlot' | 'openVideo' | 'readDraft' | 'createReferencePreview' | 'releaseReferencePreview' | 'actions' | 'useStore'>
+  } satisfies Pick<Parameters<typeof ImagePage>[0], 'useCreationSession' | 'useCreationContent' | 'useLocale' | 'refreshContent' | 't' | 'renderFactorySlot' | 'openVideo' | 'prepareReplicaDraft' | 'readDraft' | 'createReferencePreview' | 'releaseReferencePreview' | 'actions' | 'useStore'>
   return { store, fixture, props: props as Parameters<typeof ImagePage>[0] }
 }
 

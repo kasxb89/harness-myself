@@ -241,6 +241,8 @@ export interface VideoProjectOptions {
   saved?(manifest: import('./video-project.ts').VideoProjectManifest, segmentIndex: number | undefined, signal: AbortSignal): Promise<void>
   /** Private durable records, outside public artifact directories. */
   stateDirectory: string
+  /** Application-private directories excluded even when a calling workspace contains them. */
+  referenceInspectionDeniedRoots?: readonly string[]
   /** Workspace-relative artifact directory; resolved against each calling agent's cwd. */
   outputDirectory: string
   /** Optional trusted publication service; composition remains confined to the workspace. */

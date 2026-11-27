@@ -8,13 +8,13 @@ import { MINIMAX_H3_PROMPT_GUIDANCE } from '../src/video-prompt-format.ts'
 let ctx: Context | undefined
 afterEach(async () => { await ctx?.fiber.dispose() })
 
-it('publishes shared community direction and an optional H3 skill and removes both with their owner', async () => {
+it('publishes directing, reference reconstruction and H3 skills and removes them with their owner', async () => {
   ctx = new Context()
   await ctx.plugin(SkillRegistry)
   const fiber = ctx.plugin((owner) => { registerCreationWorkflows(owner) })
   await fiber.await()
   const summaries = (await ctx.skills.snapshot()).skills
-  expect(summaries.map(skill => skill.name).toSorted()).toEqual(['yunshu-minimax-h3', 'yunshu-video-director'])
+  expect(summaries.map(skill => skill.name).toSorted()).toEqual(['yunshu-minimax-h3', 'yunshu-reference-replica', 'yunshu-video-director'])
   for (const summary of summaries) {
     expect(summary).toMatchObject({ source: 'bundled', invocation: { modelInvocable: true, userInvocable: true } })
   }
@@ -30,9 +30,15 @@ it('publishes shared community direction and an optional H3 skill and removes bo
   const h3 = await ctx.skills.get('yunshu-minimax-h3')
   expect(h3?.content).toBe(MINIMAX_H3_PROMPT_GUIDANCE)
   await expect(`${h3?.content}\n`).toMatchFileSnapshot('./expected/minimax-h3-skill.md')
+  const replica = await ctx.skills.get('yunshu-reference-replica')
+  await expect(`${replica?.content}\n`).toMatchFileSnapshot('./expected/reference-replica-skill.md')
+  expect(replica?.content).toContain('仅分析请求即使已经形成完整方案也不能进入生成')
+  expect(replica?.content).toContain('只看抽帧再文生视频不等于动作迁移')
+  expect(replica?.content).toContain('不能新建work_key绕开已接受、未知或中断的操作')
   await fiber.dispose()
   expect(await ctx.skills.get('yunshu-video-director')).toBeUndefined()
   expect(await ctx.skills.get('yunshu-minimax-h3')).toBeUndefined()
+  expect(await ctx.skills.get('yunshu-reference-replica')).toBeUndefined()
   expect((await ctx.skills.snapshot()).skills).toEqual([])
 })
 
@@ -42,7 +48,7 @@ it('registers when the shared skill registry becomes available after the credits
   await ctx.plugin(SkillRegistry)
   await fiber.await()
   expect((await ctx.skills.snapshot()).skills.map(skill => skill.name).toSorted())
-    .toEqual(['yunshu-minimax-h3', 'yunshu-video-director'])
+    .toEqual(['yunshu-minimax-h3', 'yunshu-reference-replica', 'yunshu-video-director'])
 })
 
 it('keeps native execution fast paths and rejects script fallbacks beyond supported post-production', async () => {

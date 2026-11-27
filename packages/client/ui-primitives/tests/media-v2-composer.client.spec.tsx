@@ -500,6 +500,59 @@ describe('media-v2 conditional field validation', () => {
   })
 })
 
+describe('media-v2 native reference intent', () => {
+  const model: MediaV2Model = { ...source, id: 'native-reference-mode', kind: 'video', parameters_schema: { properties: {
+    prompt: { type: 'string' },
+    mode: { type: 'string', enum: ['text-to-video', 'reference', 'multi-reference'], default: 'reference',
+      'x-ycapi-contract': { label: { zh: '生成模式' } } },
+    images: { type: 'array', 'x-ycapi-contract': { label: { zh: '参考图' } } },
+  } } }
+
+  it.each(['reference', 'multi-reference'])('blocks text intent with native %s and no generation materials while retaining writing-only files', async (mode) => {
+    const api = backend([model]); await opened(api.transport, 'video')
+    fireEvent.change(screen.getByLabelText('生成模式'), { target: { value: mode } })
+    expect(screen.getByRole('combobox', { name: '使用方式' })).toHaveProperty('value', 'text')
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await upload(api.transport)
+    fireEvent.change(screen.getByLabelText('one.png: 使用方式'), { target: { value: 'writing' } })
+    expect(screen.getByText('one.png')).toBeTruthy()
+    expect(screen.getByLabelText('one.png: 使用方式')).toHaveProperty('value', 'writing')
+    expect(screen.getByLabelText('生成模式')).toHaveProperty('value', mode)
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+
+  it('quotes explicit text-to-video without manufacturing references', async () => {
+    const api = backend([model]); await opened(api.transport, 'video')
+    fireEvent.change(screen.getByLabelText('生成模式'), { target: { value: 'text-to-video' } })
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await screen.findByText('本次费用: 250 积分')
+    expect(api.records()[0]?.request).toMatchObject({ intent: 'text', parameters: { mode: 'text-to-video' }, assets: {} })
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+
+  it('quotes reference intent with its complete selected material bindings', async () => {
+    const api = backend([model]); await opened(api.transport, 'video')
+    fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+    await upload(api.transport, ['one.png', 'two.png'])
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await screen.findByText('本次费用: 250 积分')
+    expect(screen.getByText('one.png')).toBeTruthy(); expect(screen.getByText('two.png')).toBeTruthy()
+    const request = api.records()[0]?.request
+    expect(request).toMatchObject({ intent: 'reference', parameters: { mode: 'reference' } })
+    const uploaded = api.transport.mock.calls.filter(call => call[0].startsWith(`${prefix}/assets?`))
+    expect(request?.assets.images).toEqual(uploaded.map(call => `ma2_${new URL(call[0], 'http://localhost').searchParams.get('client_asset_id') ?? ''}`))
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+})
+
 it('keeps native number and boolean choices typed and supports standard array item enums', async () => {
   const model: MediaV2Model = { ...source, asset_fields: [], parameters_schema: { properties: {
     fps: { type: 'integer', enum: [24, 30], default: 24 },

@@ -271,6 +271,10 @@ Assembler 会记录这项依赖。如果后续 older prepend 带来了更近的�
 
 `publication` 控制发生 State 变更后何时物化。结构或 terminal 变化使用 `immediate`，高频可见 delta 使用 `animation-frame`，只为后续发布积累 State 时使用 `none`。引擎按日志顺序应用每条 scalar update，并用一次 batch update 应用一个 packed run；该选项只合并视图发布频率。
 
+## 跨功能草稿接入
+
+`ctx.conversation.acceptDraft(binding, prompt, files)`仅为精确保留的会话代际中的空编辑器接入有序浏览器文件和文本。过期绑定、已有草稿或锁定的提交返回`false`，不消费文件；后续暂存失败只释放本次创建的附件。`true`仅表示普通草稿已准备，不发送消息或开始生成。
+
 ## 所选模型的输入控制
 
 仅存在于 Client、以 Session 为作用域的 parallel 事件 `conversation/input-model-capabilities(capabilities)` 发布所选模型显式声明的输入控制。[`InputModelCapabilities`](../../packages/client/ui-conversation/src/client/contract/input.ts) 值携带可选的 `tools`、`vision` 与 `inputModalities`；`undefined` 清除声明并保留旧有输入行为。模型选择桥接为自身 Session 发布更新，并在销毁时清除这些控制。

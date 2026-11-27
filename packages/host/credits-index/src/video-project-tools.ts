@@ -25,6 +25,7 @@ import type { VideoWorkBatch, VideoWorkClaim } from './video-work-store.ts'
 import { appendChatVideoWorks, claimChatVideoWork, existingVideoWorkResult, prepareChatVideoWorks, settleVideoWorkPreparation } from './video-work-execution.ts'
 import { captureChatVideoBalanceStop, type ChatVideoBalanceStop } from './chat-video-balance-stop.ts'
 import { videoSubmissionRevision } from './video-balance-retry.ts'
+import { registerReferenceVideoInspection } from './reference-video-inspection.ts'
 
 declare module '@deepseek-ai/dsh-jobs/view' {
   interface JobKindMap {
@@ -152,6 +153,7 @@ function statusOf(manifest: VideoProjectManifest, running: boolean): VideoToolRe
  * @param options - validated deployment limits, account callbacks, and local editor factory.
  */
 export function registerVideoProjectTools(ctx: Context, options: VideoProjectOptions): void {
+  registerReferenceVideoInspection(ctx, options)
   const lifetime = new AbortController()
   const activeProjects = new Map<string, 'starting' | 'cancelling' | { jobId: JobId; done: Promise<JobOutcome> }>()
   const cancellationEpochs = new Map<string, number>()

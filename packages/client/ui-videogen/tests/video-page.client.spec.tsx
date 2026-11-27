@@ -71,6 +71,7 @@ function setup(overrides: Partial<typeof params> = {}, modelId = 'video-real', s
   const props = {
     useCreationContent: fixture.useCreationContent, useLocale: fixture.useLocale, refreshContent: vi.fn(),
     useCreationSession: select => select({ key: chatSessionId, hooks: {}, keyedHooks: {}, props: {} }),
+    prepareReplicaDraft: vi.fn(async () => 'ready' as const),
     t, openImage: vi.fn(), createPreview: vi.fn((file: File) => `blob:${file.name}`), releasePreview: vi.fn(),
     renderFactorySlot: vi.fn<RenderFactorySlot>(() => null),
     useStore: bindSnapshotSelector(store), actions: store.actions,

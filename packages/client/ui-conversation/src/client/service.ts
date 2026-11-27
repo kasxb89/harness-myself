@@ -14,7 +14,7 @@ import { randomUUID } from '@deepseek-ai/dsh-util-crypto'
 // error, so scope resolution goes through the sessions service (scopeOf
 // method) instead of the standalone helper.
 import type {
-  ISessions, PendingSubmissionRetirement, SessionFace,
+  ISessions, PendingSubmissionRetirement, SessionBinding, SessionFace,
 } from '@deepseek-ai/dsh-api-session-controller/client'
 import type {} from '@deepseek-ai/dsh-client-file-upload/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
@@ -67,6 +67,15 @@ export interface IConversation {
    * cannot import makes a session's input inert with its own reason.
    */
   readonly blocks: ComposerBlocks
+  /**
+   * Accept ordered browser files and text into an empty retained Session draft atomically.
+   * @param binding - Expected current Session generation, retained by the navigation owner.
+   * @param prompt - Analysis or other user-reviewable draft text.
+   * @param files - Ordered local files; ownership transfers only when this returns true.
+   * @returns True when the unsent draft is ready; false preserves existing content and input files.
+   * No message is sent and no model generation is started.
+   */
+  acceptDraft(binding: SessionBinding, prompt: string, files: readonly File[]): boolean
   /**
    * Send a prompt into the caller scope's session (queued turn).
    * @param text - prompt text, sent verbatim as one text block.
@@ -220,6 +229,33 @@ export class ConversationController extends Service implements IConversation {
       this.draftAttachments.clear()
       this.fileUploads.set({})
     }, 'conversation draft attachments')
+  }
+
+  /** Accept a cross-feature draft without replacing existing text or attachments. */
+  acceptDraft(binding: SessionBinding, prompt: string, files: readonly File[]): boolean {
+    if (this.requireSessions().binding(binding.sessionId) !== binding) return false
+    const input = this.input.for(binding.ctx)
+    const initial = input.state.getSnapshot()
+    if (initial.draft !== '' || initial.attachmentIds.length > 0
+      || this.input.requestDraftInitialization(binding, {}) === 'blocked') return false
+    const attachments: ComposerAttachment[] = []
+    let attached = false, committed = false
+    try {
+      for (const file of files) attachments.push(...this.createDrafts(binding.sessionId, [file]))
+      if (this.requireSessions().binding(binding.sessionId) !== binding) return false
+      attached = input.addAttachments(attachments.map(item => item.id))
+      if (!attached) return false
+      if (this.input.requestDraftInitialization(binding, { prompt, clearPreviousDraft: true }) !== 'applied') return false
+      committed = true
+      return true
+    } finally {
+      if (!committed) {
+        for (const attachment of attachments) {
+          if (attached) input.removeAttachment(attachment.id)
+          this.releaseDraftAttachment(attachment.id)
+        }
+      }
+    }
   }
 
   /**

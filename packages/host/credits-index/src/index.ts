@@ -5412,6 +5412,7 @@ export function apply(ctx: Context, config: Config): void {
         { status: 'failed', code }, {}, manifest.identity.accountId) },
       creativeImageReference,
       stateDirectory: projectState,
+      referenceInspectionDeniedRoots: [stateDir, process.env.DSH_HOME ?? join(homedir(), '.dsh')],
       outputDirectory: resolved.videoProjectOutputDirectory,
       get publication() { return videoContext.get('artifactStorage') },
       maxTotalSeconds: resolved.videoProjectMaxSeconds,

@@ -5,6 +5,7 @@ export const NS = 'videogen'
 
 /** Simplified Chinese copy for the video composer. */
 export const zh = {
+  'replica': '爆款复刻',
   'modelsAndProcessing': '模型与处理',
   'quality': '质量',
   'specification': '完整规格',
@@ -224,6 +225,7 @@ export const zh = {
 
 /** English copy for every video composer translation key. */
 export const en: Record<keyof typeof zh, string> = {
+  'replica': 'Reference remix',
   'modelsAndProcessing': 'Models and processing',
   'quality': 'Quality',
   'specification': 'Complete specification',

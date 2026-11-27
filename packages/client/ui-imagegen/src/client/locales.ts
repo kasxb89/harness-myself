@@ -5,6 +5,7 @@ export const NS = 'imagegen'
 
 /** Simplified Chinese image-workspace copy. */
 export const zh = {
+  'replica': '爆款复刻',
   'modelsAndProcessing': '模型与处理',
   'specification': '完整规格',
   'specificationHint': '以下为可用的完整组合，切换会同时更新质量和尺寸',
@@ -158,6 +159,7 @@ export const zh = {
 
 /** English image-workspace copy with the same keys as Chinese. */
 export const en: Record<keyof typeof zh, string> = {
+  'replica': 'Reference remix',
   'modelsAndProcessing': 'Models and processing',
   'specification': 'Complete specification',
   'specificationHint': 'Choose a complete combination. Quality and size change together.',

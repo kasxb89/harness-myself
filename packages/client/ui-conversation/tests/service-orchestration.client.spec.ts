@@ -16,6 +16,8 @@ import { ComposerBlockRegistry } from '../src/client/input/blocks.ts'
 import { InputHub } from '../src/client/input/hub.ts'
 import { ConversationController } from '../src/client/service.ts'
 import { zh } from '../src/client/locales.ts'
+import { replicaPrompt } from '../../ui-primitives/src/replica-prompt.ts'
+import { replicaZh } from '../../ui-primitives/src/replica-locales.ts'
 
 async function bench(maxConcurrentFileUploads = 2) {
   const runtime = await SlotTestRuntime.create()
@@ -54,6 +56,55 @@ async function bench(maxConcurrentFileUploads = 2) {
 }
 
 describe('ConversationController', () => {
+  it('accepts ordered cross-feature files in an unsent draft and preserves a preexisting draft', async () => {
+    const b = await bench()
+    const created = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:handoff')
+    const revoked = vi.spyOn(URL, 'revokeObjectURL').mockReturnValue(undefined)
+    try {
+      const binding = b.runtime.sessions.binding('s1')!
+      const files = [new File(['one'], 'same.png', { type: 'image/png' }), new File(['two'], 'same.png', { type: 'image/png' })]
+      b.shell.setDraft('keep my draft')
+      expect(b.root.acceptDraft(binding, 'analyze only', files)).toBe(false)
+      expect(created).not.toHaveBeenCalled()
+      expect(b.shell.snapshot.draft).toBe('keep my draft')
+      b.shell.setDraft('')
+      expect(b.root.acceptDraft(binding, 'analyze only', files)).toBe(true)
+      expect(b.shell.snapshot.draft).toBe('analyze only')
+      const ids = b.shell.snapshot.attachmentIds
+      expect(b.root.resolveDraftAttachments(ids).map(item => item.file)).toEqual(files)
+      expect(b.prompt).not.toHaveBeenCalled()
+      expect(b.root.acceptDraft(binding, 'do not replace', files)).toBe(false)
+      expect(b.shell.snapshot.attachmentIds).toEqual(ids)
+    } finally { await b.runtime.dispose(); created.mockRestore(); revoked.mockRestore() }
+  })
+
+  it('rejects a withdrawn binding before file consumption and releases only failed handoff attachments', async () => {
+    const b = await bench()
+    const created = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:new-handoff')
+    const revoked = vi.spyOn(URL, 'revokeObjectURL').mockReturnValue(undefined)
+    try {
+      const binding = b.runtime.sessions.binding('s1')!
+      const file = new File(['one'], 'new.png', { type: 'image/png' })
+      const add = vi.spyOn(b.shell, 'addAttachments').mockReturnValueOnce(false)
+      expect(b.root.acceptDraft(binding, 'analysis', [file])).toBe(false)
+      expect(b.shell.snapshot.draft).toBe('')
+      expect(b.shell.snapshot.attachmentIds).toEqual([])
+      expect(revoked).toHaveBeenCalledWith('blob:new-handoff')
+      add.mockRestore()
+      const initialize = vi.spyOn(b.hub, 'requestDraftInitialization')
+        .mockReturnValueOnce('preserved').mockReturnValueOnce('blocked')
+      expect(b.root.acceptDraft(binding, 'analysis', [file])).toBe(false)
+      expect(b.shell.snapshot.draft).toBe('')
+      expect(b.shell.snapshot.attachmentIds).toEqual([])
+      initialize.mockRestore()
+      b.reference.release()
+      created.mockClear()
+      expect(b.root.acceptDraft(binding, 'analysis', [file])).toBe(false)
+      expect(created).not.toHaveBeenCalled()
+      expect(b.prompt).not.toHaveBeenCalled()
+    } finally { await b.runtime.dispose(); created.mockRestore(); revoked.mockRestore() }
+  })
+
   it('does not revive a withdrawn generation when an old input submits before scoped cleanup', async () => {
     const b = await bench()
     try {
@@ -588,6 +639,40 @@ describe('sendSession submission echo', () => {
       b.restore()
     }
     await b.runtime.dispose()
+  })
+
+  it('keeps video-first replica roles and same-name subject images aligned with actual prompt content', async () => {
+    const b = await echoBench()
+    try {
+      const binding = b.runtime.sessions.binding('s1')!
+      const files = [new File([Uint8Array.of(1)], 'reference.mp4', { type: 'video/mp4' }),
+        new File([Uint8Array.of(2)], 'same.png', { type: 'image/png' }),
+        new File([Uint8Array.of(3)], 'same.png', { type: 'image/png' })]
+      Object.assign(b.runtime.sessions.behavior(binding.sessionId), { uploadFile: async () => ({
+        ok: true, value: { receiptId: 'replica-video-receipt', file: { attachmentId: 'replica-video', name: 'reference.mp4', bytes: 1 } },
+      }) })
+      const prompt = replicaPrompt(replicaZh, { kind: 'video', source: files[0]!, subjects: files.slice(1), keep: '', change: '', specifications: '', count: '1' })
+      expect(b.root.acceptDraft(binding, prompt, files)).toBe(true)
+      const ids = b.shell.snapshot.attachmentIds
+      await vi.waitFor(() => { expect(b.root.fileUploads.getSnapshot()[ids[0]!]?.status).toBe('ready') })
+      expect(b.prompt).not.toHaveBeenCalled()
+      const sending = b.root.sendSession(binding.session, b.shell.snapshot.draft, ids, 'queue')
+      const echo = await b.begun
+      expect(echo.attachments.map(item => item.type)).toEqual(['file', 'image', 'image'])
+      await vi.waitFor(() => { expect(b.prompt).toHaveBeenCalledOnce() })
+      expect(b.prompt.mock.calls[0]?.[0]).toEqual([
+        { type: 'file', receiptId: 'replica-video-receipt' },
+        { type: 'image', mediaType: 'image/png', name: 'same.png', data: 'Ag==' },
+        { type: 'image', mediaType: 'image/png', name: 'same.png', data: 'Aw==' },
+        { type: 'text', text: prompt },
+      ])
+      expect(prompt).toContain('1. [video/mp4] 对标素材，仅用于分析参考 | "reference.mp4"')
+      expect(prompt).toContain('2. [image/png] 主体商品/人物图片，供主体一致性分析 | "same.png"')
+      expect(prompt).toContain('3. [image/png] 主体商品/人物图片，供主体一致性分析 | "same.png"')
+      b.retire.onRetire?.({ reason: 'failed' })
+      await expect(sending).resolves.toEqual({ kind: 'error' })
+      expect(b.root.resolveDraftAttachments(ids)).toHaveLength(3)
+    } finally { b.restore(); await b.runtime.dispose() }
   })
 
   it('preserves mixed image/file selection order through echo, prompt, and observed retirement', async () => {

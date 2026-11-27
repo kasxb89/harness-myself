@@ -271,6 +271,10 @@ With `D` registered Definitions, one incoming scalar event or packed run perform
 
 `publication` controls when changed State is materialized. Use `immediate` for structural or terminal changes, `animation-frame` for high-frequency visible deltas, and `none` when the State change feeds only a later publication. The engine applies every scalar update in log order and every packed run in one batch update; cadence only coalesces view publication.
 
+## Cross-feature draft acceptance
+
+`ctx.conversation.acceptDraft(binding, prompt, files)` accepts ordered browser files and text only into an empty composer for the exact retained Session generation. A stale binding, existing draft or locked admission returns `false` without consuming files. Later staging failures release only attachments created by this call. `true` means the ordinary draft is prepared; it does not send a message or start generation.
+
 ## Selected model input controls
 
 The Client-only, Session-scoped parallel event `conversation/input-model-capabilities(capabilities)` publishes the selected model's explicit input controls. Its [`InputModelCapabilities`](../../packages/client/ui-conversation/src/client/contract/input.ts) value carries optional `tools`, `vision`, and `inputModalities`; `undefined` clears the declaration and preserves legacy input behavior. The model-selection bridge publishes updates for its own Session and clears them when it is disposed.
