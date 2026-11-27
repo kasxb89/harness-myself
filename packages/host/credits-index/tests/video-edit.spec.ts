@@ -60,6 +60,21 @@ it('refuses read-only workspaces before resolving or launching media executables
   expect(spawn).not.toHaveBeenCalled()
 })
 
+it('rejects malformed preview sample times before any subprocess or output directory creation', async ({ onTestFinished }) => {
+  const { workspace, ctx, editor } = await fixture('danger-full-access', onTestFinished)
+  const source = join(workspace, 'source.mp4'), output = join(workspace, 'samples')
+  await writeFile(source, 'unchanged source')
+  const spawn = vi.spyOn(ctx.subprocess, 'spawn')
+  for (const times of [[], [-1], [Number.NaN], [Number.POSITIVE_INFINITY], [1, 1], [2, 1],
+    Array.from({ length: 13 }, (_value, index) => index)]) {
+    await expect(editor.preview!(source, output, new AbortController().signal, times))
+      .rejects.toMatchObject({ code: 'VIDEO_EDIT_INVALID_INPUT' })
+  }
+  expect(spawn).not.toHaveBeenCalled()
+  expect(existsSync(output)).toBe(false)
+  expect(await readFile(source, 'utf8')).toBe('unchanged source')
+})
+
 it('requires the explicit bundled executable directory and never falls back to PATH', async ({ onTestFinished }) => {
   const { ctx, editor } = await fixture('danger-full-access', onTestFinished)
   const spawn = vi.spyOn(ctx.subprocess, 'spawn')

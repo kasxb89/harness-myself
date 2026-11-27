@@ -5,6 +5,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { MediaV2Client, MediaV2Error, type MediaV2Account, type MediaV2Record, type MediaV2UploadSource } from './media-v2-client.ts'
+import { mediaV2TaskComplete } from './media-v2-protocol.ts'
 import { hasCurrentHumanRequest, videoGenerationIntentOf } from './video-generation-intent.ts'
 
 /** Existing account, file authorization and configured polling used by native tools. */
@@ -33,11 +34,14 @@ function operationUUID(exec: ToolRunContext, parts: readonly string[]): string {
   return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-4${raw.slice(13, 16)}-8${raw.slice(17, 20)}-${raw.slice(20, 32)}`
 }
 function result(record: MediaV2Record): Record<string, unknown> {
-  return { status: record.task?.status ?? record.state, client_operation_id: record.request.client_operation_id,
+  const completed = record.task !== undefined && mediaV2TaskComplete(record.task, record.quote?.batch)
+  const unconfirmedBatch = (record.quote?.batch !== undefined || record.task?.batch !== undefined)
+    && record.task?.status === 'succeeded' && !completed
+  return { status: unconfirmedBatch ? 'unconfirmed' : record.task?.status ?? record.state, client_operation_id: record.request.client_operation_id,
     model: record.request.model, intent: record.request.intent, ...record.quote === undefined ? {} : { quote: record.quote },
     ...record.task === undefined ? {} : { task: record.task },
     ...record.saved === undefined ? {} : { paths: record.saved.map(item => item.path) },
-    message: record.task?.status === 'succeeded' ? '原任务已完成，全部产物保留；查询不会重新生成。'
+    message: completed ? '原任务已完成，全部产物保留；查询不会重新生成。'
       : '已保留原操作编号；已受理或未知时只查询原任务，不要重新报价另建操作或改用其他模型。' }
 }
 /**
@@ -67,11 +71,11 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
               await delay(options.pollIntervalMs, undefined, { signal })
               record = await options.client.query(account, id, signal)
             }
-            if (record.task.status === 'succeeded') {
+            if (mediaV2TaskComplete(record.task, record.quote?.batch)) {
               job.updateProgress(`保存全部 ${record.task.artifacts.length} 项原产物`)
               record = await options.client.saveArtifacts(account, id, signal)
             }
-            return { status: record.task?.status === 'succeeded' ? 'completed' : 'failed', result: JSON.stringify(result(record)) }
+            return { status: record.task !== undefined && mediaV2TaskComplete(record.task, record.quote?.batch) ? 'completed' : 'failed', result: JSON.stringify(result(record)) }
           } catch (error) {
             return { status: abort.signal.aborted || lifetime.signal.aborted ? 'killed' : 'failed',
               detail: 'MEDIA_OPERATION_UNCONFIRMED', result: JSON.stringify({ ...failure(error), client_operation_id: id,
@@ -159,7 +163,9 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
       try {
         const account = await options.capture(exec.signal)
         let record = await options.client.query(account, args.client_operation_id, exec.signal)
-        if (record.task?.status === 'succeeded') record = await options.client.saveArtifacts(account, args.client_operation_id, exec.signal)
+        if (record.task !== undefined && mediaV2TaskComplete(record.task, record.quote?.batch)) {
+          record = await options.client.saveArtifacts(account, args.client_operation_id, exec.signal)
+        }
         return result(record)
       } catch (error) { return { ...failure(error), client_operation_id: args.client_operation_id } }
     },

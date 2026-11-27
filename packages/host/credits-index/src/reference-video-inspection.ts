@@ -3,7 +3,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import type {} from '@deepseek-ai/dsh-fs'
-import { VideoEditError } from './video-edit.ts'
+import { validVideoPreviewSampleTimes, VideoEditError } from './video-edit.ts'
 import { VideoProjectError, videoProjectFailure } from './video-project.ts'
 import type { VideoProjectOptions } from './video-project-types.ts'
 
@@ -17,7 +17,7 @@ interface ReferenceInspection {
   code?: string
 }
 
-const LIMITS = '仅提取开头、中点与接近结尾的三个静态画面；抽样帧不代表看完全部动作、听过音频，不能据此核实对白、节奏、音效或口型同步。请通过现有图片读取工具查看这些实际帧，并区分观察、推断和未知。'
+const LIMITS = '仅提取返回时间点的静态画面；未指定时间点时默认抽取开头、中点与接近结尾；抽样帧不代表看完全部动作、听过音频，不能据此核实对白、节奏、音效或口型同步。请通过现有图片读取工具查看这些实际帧，并区分观察、推断和未知。'
 
 /**
  * Register synchronous reference inspection and await all owned work on disposal.
@@ -27,10 +27,13 @@ const LIMITS = '仅提取开头、中点与接近结尾的三个静态画面；�
 export function registerReferenceVideoInspection(ctx: Context, options: VideoProjectOptions): void {
   const lifetime = new AbortController(), pending = new Set<Promise<ReferenceInspection>>()
   ctx.effect(() => async () => { lifetime.abort(); await Promise.allSettled([...pending]) }, 'reference video inspections')
-  const inspect = async (path: string, exec: ToolRunContext): Promise<ReferenceInspection> => {
+  const inspect = async (path: string, sampleTimes: readonly number[] | undefined, exec: ToolRunContext): Promise<ReferenceInspection> => {
     const signal = AbortSignal.any([exec.signal, lifetime.signal])
     try {
       signal.throwIfAborted()
+      if (!validVideoPreviewSampleTimes(sampleTimes)) {
+        throw new VideoProjectError('REFERENCE_VIDEO_INVALID', '抽帧时间必须为 1 至 12 个有限非负秒数，且严格递增；尚未读取或抽帧。')
+      }
       const session = exec.agent?.session, workspaceRoot = session?.header.cwd
       if (session === undefined || workspaceRoot === undefined || !isAbsolute(workspaceRoot)) {
         throw new VideoProjectError('WORKSPACE_REQUIRED', '请先选择工作区，并在工作区聊天中分析参考视频。')
@@ -70,7 +73,10 @@ export function registerReferenceVideoInspection(ctx: Context, options: VideoPro
         }
       }
       const { durationSeconds } = await editor.probe(sourcePath, signal)
-      const frames = await editor.preview(sourcePath, outputDirectory, signal)
+      if (!validVideoPreviewSampleTimes(sampleTimes, durationSeconds)) {
+        throw new VideoProjectError('REFERENCE_VIDEO_INVALID', '抽帧时间必须小于视频真实时长；尚未抽帧，原视频保留。')
+      }
+      const frames = await editor.preview(sourcePath, outputDirectory, signal, sampleTimes)
       signal.throwIfAborted()
       return { status: 'inspected', source_path: sourcePath, duration_seconds: durationSeconds,
         frames: frames.map(frame => ({ path: frame.path, time_seconds: frame.timeSeconds })), analysis_limits: LIMITS,
@@ -85,8 +91,12 @@ export function registerReferenceVideoInspection(ctx: Context, options: VideoPro
   }
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'inspect_reference_video',
-    description: 'Inspect a real authorized reference video inside the current workspace without uploading, generating or spending credits. Probe its actual duration and extract three static frames with exact sampling times through the configured local video runtime. Read/view the returned frame paths before describing their visual evidence. Sampling does not watch all motion or listen to audio, and cannot verify dialogue, music, pacing or lip synchronization. Analysis-only requests must stop at evidence and a saved creation plan, without quoting, uploading or generating. Load yunshu-reference-replica for reference-image/video reconstruction and motion transfer. Input cannot be an attachment store path, private application media, URL or arbitrary host path; first copy only a current read-authorized chat attachment into this workspace using existing file tools. Original input is never overwritten.',
-    parameters: { path: { type: 'string', required: true, description: 'Existing read-authorized workspace video path, including a normally copied current-chat attachment.' } },
+    description: 'Inspect a real authorized reference video inside the current workspace without uploading, generating or spending credits. Probe its actual duration and extract static frames at the exact requested sample_times_seconds through the configured local video runtime. Omission keeps three default samples at the beginning, midpoint and near the end; explicit times allow one to 12 finite, nonnegative, strictly increasing seconds before the actual duration. Reinspect selected scene times when needed; never infer unsampled motion or audio. Read/view the returned frame paths before describing their visual evidence. Sampling does not watch all motion or listen to audio, and cannot verify dialogue, music, pacing or lip synchronization. Analysis-only requests must stop at evidence and a saved creation plan, without quoting, uploading or generating. Load yunshu-reference-replica for reference-image/video reconstruction and motion transfer. Input cannot be an attachment store path, private application media, URL or arbitrary host path; first copy only a current read-authorized chat attachment into this workspace using existing file tools. Original input is never overwritten.',
+    parameters: {
+      path: { type: 'string', required: true, description: 'Existing read-authorized workspace video path, including a normally copied current-chat attachment.' },
+      sample_times_seconds: { type: 'array', items: { type: 'number' },
+        description: 'Optional exact sampling seconds, strictly increasing and before the actual video duration. Omit for the original three default samples. Reinspect scene intervals with at most 12 samples per call; no reordering or truncation.' },
+    },
     output: { schema: { type: 'object', properties: {
       status: { type: 'string', required: true }, message: { type: 'string', required: true }, code: { type: 'string' },
       source_path: { type: 'string' }, duration_seconds: { type: 'number' }, analysis_limits: { type: 'string' },
@@ -98,7 +108,7 @@ export function registerReferenceVideoInspection(ctx: Context, options: VideoPro
       content: [{ type: 'text', text: args.path }], locations: [{ path: args.path }] }),
     presentResult: (_args, result) => ({ card: 'generic', title: '参考视频证据', content: result.content }),
     async execute(args, exec): Promise<ReferenceInspection> {
-      const work = inspect(args.path, exec)
+      const work = inspect(args.path, args.sample_times_seconds, exec)
       pending.add(work)
       try { return await work } finally { pending.delete(work) }
     },

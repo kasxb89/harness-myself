@@ -1,0 +1,2334 @@
+{
+  "request_id": "aae3e1c9-0292-4eb6-bae4-a0ce99bbba18",
+  "synthetic": true,
+  "producer": "TestMediaParameterConditionsWireBoundaryFixtures: internal typed factory and validator; zeroHTTP/service/paid",
+  "policy_cases": [
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "name": "factory",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": true
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "name": "message-1024-ASCII-bytes",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": true
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字a"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "name": "message-1024-UTF8-bytes",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": true
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字ab"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition is unavailable",
+      "name": "message-1025-bytes",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": ""
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition is unavailable",
+      "name": "message-empty",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 9,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition version is unavailable",
+      "name": "unknown-version",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "when": {
+              "bot_type": [
+                "NOT_ACTIVE"
+              ]
+            },
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "future-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: text flag profile is unavailable",
+      "name": "inactive-unknown-profile",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "rule-with_1",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "name": "rule-ID-hyphen-valid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": true
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "not-a-field",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition is unavailable",
+      "name": "field-hyphen-invalid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "1field",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition is unavailable",
+      "name": "name-leading-digit-invalid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "Version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition is unavailable",
+      "name": "name-uppercase-invalid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "版本",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition is unavailable",
+      "name": "name-Unicode-invalid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "name": "name-64-byte-valid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": true
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition is unavailable",
+      "name": "name-65-byte-invalid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "name": "advanced-optional-options-absent",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": true
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: text flag profile is unavailable",
+      "name": "advanced-required-allowlist-missing",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              }
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: text flag profile is unavailable",
+      "name": "advanced-required-double-dash-false",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              "8.2",
+              "8.1",
+              "6.1",
+              "5.2",
+              "5.1"
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1",
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: text flag profile is unavailable",
+      "name": "text-profile-options-must-be-empty",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              true
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "name": "bool-literal-valid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": true
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              null
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition values are unavailable",
+      "name": "null-literal-invalid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    },
+    {
+      "conditions": {
+        "schema_version": 2,
+        "rules": [
+          {
+            "id": "niji-explicit-version",
+            "when": {
+              "bot_type": [
+                "NIJI_JOURNEY"
+              ]
+            },
+            "parameter": "version",
+            "disallowed_values": [
+              [
+                "x"
+              ]
+            ],
+            "message": "This explicit version is unavailable for the selected engine"
+          },
+          {
+            "id": "extra-native-flags",
+            "parameter": "extra",
+            "text_flags": {
+              "profile": "reviewed-native-flags-v1",
+              "allowed_names": [
+                "sameseed",
+                "fast",
+                "turbo",
+                "relax"
+              ],
+              "forbidden_names": [
+                "repeat",
+                "r",
+                "video",
+                "bs",
+                "edit"
+              ],
+              "reserved_aliases": {
+                "ar": "aspect_ratio",
+                "aspect": "aspect_ratio",
+                "c": "chaos",
+                "chaos": "chaos",
+                "cref": "cref",
+                "cw": "cw",
+                "draft": "draft",
+                "hd": "hd",
+                "iw": "iw",
+                "niji": "bot_type",
+                "no": "negative_prompt",
+                "q": "quality",
+                "quality": "quality",
+                "raw": "style",
+                "s": "stylize",
+                "sd": "hd",
+                "seed": "seed",
+                "sref": "sref",
+                "stop": "stop",
+                "style": "style",
+                "stylize": "stylize",
+                "sw": "sw",
+                "tile": "tile",
+                "v": "version",
+                "version": "version",
+                "w": "weird",
+                "weird": "weird"
+              },
+              "require_double_dash": true
+            },
+            "message": "Use the declared controls or supported zero-argument advanced flags"
+          },
+          {
+            "id": "prompt-native-flags",
+            "parameter": "prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Use the declared controls and advanced-parameter field instead of native flags in the prompt"
+          },
+          {
+            "id": "negative-prompt-content",
+            "parameter": "negative_prompt",
+            "text_flags": {
+              "profile": "text-no-native-parameter-token-v1"
+            },
+            "message": "Enter unwanted content without native parameter tokens"
+          }
+        ]
+      },
+      "error": "invalid YCAPI media parameter conditions: parameter condition values are unavailable",
+      "name": "compound-literal-invalid",
+      "params": {
+        "bot_type": "MID_JOURNEY",
+        "prompt": "A bird"
+      },
+      "valid": false
+    }
+  ],
+  "lexer_cases": [
+    {
+      "name": "Unicode-White-Space-U+0009",
+      "text": "letters\t--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+000A",
+      "text": "letters\n--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+000B",
+      "text": "letters\u000b--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+000C",
+      "text": "letters\f--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+000D",
+      "text": "letters\r--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+0020",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+0085",
+      "text": "letters--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+00A0",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+1680",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2000",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2001",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2002",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2003",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2004",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2005",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2006",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2007",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2008",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2009",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+200A",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2028",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+2029",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+202F",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+205F",
+      "text": "letters --r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "Unicode-White-Space-U+3000",
+      "text": "letters　--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    },
+    {
+      "name": "literal-unreviewed-boundary-letters﻿--r 2",
+      "text": "letters﻿--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": true
+    },
+    {
+      "name": "literal-unreviewed-boundary-letters​--r 2",
+      "text": "letters​--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": true
+    },
+    {
+      "name": "literal-unreviewed-boundary-https://assets.invalid/path--token",
+      "text": "https://assets.invalid/path--token",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": true
+    },
+    {
+      "name": "literal-unreviewed-boundary-letters--numbers",
+      "text": "letters--numbers",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": true
+    },
+    {
+      "name": "literal-unreviewed-boundary-(quoted)--r 2",
+      "text": "(quoted)--r 2",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": true
+    },
+    {
+      "name": "comma-before-native-parameter",
+      "text": "watermarks,--ar 16:9",
+      "text_flags": {
+        "profile": "text-no-native-parameter-token-v1"
+      },
+      "valid": false
+    }
+  ],
+  "go_only_invalid_values_not_canonical_json": [
+    "invalidUTF8 message bytesff",
+    "float64 NaN/+Inf/-Inf literals",
+    "Go int instead of JSONfloat64 literal"
+  ],
+  "grammar": {
+    "rule_id": "ASCII [a-z][a-z0-9_-]{0,63}",
+    "parameter_when_key_flag_reserved_alias_key_target": "ASCII [a-z][a-z0-9_]{0,63}",
+    "message": "Nonempty validUTF8 at most1024bytes, no trim; canonical messages unchanged.",
+    "literal": "JSONbool/finitefloat64/validUTF8string<=256bytes includingempty; nevernull,compound,Go int,json.Number,nonfinite.",
+    "reviewed-native-flags-v1": {
+      "required": [
+        "profile",
+        "allowed_names1..64",
+        "require_double_dash=true"
+      ],
+      "optional": [
+        "forbidden_names0..64",
+        "reserved_aliases0..64"
+      ],
+      "separators": [
+        "0009",
+        "000A",
+        "000D",
+        "0020"
+      ]
+    },
+    "text-no-native-parameter-token-v1": {
+      "required": [
+        "profile"
+      ],
+      "other_options": "absent/empty/false only; factory omits",
+      "boundary": "start/Unicode White_Space/ASCIIcomma before--"
+    },
+    "white_space_codepoints": [
+      "0009",
+      "000A",
+      "000B",
+      "000C",
+      "000D",
+      "0020",
+      "0085",
+      "00A0",
+      "1680",
+      "2000",
+      "2001",
+      "2002",
+      "2003",
+      "2004",
+      "2005",
+      "2006",
+      "2007",
+      "2008",
+      "2009",
+      "200A",
+      "2028",
+      "2029",
+      "202F",
+      "205F",
+      "3000"
+    ],
+    "excluded": [
+      "200B",
+      "FEFF"
+    ]
+  },
+  "typed_boundary": "Go helper takes internal typed factory policy, not raw untrustedJSON. Unknown JSONkeys/null-to-zero decode behavior is not validated by this helper. Client strict parsing is separate; canonical factory emits typedboolean shape.",
+  "old_client_correction": "Old798 ignores separate parameter_conditions. Server pre-effects guard, not oldlocal decoder, rejects new/cached-unaccepted illegalrequests; original receipt-first lookup retained.",
+  "source_log": "/Users/kasxbls/Documents/新科技/output/diagnostics/yc-completion-20261127/mj-reviewed-evidence/PARAMETER-BOUNDARIES-R04.jsonl",
+  "source_log_sha256": "c1fa7aa3fd970dc1d57cc50d06d2f3adbe5bc01ecba08eb152d6c86e7a5fb81f",
+  "paid": 0,
+  "http_requests": 0,
+  "no75_consumer": true
+}

@@ -24,6 +24,10 @@ export interface MediaV2Model {
   readonly parameters_schema: Readonly<Record<string, unknown>>
   /** Published native dependencies, preserved for local validation. */
   readonly conditions?: unknown
+  /** Reviewed parameter rules retained independently from material dependencies. */
+  readonly parameter_conditions?: unknown
+  /** Published quantity policy retained for this model's new-request checks. */
+  readonly quantity?: unknown
   readonly asset_fields: readonly MediaV2AssetField[]
   readonly intents: readonly { readonly id: MediaV2Intent; readonly label: string; readonly requires_assets: boolean }[]
   readonly pricing: { readonly display: string; readonly credits_per_yuan: number; readonly quote_required: true }
@@ -60,6 +64,8 @@ export interface MediaV2Artifact {
   readonly type: 'image' | 'video' | 'audio' | 'file'
   readonly mime_type: string
   readonly role?: string
+  readonly output_id?: unknown
+  readonly output_index?: unknown
   readonly order: number
   readonly filename?: string
 }
@@ -71,6 +77,8 @@ export interface MediaV2Task {
   readonly status: 'pending' | 'running' | 'succeeded' | 'failed' | 'unknown'
   readonly is_final: boolean
   readonly artifacts: readonly MediaV2Artifact[]
+  /** Unknown future metadata remains visible to original-operation readers, never as implicit completion. */
+  readonly batch?: unknown
   readonly failure?: { readonly code: string; readonly message: string }
 }
 /** Host-enriched request quote with exact CNY, product credits and its expiry time. */
@@ -83,6 +91,7 @@ export interface MediaV2Quote {
   readonly credits: number
   readonly credits_per_yuan: number
   readonly expires_at: number
+  readonly batch?: unknown
 }
 /** Host-owned original-operation view retained through quoting, acceptance and uncertain responses. */
 export interface MediaV2Record {
@@ -100,6 +109,8 @@ export interface MediaV2Catalog {
   readonly capabilities: {
     readonly same_operation_configuration_requote: boolean
     readonly material_conditions_v1?: boolean
+    readonly parameter_conditions_v1?: boolean
+    readonly native_video_batch_v1?: boolean
     readonly max_upload_bytes?: number
   }
   readonly models: readonly MediaV2Model[]
@@ -169,10 +180,14 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
   const capabilities = mediaV2Object(data.capabilities)
   const configurationRequote = capabilities?.same_operation_configuration_requote
   const materialConditions = capabilities?.material_conditions_v1
+  const parameterConditions = capabilities?.parameter_conditions_v1
+  const nativeBatch = capabilities?.native_video_batch_v1
   const maxUploadBytes = capabilities?.max_upload_bytes
   if (maxUploadBytes !== undefined && (!finite(maxUploadBytes) || !Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1)) throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (configurationRequote !== undefined && typeof configurationRequote !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (materialConditions !== undefined && typeof materialConditions !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
+  if (parameterConditions !== undefined && typeof parameterConditions !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
+  if (nativeBatch !== undefined && typeof nativeBatch !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   const models = data.models.map((value): MediaV2Model => {
     const row = mediaV2Object(value), pricing = mediaV2Object(row?.pricing), schema = mediaV2Object(row?.parameters_schema)
     if (!text(row?.id) || !text(row.display_name) || !text(row.model_version) || !mediaKind(row.kind)
@@ -195,12 +210,16 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
     return { id: row.id, display_name: row.display_name, model_version: row.model_version, kind: row.kind, enabled: row.enabled,
       parameters_schema: schema, asset_fields: fields, intents,
       ...row.conditions === undefined ? {} : { conditions: row.conditions },
+      ...row.parameter_conditions === undefined ? {} : { parameter_conditions: row.parameter_conditions },
+      ...row.quantity === undefined ? {} : { quantity: row.quantity },
       pricing: { display: pricing.display, credits_per_yuan: pricing.credits_per_yuan, quote_required: true },
       ...typeof row.description === 'string' ? { description: row.description } : {} }
   })
   return { models, credits_per_yuan: data.credits_per_yuan,
     capabilities: { same_operation_configuration_requote: configurationRequote === true,
       ...materialConditions === undefined ? {} : { material_conditions_v1: materialConditions },
+      ...parameterConditions === undefined ? {} : { parameter_conditions_v1: parameterConditions },
+      ...nativeBatch === undefined ? {} : { native_video_batch_v1: nativeBatch },
       ...maxUploadBytes === undefined ? {} : { max_upload_bytes: maxUploadBytes } },
     ...data.poll_after_ms === undefined ? {} : { poll_after_ms: data.poll_after_ms } }
 }
@@ -251,7 +270,8 @@ export function parseMediaV2Record(value: unknown): MediaV2Record {
       || quote.model_version !== undefined && !text(quote.model_version)) throw new Error('MEDIA_V2_RECORD_INVALID')
     admittedQuote = { quote_id: quote.quote_id, client_operation_id: quote.client_operation_id, request_sha256: quote.request_sha256,
       retail_cny: quote.retail_cny, credits: quote.credits, credits_per_yuan: quote.credits_per_yuan, expires_at: quote.expires_at,
-      ...typeof quote.model_version === 'string' ? { model_version: quote.model_version } : {} }
+      ...typeof quote.model_version === 'string' ? { model_version: quote.model_version } : {},
+      ...quote.batch === undefined ? {} : { batch: quote.batch } }
   }
   const quoteFailure = mediaV2Object(row.quote_failure)
   let admittedQuoteFailure: { readonly code: string; readonly message: string } | undefined
@@ -268,10 +288,13 @@ export function parseMediaV2Record(value: unknown): MediaV2Record {
       const artifact = mediaV2Object(value)
       if (!text(artifact?.key) || !['image', 'video', 'audio', 'file'].includes(String(artifact.type)) || !text(artifact.mime_type) || !finite(artifact.order)) throw new Error('MEDIA_V2_RECORD_INVALID')
       return { key: artifact.key, type: artifact.type as MediaV2Artifact['type'], mime_type: artifact.mime_type, order: artifact.order,
-        ...typeof artifact.role === 'string' ? { role: artifact.role } : {}, ...typeof artifact.filename === 'string' ? { filename: artifact.filename } : {} }
+        ...typeof artifact.role === 'string' ? { role: artifact.role } : {}, ...typeof artifact.filename === 'string' ? { filename: artifact.filename } : {},
+        ...artifact.output_id === undefined ? {} : { output_id: artifact.output_id },
+        ...artifact.output_index === undefined ? {} : { output_index: artifact.output_index } }
     })
     const failure = mediaV2Object(task.failure)
     admittedTask = { id: task.id, model: task.model, kind: task.kind, status: task.status as MediaV2Task['status'], is_final: task.is_final, artifacts,
+      ...task.batch === undefined ? {} : { batch: task.batch },
       ...typeof failure?.code === 'string' && typeof failure.message === 'string' ? { failure: { code: failure.code, message: failure.message } } : {} }
   }
   return { version: 1, owner: row.owner, request: {
@@ -280,4 +303,120 @@ export function parseMediaV2Record(value: unknown): MediaV2Record {
   ...admittedQuote === undefined ? {} : { quote: admittedQuote },
   ...admittedQuoteFailure === undefined ? {} : { quote_failure: admittedQuoteFailure },
   ...admittedTask === undefined ? {} : { task: admittedTask } }
+}
+
+/** Explicitly published native quantity policy; it does not establish supplier qualification. */
+export interface MediaV2Quantity {
+  readonly maximum: number
+  readonly modes: readonly string[]
+}
+/** Frozen batch facts and optional task counters, independent from the current catalog. */
+export interface MediaV2Batch {
+  readonly schema_version: 1
+  readonly requested_output_count: number
+  readonly expected_main_output_count: number
+  readonly output_duration_seconds: number
+  readonly total_output_seconds: number
+  readonly meter: 'output_count' | 'total_output_seconds'
+  readonly admission_unit: 'native_operation'
+  readonly admission_weight: 1
+  readonly partial_policy: 'retain_reservation_until_complete'
+  readonly policy_revision: string
+  readonly received_main_output_count?: number
+  readonly completeness?: 'pending' | 'complete' | 'partial' | 'mismatch'
+  readonly failure_reason?: string
+}
+const batchFields = ['schema_version', 'requested_output_count', 'expected_main_output_count', 'output_duration_seconds',
+  'total_output_seconds', 'meter', 'admission_unit', 'admission_weight', 'partial_policy', 'policy_revision'] as const
+const integer = (value: unknown, minimum: number, maximum: number): value is number =>
+  finite(value) && Number.isSafeInteger(value) && value >= minimum && value <= maximum
+const policyHash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
+const batchMeter = (value: unknown): value is MediaV2Batch['meter'] => value === 'output_count' || value === 'total_output_seconds'
+/**
+ * Read an explicit known quantity policy without interpreting unknown data as permission for a larger count.
+ * @param value - Raw per-model quantity metadata.
+ * @returns The bounded quantity facts, or null for unsupported or malformed metadata.
+ */
+export function readMediaV2Quantity(value: unknown): MediaV2Quantity | null {
+  const row = mediaV2Object(value)
+  if (row === null || !Object.keys(row).every(key => ['schema_version', 'parameter', 'minimum', 'maximum', 'default', 'semantics',
+    'meter', 'admission_unit', 'admission_weight', 'partial_policy', 'policy_revision', 'modes'].includes(key))
+    || row.schema_version !== 1 || row.parameter !== 'count' || row.minimum !== 1 || !integer(row.maximum, 1, 50)
+    || row.default !== 1 || row.semantics !== 'native_operation_main_outputs' || !batchMeter(row.meter)
+    || row.admission_unit !== 'native_operation' || row.admission_weight !== 1
+    || row.partial_policy !== 'retain_reservation_until_complete' || !policyHash(row.policy_revision)
+    || !Array.isArray(row.modes) || row.modes.length === 0 || row.modes.length > 32 || !row.modes.every(text)
+    || new Set(row.modes).size !== row.modes.length) return null
+  return { maximum: row.maximum, modes: row.modes }
+}
+/**
+ * Decode known frozen batch fields while leaving unsupported metadata available for original-operation recovery.
+ * @param value - Quote or task batch metadata, independent from current model settings.
+ * @param kind - Whether task counters are required in addition to the frozen quote fields.
+ * @returns Known batch facts, or null; rejection never removes a retained request or artifact.
+ */
+export function readMediaV2Batch(value: unknown, kind: 'quote' | 'task'): MediaV2Batch | null {
+  const row = mediaV2Object(value)
+  const keys: readonly string[] = kind === 'quote' ? batchFields : [...batchFields, 'received_main_output_count', 'completeness', 'failure_reason']
+  if (row === null || !Object.keys(row).every(key => keys.includes(key)) || row.schema_version !== 1
+    || !integer(row.requested_output_count, 1, 50) || row.expected_main_output_count !== row.requested_output_count
+    || !finite(row.output_duration_seconds) || row.output_duration_seconds < 0 || !finite(row.total_output_seconds)
+    || row.total_output_seconds !== row.output_duration_seconds * row.requested_output_count || row.total_output_seconds > 3600
+    || !batchMeter(row.meter) || row.meter === 'total_output_seconds' && row.total_output_seconds <= 0
+    || row.admission_unit !== 'native_operation' || row.admission_weight !== 1
+    || row.partial_policy !== 'retain_reservation_until_complete' || !policyHash(row.policy_revision)) return null
+  let task: Pick<MediaV2Batch, 'received_main_output_count' | 'completeness' | 'failure_reason'> = {}
+  if (kind === 'task') {
+    const completeness = row.completeness
+    if (!integer(row.received_main_output_count, 0, 64)
+      || completeness !== 'pending' && completeness !== 'complete' && completeness !== 'partial' && completeness !== 'mismatch'
+      || completeness === 'complete' && row.received_main_output_count !== row.expected_main_output_count
+      || row.failure_reason !== undefined && (typeof row.failure_reason !== 'string'
+        || !/^[a-z][a-z0-9_]{0,63}$/u.test(row.failure_reason))) return null
+    task = { received_main_output_count: row.received_main_output_count, completeness,
+      ...typeof row.failure_reason === 'string' ? { failure_reason: row.failure_reason } : {} }
+  }
+  return { schema_version: 1, requested_output_count: row.requested_output_count,
+    expected_main_output_count: row.expected_main_output_count,
+    output_duration_seconds: row.output_duration_seconds, total_output_seconds: row.total_output_seconds, meter: row.meter,
+    admission_unit: 'native_operation', admission_weight: 1, partial_policy: 'retain_reservation_until_complete',
+    policy_revision: row.policy_revision, ...task }
+}
+/**
+ * Check a retained quote against its original request without multiplying the server's aggregate price.
+ * @param record - Original operation and raw frozen quote metadata.
+ * @param kind - Current media workspace; image quantity retains its existing schema behavior.
+ * @returns Whether this quote has supported, matching batch facts or remains a compatible single-output quote.
+ */
+export function mediaV2QuoteBatchValid(record: MediaV2Record, kind: MediaV2Kind): boolean {
+  const count = record.request.parameters.count ?? 1
+  if (record.quote?.batch === undefined) return kind !== 'video' || count === 1
+  const batch = readMediaV2Batch(record.quote.batch, 'quote')
+  return batch !== null && batch.requested_output_count === count
+}
+/**
+ * Verify complete batch delivery from the original frozen quote and unique main video identities.
+ * @param record - Retained original operation, quote, task and every artifact.
+ * @returns True only for a terminal complete result; no new task or current catalog lookup is performed.
+ */
+export function mediaV2TaskComplete(record: MediaV2Record): boolean {
+  const task = record.task
+  if (task?.status !== 'succeeded' || !task.is_final) return false
+  if (task.batch === undefined && record.quote?.batch === undefined) return true
+  if (task.kind !== 'video' || task.model !== record.request.model) return false
+  const batch = readMediaV2Batch(task.batch, 'task'), quote = readMediaV2Batch(record.quote?.batch, 'quote')
+  if (batch === null || quote === null || !batchFields.every(field => batch[field] === quote[field])
+    || batch.completeness !== 'complete' || batch.failure_reason !== undefined || !mediaV2QuoteBatchValid(record, task.kind)) return false
+  const expected = batch.expected_main_output_count, ids = new Set<string>(), keys = new Set<string>()
+  for (const artifact of task.artifacts) {
+    if (keys.has(artifact.key) || !['main', 'preview', 'auxiliary', 'duplicate', 'layer'].includes(artifact.role ?? '')) return false
+    keys.add(artifact.key)
+    if (artifact.output_id !== undefined || artifact.output_index !== undefined) {
+      if (!integer(artifact.output_index, 0, expected - 1) || artifact.output_id !== `main-${String(artifact.output_index + 1)}`) return false
+    }
+    if (artifact.role !== 'main') continue
+    if (artifact.type !== 'video' || typeof artifact.output_id !== 'string' || artifact.output_index === undefined || ids.has(artifact.output_id)) return false
+    ids.add(artifact.output_id)
+  }
+  return ids.size === expected
 }

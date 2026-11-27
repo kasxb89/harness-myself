@@ -1,5 +1,6 @@
 /** Typed form projection and validation for the public, server-owned media schema. */
-import { isMediaV2Value, mediaV2Object, type MediaV2Asset, type MediaV2Model, type MediaV2Value, type MediaV2Intent } from './media-v2-types.ts'
+import { isMediaV2Value, mediaV2Object, readMediaV2Quantity, type MediaV2Asset, type MediaV2Model, type MediaV2Value, type MediaV2Intent } from './media-v2-types.ts'
+import { mediaV2ParameterIssues } from './media-v2-parameter-conditions.ts'
 import { mediaV2MaterialIssues } from './media-v2-material-conditions.ts'
 
 /** Window-owned material selection retaining its upload identity, explicit use and any ready receipt. */
@@ -13,7 +14,7 @@ export interface MediaV2SelectedAsset {
   readonly asset?: MediaV2Asset
 }
 /** One field-specific reason that prevents the current draft from requesting a quote. */
-export interface MediaV2FormIssue { readonly field: string; readonly reason: 'required' | 'unavailable' | 'limit' | 'invalid' | 'intent' | 'unknown' | 'binding' | 'unsupported' | 'condition' }
+export interface MediaV2FormIssue { readonly field: string; readonly reason: 'required' | 'unavailable' | 'limit' | 'invalid' | 'intent' | 'unknown' | 'binding' | 'unsupported' | 'condition' | 'parameterCondition' }
 /** A declared parameter property with its JSON Schema and retained native constraint annotations. */
 export interface MediaV2Field {
   readonly name: string
@@ -77,10 +78,11 @@ export function mediaV2Defaults(model: MediaV2Model): Record<string, MediaV2Valu
  * Resolve scalar choices and their current availability without changing the draft.
  * @param field - Declared parameter and its native option annotations.
  * @param values - Current selections used by option and quality dependencies.
+ * @param model - Optional selected model whose reviewed scalar predicates can disable an option.
  * @returns Every declared scalar choice with its label and availability flag.
  */
 export function mediaV2Choices(
-  field: MediaV2Field, values: Readonly<Record<string, MediaV2Value>>,
+  field: MediaV2Field, values: Readonly<Record<string, MediaV2Value>>, model?: MediaV2Model,
 ): readonly { value: string | number | boolean; label: string; available: boolean }[] {
   const items = mediaV2Object(field.schema.items)
   const choices = Array.isArray(field.schema.enum) ? field.schema.enum
@@ -92,7 +94,9 @@ export function mediaV2Choices(
     const option = options.find(item => item?.value === value)
     return { value, label: typeof option?.label === 'string' ? option.label : String(value),
       available: option?.available !== false && mediaV2Available(option?.available_when, values)
-        && (!Array.isArray(qualityValues) || qualityValues.includes(value)) }
+        && (!Array.isArray(qualityValues) || qualityValues.includes(value))
+        && (model === undefined || !mediaV2ParameterIssues(model, { ...values, [field.name]: value })
+          .some(issue => issue.field === field.name && issue.reason === 'parameterCondition')) }
   })
 }
 /**
@@ -204,11 +208,13 @@ function assetMetadataIssue(asset: MediaV2Asset, native: Readonly<Record<string,
  * @param values - Current primitive controls, including explicit values that need correction.
  * @param assets - Every retained material with its explicit generation or writing-only use.
  * @param now - Current Unix time in seconds for checking receipt expiry.
+ * @param nativeVideoBatch - Explicit catalog capability; omission retains the single-output video limit.
  * @returns Field issues for the implemented local checks; no material is removed or rewritten.
  */
 export function mediaV2FormIssues(model: MediaV2Model, intent: MediaV2Intent, values: Readonly<Record<string, MediaV2Value>>,
-  assets: readonly MediaV2SelectedAsset[], now: number): readonly MediaV2FormIssue[] {
-  const issues: MediaV2FormIssue[] = [...mediaV2MaterialIssues(model, values, assets, now)]
+  assets: readonly MediaV2SelectedAsset[], now: number, nativeVideoBatch = false): readonly MediaV2FormIssue[] {
+  const issues: MediaV2FormIssue[] = [...mediaV2MaterialIssues(model, values, assets, now), ...mediaV2ParameterIssues(model, values),
+    ...mediaV2QuantityIssues(model, values, nativeVideoBatch)]
   if (['$ref', 'oneOf', 'allOf', 'anyOf', 'if', 'then', 'else'].some(key => model.parameters_schema[key] !== undefined)) issues.push({ field: 'parameters', reason: 'unsupported' })
   const generation = assets.filter(asset => asset.role === 'generation')
   const selectedIntent = model.intents.find(item => item.id === intent)
@@ -285,4 +291,36 @@ export function mediaV2FormIssues(model: MediaV2Model, intent: MediaV2Intent, va
       || typeof option.ref_min_videos === 'number' && videoCount < option.ref_min_videos) issues.push({ field: field.name, reason: 'limit' })
   }
   return issues
+}
+
+/**
+ * Guard native video quantity independently from legacy image counts and without broadening published schema limits.
+ * @param model - Selected model, its current controls and optional reviewed quantity metadata.
+ * @param values - Exact draft parameters; missing count retains the published single-output default.
+ * @param nativeVideoBatch - Explicit catalog capability required for count above one.
+ * @returns A local issue for incompatible quantity or unsupported policy, preserving the draft.
+ */
+export function mediaV2QuantityIssues(model: MediaV2Model, values: Readonly<Record<string, MediaV2Value>>,
+  nativeVideoBatch: boolean): readonly MediaV2FormIssue[] {
+  if (model.quantity === undefined) return model.kind === 'video' && typeof values.count === 'number' && values.count > 1
+    ? [{ field: 'count', reason: 'limit' }] : []
+  const quantity = readMediaV2Quantity(model.quantity)
+  if (quantity === null) return [{ field: 'parameters', reason: 'unsupported' }]
+  if (model.kind !== 'video') return []
+  const properties = mediaV2Object(model.parameters_schema.properties), count = mediaV2Object(properties?.count)
+  if (count?.type !== 'integer' || count.minimum !== 1 || count.default !== 1
+    || typeof count.maximum !== 'number' || !Number.isSafeInteger(count.maximum) || count.maximum < quantity.maximum) {
+    return [{ field: 'parameters', reason: 'unsupported' }]
+  }
+  const result: MediaV2FormIssue[] = []
+  const selected = values.count ?? 1
+  if (typeof selected === 'number' && (selected > quantity.maximum || !nativeVideoBatch && selected > 1)) {
+    result.push({ field: 'count', reason: 'limit' })
+  }
+  const mode = values.mode ?? mediaV2Object(properties?.mode)?.default
+  if (typeof selected === 'number' && selected > 1 && (typeof mode !== 'string' || !quantity.modes.includes(mode))) {
+    result.push(properties?.mode === undefined
+      ? { field: 'parameters', reason: 'unsupported' } : { field: 'mode', reason: 'unavailable' })
+  }
+  return result
 }

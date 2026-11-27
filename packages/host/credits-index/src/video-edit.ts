@@ -104,19 +104,41 @@ export interface VideoEditor {
    */
   probe(path: string, signal: AbortSignal): Promise<{ durationSeconds: number }>
   /**
-   * Extract three representative JPEG frames from a real saved clip without generation.
+   * Extract selected JPEG frames, or three default samples, from a real saved clip without generation.
    * @param path - Read-authorized saved video.
    * @param outputDirectory - Workspace-contained private preview directory.
    * @param signal - Cancels every owned extraction process.
-   * @returns Verified local frames and exact sampling times.
+   * @param sampleTimesSeconds - Optional one to 12 finite, strictly increasing seconds, each before the source duration.
+   * @returns Verified local frames and exact requested sampling times, without truncation or reordering.
    */
-  preview?(path: string, outputDirectory: string, signal: AbortSignal): Promise<readonly { path: string; timeSeconds: number }[]>
+  preview?(
+    path: string, outputDirectory: string, signal: AbortSignal, sampleTimesSeconds?: readonly number[],
+  ): Promise<readonly { path: string; timeSeconds: number }[]>
   /**
    * Normalize and hard-cut clips; bounded graphs encode once, while larger edits retain serial normalization.
    * @param request - Clip order, trims, optional final cut and exclusive destination.
    * @returns Published path and independently probed duration; failures leave originals intact.
    */
   compose(request: VideoComposeRequest): Promise<VideoEditResult>
+}
+
+/**
+ * Validate bounded sampling times before extraction; omission preserves the three default samples.
+ * @param times - Explicit seconds supplied by a tool or editor caller.
+ * @param durationSeconds - Actual probed duration, when available, excluding the exact end of the video.
+ * @returns Whether every requested sample can be retained in its original order.
+ */
+export function validVideoPreviewSampleTimes(times: readonly number[] | undefined, durationSeconds?: number): boolean {
+  if (times === undefined) return true
+  const values: readonly unknown[] = times
+  if (!Array.isArray(times) || times.length < 1 || times.length > 12) return false
+  let previous = -1
+  for (const time of values) {
+    if (typeof time !== 'number' || !Number.isFinite(time) || time < 0 || time <= previous
+      || durationSeconds !== undefined && time >= durationSeconds) return false
+    previous = time
+  }
+  return true
 }
 
 interface ProbedVideo {
@@ -306,17 +328,24 @@ export function createVideoEditor(ctx: Context, options: VideoEditorOptions): Vi
   return {
     preflight: (signal, outputDirectory) => preflight(withBudget(signal), outputDirectory),
     async probe(path, signal) { return inspect(await checkedPath(path, signal, true), withBudget(signal)) },
-    async preview(path, outputDirectory, cancellation) {
+    async preview(path, outputDirectory, cancellation, sampleTimesSeconds) {
+      if (!validVideoPreviewSampleTimes(sampleTimesSeconds)) {
+        throw new VideoEditError('VIDEO_EDIT_INVALID_INPUT', 'Provide one to 12 finite, nonnegative, strictly increasing preview times.')
+      }
       const signal = withBudget(cancellation)
       const current = writable()
       const input = await checkedPath(path, signal, true)
       const info = await inspect(input, signal)
+      if (!validVideoPreviewSampleTimes(sampleTimesSeconds, info.durationSeconds)) {
+        throw new VideoEditError('VIDEO_EDIT_INVALID_INPUT', 'Every preview time must be earlier than the actual video duration.')
+      }
+      const times = sampleTimesSeconds ?? [0, info.durationSeconds / 2, Math.max(0, info.durationSeconds - 0.25)]
       const parent = dirname(await checkedPath(join(outputDirectory, `preview-${randomUUID()}.jpg`), signal, false))
       await mkdir(parent, { recursive: true, mode: 0o700 })
       const directory = await mkdtemp(join(parent, 'frames-'))
       try {
         const frames: { path: string; timeSeconds: number }[] = []
-        for (const [index, timeSeconds] of [0, info.durationSeconds / 2, Math.max(0, info.durationSeconds - 0.25)].entries()) {
+        for (const [index, timeSeconds] of times.entries()) {
           const destination = join(directory, `frame-${String(index)}.jpg`)
           await run([await executable('ffmpeg', signal), '-hide_banner', '-loglevel', 'error', '-nostdin', '-n',
             '-protocol_whitelist', 'file,pipe', '-ss', String(timeSeconds), '-i', input, '-frames:v', '1',

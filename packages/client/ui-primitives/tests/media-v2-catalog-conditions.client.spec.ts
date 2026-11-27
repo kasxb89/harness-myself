@@ -53,3 +53,19 @@ describe('native material-condition catalog data', () => {
     expect(JSON.stringify(input)).toBe(before)
   })
 })
+
+it.each([true, false, undefined])('retains the separate parameter-rule capability without inventing support: %s', (advertised) => {
+  const parsed = parseMediaV2Catalog({ credits_per_yuan: 1000, models: [model],
+    capabilities: advertised === undefined ? {} : { parameter_conditions_v1: advertised } })
+  expect(parsed.capabilities.parameter_conditions_v1).toBe(advertised)
+  expect('parameter_conditions_v1' in parsed.capabilities).toBe(advertised !== undefined)
+})
+it.each([{ schema_version: 2, rules: [{ id: 'new-rule', parameter: 'mode', disallowed_values: ['reference'], message: 'Blocked' }] },
+  { schema_version: 999, future: { '$unknown': true } }, null])('preserves separate parameter-rule data without breaking other models: %j', (parameter_conditions) => {
+  const input = { credits_per_yuan: 1000, capabilities: { parameter_conditions_v1: true },
+    models: [{ ...model, parameter_conditions }, { ...model, id: 'unaffected' }] }
+  const before = JSON.stringify(input), parsed = parseMediaV2Catalog(input)
+  expect(parsed.models[0]?.parameter_conditions).toEqual(parameter_conditions)
+  expect(parsed.models[1]?.parameter_conditions).toBeUndefined()
+  expect(JSON.stringify(input)).toBe(before)
+})

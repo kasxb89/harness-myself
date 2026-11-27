@@ -1,4 +1,4 @@
-/** Built generic material rules with synthetic account/media responses and no generation. */
+/** Built material rules and separate works with synthetic account/media responses only. */
 import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -40,7 +40,7 @@ function request(value: unknown): MediaV2Request {
     intent: row.intent, parameters: { prompt: parameters.prompt, mode: parameters.mode }, assets: { images: [assets.images[0]] } }
 }
 
-it('blocks a material rule before quote, preserves explicit mode and recovers an original operation under unknown rules', async () => {
+it('blocks material rules, starts a separate work without resubmitting an accepted task, and recovers originals under unknown rules', async () => {
   const root = await mkdtemp(join(tmpdir(), 'dsh-material-rule-browser-'))
   const output = process.env.DSH_MATERIAL_CONDITIONS_BROWSER_EVIDENCE ?? join(process.cwd(), '.artifacts')
   await mkdir(output, { recursive: true })
@@ -48,7 +48,8 @@ it('blocks a material rule before quote, preserves explicit mode and recovers an
   const cleanup: { scaffold?: WebScaffold; browser?: Browser; page?: Page } = {}
   const sentinelCalls: string[] = [], external: string[] = [], unexpected: string[] = [], submissions: string[] = []
   const queries: string[] = [], quotes: MediaV2Request[] = [], uploads: { sha256: string; bytes: number; id: string }[] = []
-  let newOperation: MediaV2Record | undefined, schemaVersion = 1
+  const newOperations = new Map<string, MediaV2Record>()
+  let schemaVersion = 1
   const originalRequest: MediaV2Request = { client_operation_id: originalId, model: model.id, model_version: 'old-v0',
     intent: 'reference', parameters: { mode: 'reference', count: 2 }, assets: { videos: ['original-video-a', 'original-video-b'] } }
   const frozenOriginal = JSON.stringify(originalRequest)
@@ -70,7 +71,7 @@ it('blocks a material rule before quote, preserves explicit mode and recovers an
         await writeFile(join(evidence, 'failure-aria.txt'), await cleanup.page.locator('body').ariaSnapshot())
       }
       await writeFile(join(evidence, 'final-observed.json'), JSON.stringify({ schemaVersion, uploads, quotes, queries,
-        submissions, external, unexpected, sentinelCalls, originalRequest }, null, 2) + '\n')
+        submissions, newOperations: [...newOperations.values()], external, unexpected, sentinelCalls, originalRequest }, null, 2) + '\n')
     } finally {
       try { await cleanup.browser?.close() } finally {
         try { await cleanup.scaffold?.close() } finally {
@@ -113,7 +114,7 @@ it('blocks a material rule before quote, preserves explicit mode and recovers an
         models: [{ ...model, conditions: { ...materialConditions, schema_version: schemaVersion } }], credits_per_yuan: 1000 }); return
     }
     if (url.pathname === `${prefix}/operations` && method === 'GET') {
-      await mediaReply({ operations: [original, ...newOperation === undefined ? [] : [newOperation]] }); return
+      await mediaReply({ operations: [original, ...newOperations.values()] }); return
     }
     if (url.pathname === `${prefix}/assets` && method === 'POST') {
       const bytes = incoming.postDataBuffer(), id = url.searchParams.get('client_asset_id')
@@ -127,17 +128,35 @@ it('blocks a material rule before quote, preserves explicit mode and recovers an
     }
     if (url.pathname === `${prefix}/quotes` && method === 'POST') {
       const chosen = request(incoming.postDataJSON()), now = Date.now() / 1000
-      if (schemaVersion !== 1 || quotes.length > 0) throw new Error('Unexpected quote under unsupported policy or repeated quote')
+      if (schemaVersion !== 1 || quotes.length >= 2 || newOperations.has(chosen.client_operation_id)) {
+        throw new Error('Unexpected quote under unsupported policy or repeated operation')
+      }
       quotes.push(chosen)
-      newOperation = { version: 1, owner: account, request: chosen, state: 'quoted', updated_at: now,
-        quote: { quote_id: 'synthetic-only-quote', client_operation_id: chosen.client_operation_id, request_sha256: 'b'.repeat(64),
+      const newOperation: MediaV2Record = { version: 1, owner: account, request: chosen, state: 'quoted', updated_at: now,
+        quote: { quote_id: `synthetic-only-quote-${quotes.length}`, client_operation_id: chosen.client_operation_id, request_sha256: 'b'.repeat(64),
           retail_cny: '0.25', credits: 250, credits_per_yuan: 1000, expires_at: now + 600 } }
+      newOperations.set(chosen.client_operation_id, newOperation)
       await mediaReply(newOperation); return
     }
     if (url.pathname === `${prefix}/operations/${originalId}` && method === 'GET') {
       queries.push(originalId); await mediaReply(original); return
     }
-    if (url.pathname === `${prefix}/tasks` && method === 'POST') submissions.push(incoming.postData() ?? '')
+    if (url.pathname.startsWith(`${prefix}/operations/`) && method === 'GET') {
+      const id = url.pathname.slice(`${prefix}/operations/`.length), retained = newOperations.get(id)
+      if (retained === undefined) throw new Error('Unexpected synthetic original-operation lookup')
+      queries.push(id); await mediaReply(retained); return
+    }
+    if (url.pathname === `${prefix}/tasks` && method === 'POST') {
+      const body = object(incoming.postDataJSON()), id = body.client_operation_id
+      if (typeof id !== 'string' || id !== quotes[0]?.client_operation_id || Object.keys(body).length !== 1
+        || submissions.length !== 0 || schemaVersion !== 1) throw new Error('Unexpected or duplicate synthetic task submit')
+      const retained = newOperations.get(id)
+      if (retained?.state !== 'quoted') throw new Error('Expected original synthetic quote')
+      submissions.push(incoming.postData() ?? '')
+      const accepted: MediaV2Record = { ...retained, state: 'accepted', task: { id: 'synthetic-first-original-task',
+        model: model.id, kind: 'video', status: 'pending', is_final: false, artifacts: [] } }
+      newOperations.set(id, accepted); await mediaReply(accepted); return
+    }
     if (url.pathname.startsWith(prefix)) {
       unexpected.push(`${method} ${url.pathname}`)
       await route.fulfill({ status: 404, json: { success: false, error: { code: 'synthetic_unavailable', message: 'Synthetic route unavailable' } } }); return
@@ -192,6 +211,34 @@ it('blocks a material rule before quote, preserves explicit mode and recovers an
   const quotedId = quotes[0]!.client_operation_id
   expect(quotedId).not.toBe(originalId)
   expect(uploads).toEqual([{ id: uploads[0]!.id, bytes: png.length, sha256: digest(png) }])
+  await composer.getByRole('button', { name: 'Confirm generation', exact: true }).click()
+  await expect.poll(() => submissions.length).toBe(1)
+  const retainedFirst = newOperations.get(quotedId)
+  expect(retainedFirst?.state).toBe('accepted')
+  expect(retainedFirst?.task?.id).toBe('synthetic-first-original-task')
+  const frozenFirst = JSON.stringify(retainedFirst)
+  await composer.getByRole('button', { name: 'Create a separate work', exact: true }).click()
+  expect(await composer.getByRole('textbox', { name: 'Description', exact: true }).isEnabled()).toBe(true)
+  expect(await composer.getByRole('textbox', { name: 'Description', exact: true }).inputValue()).toBe('Retain my exact source and draft')
+  expect(await composer.getByRole('combobox', { name: 'Input workflow', exact: true }).inputValue()).toBe('reference')
+  expect(await composer.getByRole('combobox', { name: 'mode', exact: true }).inputValue()).toBe('first-frame')
+  expect(await composer.getByText('original.png', { exact: true }).count()).toBe(1)
+  expect(quotes).toHaveLength(1); expect(submissions).toHaveLength(1); expect(uploads).toHaveLength(1)
+  await composer.locator('article').filter({ hasText: quotedId }).getByRole('button', { name: 'Update original operation', exact: true }).click()
+  await expect.poll(() => queries).toEqual([quotedId])
+  await expect.poll(() => composer.locator('article').filter({ hasText: quotedId })
+    .getByRole('button', { name: 'Update original operation', exact: true }).isEnabled()).toBe(true)
+  expect(JSON.stringify(newOperations.get(quotedId))).toBe(frozenFirst)
+  await composer.getByRole('button', { name: 'Get exact credits', exact: true }).click()
+  await expect.poll(() => quotes.length).toBe(2)
+  const separateId = quotes[1]!.client_operation_id
+  expect(new Set([originalId, quotedId, separateId]).size).toBe(3)
+  expect({ ...quotes[1], client_operation_id: quotedId }).toEqual(quotes[0])
+  expect(newOperations.get(separateId)?.state).toBe('quoted')
+  expect(JSON.stringify(newOperations.get(quotedId))).toBe(frozenFirst)
+  expect(submissions.map(value => object(JSON.parse(value)))).toEqual([{ client_operation_id: quotedId }])
+  const separatePath = join(evidence, 'separate-work-retains-original.png')
+  await page.screenshot({ path: separatePath, fullPage: true, animations: 'disabled' }); screenshots.push(separatePath)
   schemaVersion = 999
   await composer.getByRole('button', { name: 'Refresh models', exact: true }).click()
   await composer.getByText('This parameter rule requires a newer client. Quoting is blocked.', { exact: true }).waitFor({ state: 'visible' })
@@ -200,20 +247,22 @@ it('blocks a material rule before quote, preserves explicit mode and recovers an
   expect(await composer.getByRole('textbox', { name: 'Description', exact: true }).inputValue()).toBe('Retain my exact source and draft')
   expect(await composer.getByRole('combobox', { name: 'mode', exact: true }).inputValue()).toBe('first-frame')
   await composer.locator('article').filter({ hasText: originalId }).getByRole('button', { name: 'Update original operation', exact: true }).click()
-  await expect.poll(() => queries).toEqual([originalId])
+  await expect.poll(() => queries).toEqual([quotedId, originalId])
   await expect.poll(() => composer.locator('article').filter({ hasText: originalId })
     .getByRole('button', { name: 'Update original operation', exact: true }).isEnabled()).toBe(true)
   expect(await composer.getByRole('button', { name: 'Refresh models', exact: true }).isEnabled()).toBe(true)
   expect(JSON.stringify(original.request)).toBe(frozenOriginal)
-  expect(newOperation?.request.client_operation_id).toBe(quotedId)
-  expect(quotes).toHaveLength(1); expect(submissions).toEqual([]); expect(external).toEqual([]); expect(unexpected).toEqual([])
+  expect(newOperations.get(separateId)?.request.client_operation_id).toBe(separateId)
+  expect(JSON.stringify(newOperations.get(quotedId))).toBe(frozenFirst)
+  expect(quotes).toHaveLength(2); expect(submissions.map(value => object(JSON.parse(value)))).toEqual([{ client_operation_id: quotedId }])
+  expect(external).toEqual([]); expect(unexpected).toEqual([])
   expect(sentinelCalls.filter(call => !call.startsWith('GET '))).toEqual([])
   expect(tripwire.pageErrors).toEqual([]); expect(tripwire.warnings).toEqual([])
   const finalPath = join(evidence, 'unsupported-rule-original-recovery.png')
   await page.screenshot({ path: finalPath, fullPage: true, animations: 'disabled' }); screenshots.push(finalPath)
   await writeFile(join(evidence, 'result.json'), JSON.stringify({ status: 'passed',
     mode: 'real built UI, synthetic local transport only, no provider or production qualification',
-    uploads, quotes, queries, quotedId, originalRequest: original.request,
+    uploads, quotes, queries, quotedId, separateId, newOperations: [...newOperations.values()], originalRequest: original.request,
     originalRequestUnchanged: JSON.stringify(original.request) === frozenOriginal,
     submissions, external, unexpected, sentinelCalls, screenshots, console: tripwire }, null, 2) + '\n')
 })

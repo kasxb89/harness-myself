@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MediaV2Composer } from '../src/MediaV2Composer.tsx'
 import { mediaV2FormIssues } from '../src/media-v2-form.ts'
-import { mediaV2Data, parseMediaV2Catalog } from '../src/media-v2-types.ts'
+import { mediaV2Data, mediaV2Object, parseMediaV2Catalog } from '../src/media-v2-types.ts'
 import type { MediaV2Asset, MediaV2Model, MediaV2Record, MediaV2Request, MediaV2Transport } from '../src/media-v2-types.ts'
 
 const prefix = '/credits/api/media-v2'
@@ -28,6 +28,11 @@ const source: MediaV2Model = {
     mime_types: ['image/png'], constraints: { max_items_by_mode: { std: 2, pro: 1 } } }],
   intents: [{ id: 'text', label: '文生图', requires_assets: false }, { id: 'reference', label: '图生图', requires_assets: true }],
   pricing: { display: '按实际规格报价', credits_per_yuan: 1000, quote_required: true },
+}
+function sourceProperties(): Record<string, unknown> {
+  const properties = mediaV2Object(source.parameters_schema.properties)
+  if (properties === null) throw new Error('Expected declared source fixture properties')
+  return properties
 }
 const asset = (id: string, model = source.id): MediaV2Asset => ({ asset_id: `ma2_${id}`, client_asset_id: id, model, state: 'ready', media_kind: 'image', mime_type: 'image/png', bytes: 1024, sha256: 'a'.repeat(64), expires_at: Date.now() / 1000 + 1000 })
 function quoted(request: MediaV2Request): MediaV2Record {
@@ -355,6 +360,139 @@ describe('MediaV2Composer', () => {
     expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
     expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
     expect(screen.queryByRole('button', { name: '确认生成' })).toBeNull()
+  })
+  it.each([{ kind: 'image', state: 'accepted' }, { kind: 'image', state: 'unknown' },
+    { kind: 'video', state: 'accepted' }, { kind: 'video', state: 'unknown' }] as const)('starts a separate $kind work while a $state original remains queryable and saves all of its outputs', async ({ kind, state }) => {
+    const model: MediaV2Model = { ...source, kind }
+    const reference = asset('original-reference')
+    const request: MediaV2Request = { client_operation_id: `original-${state}`, model: source.id, model_version: 'v1', intent: 'reference',
+      parameters: { prompt: 'Original work', mode: 'std', count: 1, transparent: false }, assets: { images: [reference.asset_id] } }
+    const original: MediaV2Record = { ...quoted(request), state, task: { id: `task-${state}`, model: source.id, kind,
+      status: state === 'accepted' ? 'pending' : 'unknown', is_final: false, artifacts: [] } }
+    const selected = { clientId: reference.client_asset_id, model: source.id, field: 'images', name: 'original.png', role: 'generation', state: 'ready', asset: reference }
+    sessionStorage.setItem(`dsh:media-v2:draft-v1:${kind}:account-a`, JSON.stringify({ modelId: source.id, intent: 'reference',
+      parameters: request.parameters, assets: [selected], currentId: request.client_operation_id }))
+    const api = backend([model], [original]); await opened(api.transport, kind)
+    expect(screen.getByLabelText('描述')).toHaveProperty('disabled', true)
+    expect(screen.queryByRole('button', { name: '确认生成' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '新建独立作品' }))
+    expect(screen.getByLabelText('描述')).toHaveProperty('disabled', false)
+    expect(screen.getByRole('combobox', { name: '使用方式' })).toHaveProperty('value', 'reference')
+    expect(screen.getByText('original.png')).toBeTruthy()
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+    const originalCard = screen.getByText(`操作编号: ${request.client_operation_id}`).closest('article')
+    if (originalCard === null) throw new Error('Expected retained original operation')
+    api.records()[0] = { ...original, state: 'accepted', task: { ...original.task!, status: 'succeeded', is_final: true,
+      artifacts: [{ key: 'main-original', type: kind, mime_type: kind === 'video' ? 'video/mp4' : 'image/png', order: 0, filename: kind === 'video' ? 'main.mp4' : 'main.png' },
+        { key: 'preview-original', type: 'image', mime_type: 'image/png', order: 1, filename: 'preview.png' }] } }
+    fireEvent.click(within(originalCard).getByRole('button', { name: '更新原任务' }))
+    await screen.findByRole('img', { name: 'preview.png' })
+    fireEvent.click(within(originalCard).getByRole('button', { name: '保存全部产物' }))
+    await screen.findByText('/artifacts/main-original'); await screen.findByText('/artifacts/preview-original')
+    expect(calls(api.transport, `${prefix}/operations/${request.client_operation_id}`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/save`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: 'A separate explicitly requested work' } })
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+    await screen.findByText('本次费用: 250 积分')
+    expect(api.records()).toHaveLength(2)
+    expect(api.records()[0]?.request).toEqual(request)
+    const next = api.records()[1]!.request
+    expect(next.client_operation_id).not.toBe(request.client_operation_id)
+    expect(next.assets).toEqual(request.assets)
+    expect(next.intent).toBe('reference')
+    expect(next.parameters.prompt).toBe('A separate explicitly requested work')
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    const submit = screen.getByRole('button', { name: '确认生成' })
+    fireEvent.click(submit); fireEvent.click(submit)
+    await waitFor(() => { expect(calls(api.transport, `${prefix}/tasks`)).toBe(1) })
+    expect(api.transport.mock.calls.filter(call => call[0] === `${prefix}/tasks`).map(call => readBody(call[1]))).toEqual([{ client_operation_id: next.client_operation_id }])
+  })
+  it('does not detach an operation while its submission response is still in flight', async () => {
+    const api = backend(), base = api.transport.getMockImplementation()!
+    let finish: (() => void) | undefined
+    const waiting = new Promise<void>((resolve) => { finish = resolve })
+    api.transport.mockImplementation(async (path, init) => {
+      const response = await base(path, init)
+      if (path === `${prefix}/tasks`) await waiting
+      return response
+    })
+    await opened(api.transport)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+    fireEvent.click(screen.getByRole('button', { name: '确认生成' }))
+    expect(screen.getByRole('button', { name: '新建独立作品' })).toHaveProperty('disabled', true)
+    fireEvent.click(screen.getByRole('button', { name: '新建独立作品' }))
+    expect(screen.getByLabelText('描述')).toHaveProperty('disabled', true)
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(1)
+    await act(async () => { finish?.(); await waiting })
+    await waitFor(() => { expect(screen.getByRole('button', { name: '新建独立作品' })).toHaveProperty('disabled', false) })
+    expect(api.records()).toHaveLength(1)
+  })
+  it('retains an unknown original ID across a separate work, remount and offline load with query-only recovery', async () => {
+    const api = backend(), base = api.transport.getMockImplementation()!
+    let missing = true, offline = false, lostQuote = false
+    api.transport.mockImplementation(async (path, init) => {
+      if (offline && (path === `${prefix}/models` || path === `${prefix}/operations`)) throw new Error('offline')
+      if (path === `${prefix}/operations`) return envelope({ operations: [] })
+      if (missing && path.startsWith(`${prefix}/operations/`)) return { success: false, error: { code: 'operation_unknown', message: 'not found' } }
+      const response = await base(path, init)
+      if (missing && path === `${prefix}/quotes` && !lostQuote) { lostQuote = true; throw new Error('response lost') }
+      return response
+    })
+    const first = await opened(api.transport)
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByRole('alert')
+    const original = api.records()[0]!.request.client_operation_id
+    expect(screen.getByText(`操作编号: ${original}`)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '新建独立作品' }))
+    expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', false)
+    expect(screen.getByText(`操作编号: ${original}`)).toBeTruthy()
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+    fireEvent.change(screen.getByLabelText('描述'), { target: { value: 'Independent of the unconfirmed original' } })
+    fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+    expect(api.records()).toHaveLength(2)
+    expect(api.records()[1]?.request.client_operation_id).not.toBe(original)
+    fireEvent.click(screen.getByRole('button', { name: '继续编辑新草稿' }))
+    const originalCard = screen.getByText(`操作编号: ${original}`).closest('article')
+    if (originalCard === null) throw new Error('Expected retained unknown operation')
+    fireEvent.click(within(originalCard).getByRole('button', { name: '更新原任务' })); await screen.findByRole('alert')
+    expect(screen.getByText(`操作编号: ${original}`)).toBeTruthy()
+    first.unmount(); offline = true
+    const second = render(<MediaV2Composer kind="image" accountKey="account-a" transport={api.transport} onExit={() => undefined} />)
+    await screen.findByRole('alert')
+    expect(screen.getByText(`操作编号: ${original}`)).toBeTruthy()
+    expect(screen.getAllByRole('button', { name: '更新原任务' })).toHaveLength(1)
+    second.unmount(); offline = false; missing = false
+    await opened(api.transport)
+    expect(screen.getByText(`操作编号: ${original}`)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '更新原任务' }))
+    await screen.findByText('已报价，尚未生成')
+    expect(screen.getAllByText(`操作编号: ${original}`)).toHaveLength(1)
+    expect(screen.getAllByRole('button', { name: '更新原任务' })).toHaveLength(1)
+    expect(screen.queryByRole('button', { name: '确认生成' })).toBeNull()
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(2)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  })
+  it('isolates retained original IDs by account and kind while old drafts without the new field still restore', async () => {
+    const api = backend()
+    sessionStorage.setItem('dsh:media-v2:draft-v1:image:account-a', JSON.stringify({ modelId: source.id, intent: 'text', parameters: {}, assets: [], currentId: null,
+      originalIds: ['original-only-a', 'original-only-a', 3, null] }))
+    const view = await opened(api.transport)
+    expect(screen.getAllByText('操作编号: original-only-a')).toHaveLength(1)
+    view.rerender(<MediaV2Composer kind="image" accountKey="account-b" transport={api.transport} onExit={() => undefined} />)
+    await screen.findByRole('combobox', { name: '模型' })
+    expect(screen.queryByText('操作编号: original-only-a')).toBeNull()
+    view.rerender(<MediaV2Composer kind="video" accountKey="account-a" transport={api.transport} onExit={() => undefined} />)
+    await screen.findByText('当前账号暂无可用的此类模型与处理工具')
+    expect(screen.queryByText('操作编号: original-only-a')).toBeNull()
+    sessionStorage.setItem('dsh:media-v2:draft-v1:image:account-b', JSON.stringify({ modelId: source.id, intent: 'text', parameters: { prompt: 'Legacy saved draft' }, assets: [], currentId: null }))
+    view.rerender(<MediaV2Composer kind="image" accountKey="account-b" transport={api.transport} onExit={() => undefined} />)
+    await screen.findByDisplayValue('Legacy saved draft')
+    expect(screen.queryByText('操作编号: original-only-a')).toBeNull()
+    expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+    expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
   })
   it('allows only original-operation GET recovery after an accepted submit loses its response', async () => {
     const api = backend(), base = api.transport.getMockImplementation()!
@@ -858,4 +996,195 @@ it('applies shared declared budgets even when an unused marked media field is un
   expect(mediaV2FormIssues(model, 'reference', { mode: 'reference' }, [{ clientId: 'shared-budget-video', model: model.id, field: 'videos', name: 'original.mp4',
     role: 'generation', state: 'ready', asset: { ...original, media_kind: 'video' } }], Date.now() / 1000)).toContainEqual({ field: 'videos', reason: 'limit' })
   expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('blocks reviewed native parameter violations before quote and preserves accepted text and uploaded references', async () => {
+  const candidate: MediaV2Model = { ...source, parameter_conditions: { schema_version: 2, rules: [
+    { id: 'reviewed-version', parameter: 'version', when: { bot_type: ['NIJI_JOURNEY'] },
+      disallowed_values: ['8.2'], message: 'Explicit reviewed version' },
+    { id: 'reviewed-extra', parameter: 'extra', text_flags: { profile: 'reviewed-native-flags-v1',
+      allowed_names: ['fast', 'turbo'], forbidden_names: ['repeat'], reserved_aliases: { v: 'version' }, require_double_dash: true },
+    message: 'Use declared controls' },
+  ] }, parameters_schema: { properties: { ...sourceProperties(),
+    bot_type: { type: 'string', enum: ['NIJI_JOURNEY', 'MID_JOURNEY'], default: 'NIJI_JOURNEY',
+      'x-ycapi-contract': { label: { zh: '引擎' } } },
+    version: { type: 'string', enum: ['8.2', '7'], default: '8.2', 'x-ycapi-contract': { label: { zh: '版本' } } },
+    extra: { type: 'string', 'x-ycapi-contract': { label: { zh: '高级参数' } } },
+  } } }
+  const api = backend([candidate]); await opened(api.transport); await upload(api.transport)
+  fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+  expect(screen.getByText('当前参数组合不受支持，请使用已声明的选项并调整参数；原文和素材已保留')).toBeDefined()
+  expect(screen.getByLabelText('版本')).toHaveProperty('value', '8.2')
+  expect(screen.getByRole('option', { name: '8.2' })).toHaveProperty('disabled', true)
+  fireEvent.change(screen.getByLabelText('引擎'), { target: { value: 'MID_JOURNEY' } })
+  expect(screen.getByRole('option', { name: '8.2' })).toHaveProperty('disabled', false)
+  fireEvent.change(screen.getByLabelText('引擎'), { target: { value: 'NIJI_JOURNEY' } })
+  expect(screen.getByLabelText('版本')).toHaveProperty('value', '8.2')
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  fireEvent.change(screen.getByLabelText('版本'), { target: { value: '7' } })
+  fireEvent.change(screen.getByLabelText('高级参数'), { target: { value: '--repeat 2' } })
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  const acceptedText = '  --fast --turbo  '
+  fireEvent.change(screen.getByLabelText('高级参数'), { target: { value: acceptedText } })
+  expect(screen.getByText('one.png')).toBeDefined()
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+  expect(api.records()[0]?.request.parameters.extra).toBe(acceptedText)
+  expect(api.records()[0]?.request.assets.images).toHaveLength(1)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(1)
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('keeps original accepted operation recovery available when new parameter rules are unsupported', async () => {
+  const candidate: MediaV2Model = { ...source, parameter_conditions: { schema_version: 999, rules: [] } }
+  const originalId = '02d6a836-08a6-4db8-8e08-1e562c50ee3c'
+  const request: MediaV2Request = { client_operation_id: originalId, model: candidate.id, model_version: 'original-version',
+    intent: 'reference', parameters: { prompt: 'Original body', count: 2 }, assets: { images: ['original-image'] } }
+  const original: MediaV2Record = { version: 1, owner: 'original-owner', state: 'accepted', updated_at: 2, request,
+    task: { id: 'original-task', model: candidate.id, kind: 'image', status: 'running', is_final: false, artifacts: [] } }
+  const api = backend([candidate], [original]), before = JSON.stringify(original)
+  await opened(api.transport)
+  expect(screen.getByText('当前客户端尚不支持这项参数规则，已停止报价，请更新后再使用')).toBeDefined()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  fireEvent.click(screen.getByRole('button', { name: '更新原任务' }))
+  await waitFor(() => { expect(calls(api.transport, `${prefix}/operations/${originalId}`)).toBe(1) })
+  expect(JSON.stringify(api.records()[0])).toBe(before)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('uses one native batch operation, displays the server aggregate and withholds success/save until every main output matches', async () => {
+  const quantity = { schema_version: 1, parameter: 'count', minimum: 1, maximum: 3, default: 1,
+    semantics: 'native_operation_main_outputs', meter: 'output_count', admission_unit: 'native_operation', admission_weight: 1,
+    partial_policy: 'retain_reservation_until_complete', policy_revision: 'a'.repeat(64), modes: ['approved'] }
+  const candidate: MediaV2Model = { ...source, id: 'neutral-native-batch', kind: 'video', quantity,
+    parameters_schema: { properties: { ...sourceProperties(),
+      count: { type: 'integer', minimum: 1, maximum: 3, default: 1, 'x-ycapi-contract': { label: { zh: '数量' } } },
+      mode: { type: 'string', enum: ['approved'], default: 'approved' },
+    } } }
+  const base = backend([candidate]), batch = { schema_version: 1, requested_output_count: 3, expected_main_output_count: 3,
+    output_duration_seconds: 5, total_output_seconds: 15, meter: 'output_count', admission_unit: 'native_operation', admission_weight: 1,
+    partial_policy: 'retain_reservation_until_complete', policy_revision: 'a'.repeat(64) }
+  let original: MediaV2Record | undefined
+  const readOriginal = (): MediaV2Record | undefined => original
+  const artifacts = [
+    ...Array.from({ length: 3 }, (_value, index) => ({ key: `main-${String(index + 1)}`, type: 'video' as const,
+      mime_type: 'video/mp4', order: index, role: 'main', output_id: `main-${String(index + 1)}`, output_index: index })),
+    { key: 'preview', type: 'image' as const, mime_type: 'image/png', order: 3, role: 'preview', output_id: 'main-2', output_index: 1 },
+    { key: 'auxiliary', type: 'file' as const, mime_type: 'application/json', order: 4, role: 'auxiliary', output_id: 'main-3', output_index: 2 },
+    { key: 'duplicate', type: 'video' as const, mime_type: 'video/mp4', order: 5, role: 'duplicate', output_id: 'main-1', output_index: 0 },
+  ]
+  const transport = vi.fn<MediaV2Transport>(async (path, init) => {
+    if (path === `${prefix}/models`) return envelope({ models: [candidate], credits_per_yuan: 1000, capabilities: { native_video_batch_v1: true } })
+    if (path === `${prefix}/quotes`) {
+      const request = readBody(init) as MediaV2Request, value = quoted(request)
+      if (value.quote === undefined) throw new Error('Expected original quote')
+      original = { ...value, quote: { ...value.quote, retail_cny: '0.75', credits: 750, batch } }
+      return envelope(original)
+    }
+    if (path === `${prefix}/tasks`) {
+      if (original === undefined) throw new Error('Expected quoted original operation')
+      expect(readBody(init)).toEqual({ client_operation_id: original.request.client_operation_id })
+      original = { ...original, state: 'accepted', task: { id: 'original-batch', model: candidate.id, kind: 'video',
+        status: 'succeeded', is_final: true, batch: { ...batch, received_main_output_count: 1, completeness: 'partial' },
+        artifacts: artifacts.slice(0, 1) } }
+      return envelope(original)
+    }
+    if (path.startsWith(`${prefix}/operations/`)) {
+      if (original?.task === undefined) throw new Error('Expected accepted original operation')
+      expect(path).toBe(`${prefix}/operations/${original.request.client_operation_id}`)
+      original = { ...original, task: { ...original.task, batch: { ...batch, received_main_output_count: 3, completeness: 'complete' }, artifacts } }
+      return envelope(original)
+    }
+    return base.transport(path, init)
+  })
+  await opened(transport, 'video'); await upload(transport)
+  fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+  expect(screen.getByLabelText('数量').getAttribute('max')).toBe('3')
+  fireEvent.change(screen.getByLabelText('数量'), { target: { value: '3' } })
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 750 积分')
+  expect(screen.queryByText('本次费用: 2,250 积分')).toBeNull()
+  expect(screen.getByText('本次主视频数量: 3')).toBeDefined()
+  fireEvent.click(screen.getByRole('button', { name: '确认生成' }))
+  await screen.findByText(/已收到主视频: 1 \/ 3/u)
+  expect(screen.queryByText('已完成')).toBeNull()
+  expect(screen.getByRole('button', { name: '保存全部产物' })).toHaveProperty('disabled', true)
+  const id = readOriginal()?.request.client_operation_id, requestBefore = JSON.stringify(readOriginal()?.request)
+  fireEvent.click(screen.getByRole('button', { name: '更新原任务' }))
+  await screen.findByText(/已收到主视频: 3 \/ 3 · 全部完成/u)
+  expect(screen.getByText('已完成')).toBeDefined()
+  expect(screen.getByRole('button', { name: '保存全部产物' })).toHaveProperty('disabled', false)
+  expect(screen.getAllByRole('link', { name: '下载原文件' })).toHaveLength(6)
+  expect(screen.getByText('第1个输出 · 主视频')).toBeDefined()
+  expect(screen.getByText('第2个输出 · 主视频')).toBeDefined()
+  expect(screen.getByText('第3个输出 · 主视频')).toBeDefined()
+  expect(screen.getByText('第2个输出 · 预览')).toBeDefined()
+  expect(screen.getByText('第3个输出 · 辅助')).toBeDefined()
+  expect(screen.getByText('第1个输出 · 重复')).toBeDefined()
+  expect(readOriginal()?.request.client_operation_id).toBe(id)
+  expect(JSON.stringify(readOriginal()?.request)).toBe(requestBefore)
+  expect(readOriginal()?.request.parameters.count).toBe(3)
+  expect(readOriginal()?.request.assets.images).toHaveLength(1)
+  expect(calls(transport, `${prefix}/quotes`)).toBe(1)
+  expect(calls(transport, `${prefix}/tasks`)).toBe(1)
+  expect(calls(transport, `${prefix}/operations/${String(id)}`)).toBe(1)
+})
+it.each([undefined, { schema_version: 999, future_counter: 3 }])('keeps a succeeded original task unconfirmed when its frozen batch is missing or unknown: %j', async (taskBatch) => {
+  const candidate: MediaV2Model = { ...source, kind: 'video' }, id = '10000000-0000-4000-8000-000000000082'
+  const batch = { schema_version: 1, requested_output_count: 2, expected_main_output_count: 2, output_duration_seconds: 5,
+    total_output_seconds: 10, meter: 'output_count', admission_unit: 'native_operation', admission_weight: 1,
+    partial_policy: 'retain_reservation_until_complete', policy_revision: 'a'.repeat(64) }
+  const value = quoted({ client_operation_id: id, model: candidate.id, model_version: candidate.model_version,
+    intent: 'text', parameters: { count: 2 }, assets: {} })
+  if (value.quote === undefined) throw new Error('Expected original quote')
+  const original: MediaV2Record = { ...value, state: 'accepted', quote: { ...value.quote, batch }, task: { id: 'old-task', model: candidate.id,
+    kind: 'video', status: 'succeeded', is_final: true, ...taskBatch === undefined ? {} : { batch: taskBatch },
+    artifacts: [{ key: 'retained', type: 'video', mime_type: 'video/mp4', order: 0, role: 'main', output_id: 'main-1', output_index: 0 }] } }
+  const before = JSON.stringify(original), api = backend([candidate], [original]); await opened(api.transport, 'video')
+  expect(screen.queryByText('已完成')).toBeNull()
+  expect(screen.getByText('批量结果尚未确认，请更新原任务；不会自动重新提交')).toBeDefined()
+  expect(screen.getByRole('button', { name: '保存全部产物' })).toHaveProperty('disabled', true)
+  expect(screen.getByRole('link', { name: '下载原文件' })).toBeDefined()
+  fireEvent.click(screen.getByRole('button', { name: '更新原任务' }))
+  await waitFor(() => { expect(calls(api.transport, `${prefix}/operations/${id}`)).toBe(1) })
+  expect(JSON.stringify(api.records()[0])).toBe(before)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  expect(calls(api.transport, `${prefix}/save`)).toBe(0)
+})
+
+it('retains an excessive video count visibly but blocks quote until published capability and quantity permit it', async () => {
+  const candidate: MediaV2Model = { ...source, kind: 'video' }, api = backend([candidate]); await opened(api.transport, 'video')
+  expect(screen.getByLabelText('数量').getAttribute('max')).toBe('1')
+  fireEvent.change(screen.getByLabelText('数量'), { target: { value: '2' } })
+  expect(screen.getByLabelText('数量')).toHaveProperty('value', '2')
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+it.each([undefined, { schema_version: 999, future_batch: true }])('does not confirm a multi-output quote without a supported matching frozen batch: %j', async (quoteBatch) => {
+  const quantity = { schema_version: 1, parameter: 'count', minimum: 1, maximum: 3, default: 1,
+    semantics: 'native_operation_main_outputs', meter: 'output_count', admission_unit: 'native_operation', admission_weight: 1,
+    partial_policy: 'retain_reservation_until_complete', policy_revision: 'a'.repeat(64), modes: ['approved'] }
+  const candidate: MediaV2Model = { ...source, kind: 'video', quantity,
+    parameters_schema: { properties: { count: { type: 'integer', minimum: 1, maximum: 3, default: 1,
+      'x-ycapi-contract': { label: { zh: '数量' } } }, mode: { type: 'string', default: 'approved' } } } }
+  const api = backend([candidate]), transport = vi.fn<MediaV2Transport>(async (path, init) => {
+    if (path === `${prefix}/models`) return envelope({ models: [candidate], credits_per_yuan: 1000, capabilities: { native_video_batch_v1: true } })
+    if (path === `${prefix}/quotes`) {
+      const original = quoted(readBody(init) as MediaV2Request)
+      if (original.quote === undefined) throw new Error('Expected original quote')
+      return envelope({ ...original, quote: { ...original.quote, ...quoteBatch === undefined ? {} : { batch: quoteBatch } } })
+    }
+    return api.transport(path, init)
+  })
+  await opened(transport, 'video')
+  fireEvent.change(screen.getByLabelText('数量'), { target: { value: '2' } })
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+  expect(screen.getByText('批量结果尚未确认，请更新原任务；不会自动重新提交')).toBeDefined()
+  expect(screen.getByRole('button', { name: '确认生成' })).toHaveProperty('disabled', true)
+  fireEvent.click(screen.getByRole('button', { name: '确认生成' }))
+  expect(calls(transport, `${prefix}/quotes`)).toBe(1)
+  expect(calls(transport, `${prefix}/tasks`)).toBe(0)
 })

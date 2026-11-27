@@ -359,3 +359,146 @@ it('does not hide a concurrent original acceptance behind a confirmed configurat
   expect(recovered.request).toEqual(request)
   expect(fixture.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(0)
 })
+
+const nativeBatch = { schema_version: 1, requested_output_count: 2, expected_main_output_count: 2,
+  output_duration_seconds: 5, total_output_seconds: 10, meter: 'total_output_seconds', admission_unit: 'native_operation',
+  admission_weight: 1, partial_policy: 'retain_reservation_until_complete', policy_revision: 'd'.repeat(64) }
+const nativeBatchRequest = { ...request, parameters: { prompt: 'Two native outputs', count: 2, duration: 5 } }
+const nativeBatchQuote = { ...quote, ...nativeBatchRequest, retail_cny: '1.70', batch: nativeBatch }
+const nativeBatchTask = { ...task, kind: 'video', batch: { ...nativeBatch, received_main_output_count: 2, completeness: 'complete' },
+  artifacts: [1, 2].map((n, order) => ({ key: `main-${n}`, order, type: 'video', role: 'main', output_id: `main-${n}`, output_index: order,
+    mime_type: 'video/mp4', content_url: `/v1/tasks/task-first/artifacts/main-${n}/content` })) }
+async function batchSetup(quoted: unknown = nativeBatchQuote, completed: unknown = nativeBatchTask) {
+  const fixture = await setup()
+  const state = { quote: quoted, task: completed }
+  const mp4 = Buffer.from([0, 0, 0, 16, 102, 116, 121, 112, 109, 112, 52, 50, 0, 0, 0, 0])
+  fixture.send.mockImplementation(async (path, init) => {
+    fixture.calls.push({ path, method: init.method ?? 'GET', body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
+    let data: unknown
+    if (path.endsWith('/quotes')) data = state.quote
+    else if (path.endsWith('/tasks')) data = { task: state.task }
+    else if (path.includes('/operations/')) data = { client_operation_id: id, state: 'accepted', quote_id: quote.quote_id,
+      quote: { ...objectQuote(state.quote), operation_state: 'accepted', task: state.task }, task: state.task }
+    else if (path.endsWith('/tasks/task-first')) data = { task: state.task }
+    else if (path.endsWith('/content')) return new Response(mp4, { headers: { 'content-type': 'video/mp4' } })
+    else throw new Error(`Unexpected native batch request: ${path}`)
+    return new Response(JSON.stringify({ success: true, data }))
+  })
+  const client = new MediaV2Client({ baseUrl: 'http://127.0.0.1:1/harness', directory: fixture.directory, timeoutMs: 1000,
+    creditsPerYuan: 1000, output: async () => ({ write: async (filename, bytes) => {
+      const path = join(fixture.directory, filename); await writeFile(path, bytes); return { path }
+    }, publish: async () => { throw new Error('Unused') } }) })
+  return { ...fixture, client, state, mp4 }
+}
+function objectQuote(value: unknown): Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Expected synthetic original quote')
+  return value as Record<string, unknown>
+}
+
+describe('native batch receipt safety', () => {
+  it('freezes aggregate price and all logical outputs, sends once, and restores every original file by GET', async () => {
+    const { client, account, calls, mp4 } = await batchSetup()
+    const first = await client.quote(account, nativeBatchRequest, new AbortController().signal)
+    expect(first.quote).toMatchObject({ retail_cny: '1.70', credits: 1700, batch: nativeBatch })
+    await Promise.all(Array.from({ length: 4 }, () => client.submit(account, id, new AbortController().signal)))
+    const saved = await client.saveArtifacts(account, id, new AbortController().signal)
+    expect(saved.task).toMatchObject({ batch: nativeBatchTask.batch, artifacts: nativeBatchTask.artifacts })
+    expect(saved.saved).toHaveLength(2)
+    for (const file of saved.saved ?? []) {
+      expect(await readFile(file.path)).toEqual(mp4)
+      expect(file.sha256).toBe(createHash('sha256').update(mp4).digest('hex'))
+    }
+    await rm(saved.saved![0]!.path)
+    const restored = await client.saveArtifacts(account, id, new AbortController().signal)
+    expect(restored.saved).toHaveLength(2)
+    expect(calls.filter(call => call.path.endsWith('/quotes'))).toHaveLength(1)
+    expect(calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+    expect(calls.filter(call => call.path.endsWith('/content'))).toHaveLength(3)
+    expect(calls.some(call => call.path.endsWith('/models'))).toBe(false)
+  })
+  it.each(['partial', 'mismatch'])('retains a %s original and its aggregate reservation without saving or resubmitting', async (completeness) => {
+    const retained = { ...nativeBatchTask, status: 'unknown', is_final: false, artifacts: [],
+      batch: { ...nativeBatch, received_main_output_count: completeness === 'partial' ? 1 : 3, completeness } }
+    const { client, account, calls } = await batchSetup(nativeBatchQuote, retained)
+    await client.quote(account, nativeBatchRequest, new AbortController().signal)
+    await client.submit(account, id, new AbortController().signal)
+    await client.submit(account, id, new AbortController().signal)
+    await expect(client.saveArtifacts(account, id, new AbortController().signal)).rejects.toMatchObject({ code: 'operation_unknown' })
+    const record = (await client.records(account))[0]
+    expect(record).toMatchObject({ state: 'accepted', quote: { retail_cny: '1.70', batch: nativeBatch }, task: retained })
+    expect(calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+    expect(calls.some(call => call.path.endsWith('/content'))).toBe(false)
+  })
+  it('refuses a quotation with a different requested batch count before task POST', async () => {
+    const { client, account, calls } = await batchSetup({ ...nativeBatchQuote,
+      batch: { ...nativeBatch, requested_output_count: 3, expected_main_output_count: 3, total_output_seconds: 15 } })
+    await expect(client.quote(account, nativeBatchRequest, new AbortController().signal)).rejects.toMatchObject({ code: 'quote_changed' })
+    expect(calls.some(call => call.path.endsWith('/tasks') && call.method === 'POST')).toBe(false)
+  })
+  it('keeps the send fence after a task policy mismatch and never retries generation', async () => {
+    const { client, account, calls } = await batchSetup(nativeBatchQuote, { ...nativeBatchTask,
+      batch: { ...nativeBatchTask.batch, policy_revision: 'e'.repeat(64) } })
+    await client.quote(account, nativeBatchRequest, new AbortController().signal)
+    await expect(client.submit(account, id, new AbortController().signal)).rejects.toMatchObject({ code: 'operation_conflict' })
+    await expect(client.submit(account, id, new AbortController().signal)).rejects.toMatchObject({ code: 'operation_conflict' })
+    expect((await client.records(account))[0]).toMatchObject({ state: 'unknown', quote: { batch: nativeBatch } })
+    expect(calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+  })
+  it('rejects aggregate price drift on an original quote ID while retaining the frozen quote', async () => {
+    const { client, account, calls, state } = await batchSetup()
+    await client.quote(account, nativeBatchRequest, new AbortController().signal)
+    await client.submit(account, id, new AbortController().signal)
+    state.quote = { ...nativeBatchQuote, retail_cny: '1.71' }
+    await expect(client.query(account, id, new AbortController().signal)).rejects.toMatchObject({ code: 'operation_conflict' })
+    expect((await client.records(account))[0]?.quote?.retail_cny).toBe('1.70')
+    expect(calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+  })
+  it('keeps future batch JSON readable for original GET while blocking a new task or completed save', async () => {
+    const future = { schema_version: 999, '$future': { count: 2 } }
+    const { client, account, calls } = await batchSetup({ ...nativeBatchQuote, batch: future }, { ...nativeBatchTask, batch: future })
+    await expect(client.quote(account, nativeBatchRequest, new AbortController().signal)).rejects.toMatchObject({ code: 'quote_changed' })
+    const recovered = await client.query(account, id, new AbortController().signal)
+    expect(recovered).toMatchObject({ quote: { batch: future }, task: { batch: future, artifacts: nativeBatchTask.artifacts } })
+    await client.submit(account, id, new AbortController().signal)
+    await expect(client.saveArtifacts(account, id, new AbortController().signal)).rejects.toMatchObject({ code: 'operation_unknown' })
+    expect(calls.filter(call => call.path.endsWith('/quotes'))).toHaveLength(1)
+    expect(calls.some(call => call.path.endsWith('/tasks') && call.method === 'POST')).toBe(false)
+    expect(calls.some(call => call.path.endsWith('/content'))).toBe(false)
+  })
+})
+
+
+it('declares batch protocol1 on existing catalog, quote, submit and original-GET requests without changing the body', async () => {
+  const { client, account, send, calls } = await setup(), originalSend = send.getMockImplementation()!
+  const headers: { path: string; method: string; version: string | null }[] = []
+  send.mockImplementation(async (path, init) => {
+    headers.push({ path, method: init.method ?? 'GET', version: new Headers(init.headers).get('X-Yunshu-Media-Batch-Version') })
+    if (path.endsWith('/models')) return new Response(JSON.stringify({ success: true, data: {
+      capabilities: { media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true },
+      models: [], credits_per_yuan: 1000 } }))
+    return await originalSend(path, init)
+  })
+  await client.catalog(account, new AbortController().signal)
+  await client.quote(account, request, new AbortController().signal)
+  await client.submit(account, id, new AbortController().signal)
+  await client.query(account, id, new AbortController().signal)
+  expect(headers.map(item => [item.path.split('/').at(-1), item.method])).toEqual([
+    ['models', 'GET'], ['quotes', 'POST'], ['tasks', 'POST'], [id, 'GET'], [task.id, 'GET'],
+  ])
+  expect(headers.every(item => item.version === '1')).toBe(true)
+  expect(calls.filter(item => item.method === 'POST').map(item => item.body)).toEqual([
+    request, { quote_id: quote.quote_id, client_operation_id: id, request_sha256: quote.request_sha256 },
+  ])
+})
+it('keeps an unsupported batch client422 as a proven free-quote rejection without a task POST', async () => {
+  const { client, account, send, calls } = await setup()
+  send.mockImplementation(async (path, init) => {
+    calls.push({ path, method: init.method ?? 'GET', body: undefined })
+    return new Response(JSON.stringify({ success: false, error: { code: 'media_batch_client_unsupported', message: 'Update the client before confirmation' } }), { status: 422 })
+  })
+  await expect(client.quote(account, request, new AbortController().signal)).rejects.toMatchObject({ code: 'media_batch_client_unsupported', status: 422 })
+  expect((await client.records(account))[0]).toMatchObject({ state: 'quote-rejected', request,
+    quote_failure: { code: 'media_batch_client_unsupported', message: 'Update the client before confirmation' } })
+  await client.submit(account, id, new AbortController().signal)
+  expect(calls.map(item => item.path)).toEqual(['/v1/media-v2/quotes'])
+})

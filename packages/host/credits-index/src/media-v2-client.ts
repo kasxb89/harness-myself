@@ -7,7 +7,8 @@ import { writePrivateState } from './private-state-file.ts'
 import { mediaFilename } from './media-filename.ts'
 import { readMediaBytes } from './media-transfer.ts'
 import type { CapturedMediaOutput } from './media-output.ts'
-import { mediaV2Id, mediaV2Object, mediaV2UUID, parseMediaV2Asset, parseMediaV2Catalog, parseMediaV2Operation,
+import { mediaV2Id, mediaV2Object, mediaV2UUID, mediaV2TaskComplete, parseMediaV2Asset, parseMediaV2Batch, parseMediaV2TaskBatch,
+  parseMediaV2Catalog, parseMediaV2Operation,
   parseMediaV2Quote, parseMediaV2Request, parseMediaV2Task,
   type MediaV2Asset, type MediaV2Catalog, type MediaV2Operation, type MediaV2Quote, type MediaV2Request, type MediaV2Task } from './media-v2-protocol.ts'
 
@@ -53,7 +54,7 @@ export class MediaV2Error extends Error {
 }
 const REMOTE_CODES = new Set(['invalid_request', 'model_not_available', 'model_version_changed', 'invalid_parameters',
   'reference_required', 'reference_limit_exceeded', 'asset_not_ready', 'asset_not_found', 'asset_binding_mismatch',
-  'quote_expired', 'quote_changed', 'operation_conflict', 'operation_unknown', 'insufficient_quota', 'media_capacity_full', 'upstream_unavailable'])
+  'quote_expired', 'quote_changed', 'operation_conflict', 'operation_unknown', 'insufficient_quota', 'media_capacity_full', 'media_batch_client_unsupported', 'upstream_unavailable'])
 function sameOperation(left: MediaV2Request, right: MediaV2Request): boolean {
   return isDeepStrictEqual({ ...left, model_version: '' }, { ...right, model_version: '' })
 }
@@ -102,7 +103,7 @@ export class MediaV2Client {
         if (typeof action.requested_at !== 'number' || !Number.isFinite(action.requested_at) || !sameOperation(request, next)) {
           throw new MediaV2Error('operation_unknown', '原配置报价请求无法核对。')
         }
-        this.matchQuote({ ...request, model_version: previous.model_version }, previous)
+        this.matchQuote({ ...request, model_version: previous.model_version }, previous, true)
         return { requested_at: action.requested_at, request: next, previous_quote: previous,
           ...action.result_quote === undefined ? {} : { result_quote: parseMediaV2Quote(action.result_quote) } }
       })
@@ -138,6 +139,7 @@ export class MediaV2Client {
   }
   private async json(account: MediaV2Account, path: string, method: 'GET' | 'POST', body: unknown, signal: AbortSignal): Promise<unknown> {
     const response = await account.fetch(`/v1/media-v2${path}`, { method, headers: { accept: 'application/json',
+      'X-Yunshu-Media-Batch-Version': '1',
       ...method === 'GET' ? {} : { 'content-type': 'application/json' } },
     ...method === 'GET' ? {} : { body: JSON.stringify(body) }, signal: AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs)]) })
     const text = (await readMediaBytes(response, 8 * 1024 * 1024, signal)).toString('utf8')
@@ -319,22 +321,47 @@ export class MediaV2Client {
     if (result.client_asset_id !== id || result.model !== model) throw new MediaV2Error('asset_binding_mismatch', '原上传素材归属不匹配。')
     return result
   }
-  private projectQuote(value: unknown): MediaV2Quote {
+  private projectQuote(value: unknown, recovery = false): MediaV2Quote {
     const raw = mediaV2Object(value)
-    return parseMediaV2Quote({ ...raw, credits_per_yuan: this.options.creditsPerYuan,
+    const quote = parseMediaV2Quote({ ...raw, credits_per_yuan: this.options.creditsPerYuan,
       credits: Math.round(Number(raw.retail_cny) * this.options.creditsPerYuan) })
+    this.matchQuoteBatch(quote, quote, recovery)
+    return quote
   }
-  private matchQuote(request: MediaV2Request, quote: MediaV2Quote): void {
+  private matchQuoteBatch(request: MediaV2Request, quote: MediaV2Quote, recovery: boolean): void {
+    if (quote.batch === undefined) return
+    let batch
+    try { batch = parseMediaV2Batch(quote.batch) }
+    catch {
+      if (recovery) return // Future metadata stays readable but cannot authorize submission or completed output.
+      throw new MediaV2Error('quote_changed', '当前批量报价规则无法核对，尚未提交生成。')
+    }
+    if ((request.parameters.count ?? 1) !== batch.requested_output_count) {
+      throw new MediaV2Error('quote_changed', '批量报价数量与原请求不一致，尚未提交生成。')
+    }
+    if (batch.output_duration_seconds > 0) {
+      const duration = quote.parameters.duration ?? quote.parameters.seconds
+      if ((typeof duration !== 'number' && typeof duration !== 'string') || Number(duration) !== batch.output_duration_seconds) {
+        throw new MediaV2Error('quote_changed', '批量报价时长与原请求不一致，尚未提交生成。')
+      }
+    }
+  }
+  private matchQuote(request: MediaV2Request, quote: MediaV2Quote, recovery = false): void {
     if (quote.client_operation_id !== request.client_operation_id || quote.model !== request.model
       || quote.model_version !== request.model_version
       || quote.intent !== request.intent || !isDeepStrictEqual(quote.assets, request.assets)) throw new MediaV2Error('quote_changed', '报价的模型、模式或素材已变化，尚未提交生成。')
     for (const [key, value] of Object.entries(request.parameters)) if (!isDeepStrictEqual(value, quote.parameters[key])) throw new MediaV2Error('quote_changed', '报价调整了已选择参数，尚未提交生成。')
+    this.matchQuoteBatch(request, quote, recovery)
   }
-  private matchRetainedQuote(record: MediaV2Record, quote: MediaV2Quote, requested?: MediaV2Request): void {
+  private matchRetainedQuote(record: MediaV2Record, quote: MediaV2Quote, requested?: MediaV2Request, recovery = false): void {
     const requests = [record.request, ...record.configuration_requotes?.map(action => action.request) ?? []]
     const snapshot = requests.find(request => request.model_version === quote.model_version)
     if (snapshot === undefined) throw new MediaV2Error('quote_changed', '报价版本不属于原操作的明确请求，不能提交。')
-    this.matchQuote(snapshot, quote)
+    this.matchQuote(snapshot, quote, recovery)
+    if (record.quote?.quote_id === quote.quote_id && (record.quote.retail_cny !== quote.retail_cny
+      || !isDeepStrictEqual(record.quote.batch, quote.batch))) {
+      throw new MediaV2Error('operation_conflict', '原报价金额或批量规则已变化，请保留原操作。')
+    }
     const hashes = [record.quote?.request_sha256,
       ...record.configuration_requotes?.map(action => action.previous_quote.request_sha256) ?? []]
     if (hashes.some(hash => hash !== undefined && hash !== quote.request_sha256)) {
@@ -395,7 +422,8 @@ export class MediaV2Client {
       catch (error) {
         // A confirmed free-quote validation rejection precedes every task POST. Preserve it separately from an uncertain submission.
         if (error instanceof MediaV2Error && [400, 422].includes(error.status) && ['invalid_request', 'invalid_parameters', 'reference_required',
-          'reference_limit_exceeded', 'asset_not_ready', 'asset_not_found', 'asset_binding_mismatch', 'model_not_available', 'model_version_changed'].includes(error.code)) {
+          'reference_limit_exceeded', 'asset_not_ready', 'asset_not_found', 'asset_binding_mismatch', 'model_not_available',
+          'model_version_changed', 'media_batch_client_unsupported'].includes(error.code)) {
           record.state = 'quote-rejected'; record.quote_failure = { code: error.code, message: error.message }; record.updated_at = Date.now(); await this.save(record)
         }
         throw error
@@ -427,6 +455,7 @@ export class MediaV2Client {
       if (record.state !== 'quoted') return await this.queryOriginal(account, id, signal)
       const quote = record.quote
       if (quote === undefined || quote.expires_at * 1000 <= Date.now()) throw new MediaV2Error('quote_expired', '报价已过期，尚未提交生成；请重新核对同一草稿报价。')
+      this.matchRetainedQuote(record, quote)
       record.state = 'submitting'; record.updated_at = Date.now(); await this.save(record)
       try {
         const data = mediaV2Object(await this.json(account, '/tasks', 'POST', { quote_id: quote.quote_id,
@@ -436,8 +465,23 @@ export class MediaV2Client {
       } catch (error) { record.state = 'unknown'; record.updated_at = Date.now(); await this.save(record); throw error }
     })
   }
-  private matchTask(record: MediaV2Record, task: MediaV2Task): MediaV2Task {
+  private matchTask(record: MediaV2Record, task: MediaV2Task, recovery = false): MediaV2Task {
     if (task.model !== record.request.model || record.task !== undefined && task.id !== record.task.id) throw new MediaV2Error('operation_conflict', '原任务身份不匹配，保留原操作并停止恢复。')
+    if (record.quote?.batch !== undefined || task.batch !== undefined) {
+      let frozen, current
+      try {
+        frozen = parseMediaV2Batch(record.quote?.batch)
+        const { received_main_output_count: _received, completeness: _completeness,
+          failure_reason: _failure, ...policy } = parseMediaV2TaskBatch(task.batch)
+        current = policy
+      } catch {
+        if (recovery) return task
+        throw new MediaV2Error('operation_conflict', '原批量任务规则无法核对，请继续查询原编号。')
+      }
+      if (!isDeepStrictEqual(frozen, current) || task.status === 'succeeded' && !mediaV2TaskComplete(task, record.quote?.batch)) {
+        throw new MediaV2Error('operation_conflict', '原批量任务数量或产物不完整，请保留原操作。')
+      }
+    }
     return task
   }
   private async queryOriginal(account: MediaV2Account, id: string, signal: AbortSignal): Promise<MediaV2Record> {
@@ -459,10 +503,10 @@ export class MediaV2Client {
       }
     }
     const operation: MediaV2Operation = parseMediaV2Operation({ ...raw,
-      ...retainedQuote === undefined ? {} : { quote: this.projectQuote(retainedQuote) } })
+      ...retainedQuote === undefined ? {} : { quote: this.projectQuote(retainedQuote, true) } })
     if (operation.client_operation_id !== id) throw new MediaV2Error('operation_conflict', '原操作回执不匹配，不能重新生成。')
     if (operation.quote !== undefined) {
-      this.matchRetainedQuote(record, operation.quote)
+      this.matchRetainedQuote(record, operation.quote, undefined, true)
       if (record.quote !== undefined && operation.quote_id !== record.quote.quote_id) {
         const action = record.configuration_requotes?.at(-1)
         if (action === undefined || action.previous_quote.quote_id !== record.quote.quote_id
@@ -481,7 +525,7 @@ export class MediaV2Client {
     }
     if (operation.task !== undefined) {
       const task = mediaV2Object(await this.json(account, `/tasks/${encodeURIComponent(operation.task.id)}`, 'GET', undefined, signal))
-      record.task = this.matchTask(record, parseMediaV2Task(task.task)); record.state = 'accepted'
+      record.task = this.matchTask(record, parseMediaV2Task(task.task), true); record.state = 'accepted'
     }
     record.updated_at = Date.now(); await this.save(record); return record
   }
@@ -520,7 +564,7 @@ export class MediaV2Client {
   async saveArtifacts(account: MediaV2Account, id: string, signal: AbortSignal): Promise<MediaV2Record> {
     return await this.single(account, id, async () => {
       const record = await this.queryOriginal(account, id, signal), task = record.task
-      if (task?.status !== 'succeeded' || task.artifacts.length === 0) throw new MediaV2Error('operation_unknown', '原任务产物尚未齐备，请继续查询原任务。')
+      if (task === undefined || !mediaV2TaskComplete(task, record.quote?.batch) || task.artifacts.length === 0) throw new MediaV2Error('operation_unknown', '原任务产物尚未齐备，请继续查询原任务。')
       if (this.options.output === undefined) throw new MediaV2Error('artifact_destination_unavailable', '当前产物保存位置不可用，请保留原任务。')
       const output = await this.options.output(signal)
       for (const artifact of [...task.artifacts].sort((a, b) => a.order - b.order)) {
