@@ -24,10 +24,18 @@ export interface MediaV2Model {
   parameters_schema: Record<string, unknown>
   conditions?: MediaV2Value
   parameter_conditions?: MediaV2Value
+  selection_constraints?: MediaV2Value
   quantity?: MediaV2Value
   asset_fields: readonly MediaV2AssetField[]
   intents: readonly { id: MediaV2Intent; label: string; requires_assets: boolean; description?: string }[]
-  pricing: { display: string; credits_per_yuan: number; quote_required: true }
+  pricing: {
+    display: string
+    credits_per_yuan: number
+    quote_required: true
+    currency?: MediaV2Value
+    policy_revision?: MediaV2Value
+    specification_rows?: MediaV2Value
+  }
   enabled: boolean
 }
 /** Executable models with the existing Host product-credit projection. */
@@ -38,8 +46,11 @@ export interface MediaV2Catalog {
     durable_operation_receipt: true
     all_artifacts: true
     same_operation_configuration_requote?: boolean
+    exact_specification_pricing_v1?: boolean
+    explicit_requote_v1?: boolean
     material_conditions_v1?: boolean
     parameter_conditions_v1?: boolean
+    selection_constraints_v1?: boolean
     native_video_batch_v1?: boolean
     max_upload_bytes?: number
   }
@@ -143,6 +154,23 @@ export interface MediaV2TaskBatch extends MediaV2Batch {
 export class MediaV2ProtocolError extends Error {
   constructor() { super('媒体参数或任务回执格式无效，原记录已保留。'); this.name = 'MediaV2ProtocolError' }
 }
+/** Public indicative exact-specification amount; the actual original quote remains authoritative. */
+export interface MediaV2SpecificationPriceRow {
+  id: string
+  parameters: Readonly<Record<string, string | number | boolean>>
+  billing_unit: 'per_video' | 'per_second'
+  quantity: number
+  unit_price_cny: string
+  total_cny: string
+  quote_required: true
+  policy_revision: string
+}
+/** Valid current exact-price metadata, without procurement or private quote evidence. */
+export interface MediaV2SpecificationPricing {
+  currency: 'CNY'
+  policy_revision: string
+  specification_rows?: readonly MediaV2SpecificationPriceRow[]
+}
 function invalid(): never { throw new MediaV2ProtocolError() }
 /**
  * Admit a non-array JSON object at a transport or private-record boundary.
@@ -212,6 +240,44 @@ function assets(value: unknown): Record<string, readonly string[]> {
   const entries = Object.entries(mediaV2Object(value))
   if (entries.length > 100) invalid()
   return Object.fromEntries(entries.map(([key, entry]) => [fieldName(key), array(entry, mediaV2Id, 100)]))
+}
+/**
+ * Read known exact-price metadata without making unknown or malformed metadata disable unrelated models.
+ * @param pricing - A single model's preserved public pricing object.
+ * @returns Absent legacy metadata, null for unsupported data, or strict indicative fields; never an executable quote.
+ */
+export function readMediaV2SpecificationPricing(pricing: MediaV2Model['pricing']): MediaV2SpecificationPricing | null | undefined {
+  if (pricing.currency === undefined && pricing.policy_revision === undefined && pricing.specification_rows === undefined) return undefined
+  try {
+    if (pricing.currency !== 'CNY') invalid()
+    const revision = sha(pricing.policy_revision)
+    const decimal = (value: unknown): string => {
+      const result = text(value, 64)
+      if (!/^\d+(?:\.\d+)?$/u.test(result) || !Number.isFinite(Number(result))) invalid()
+      return result
+    }
+    const rows = pricing.specification_rows === undefined ? undefined
+      : array(pricing.specification_rows, (value): MediaV2SpecificationPriceRow => {
+        const row = mediaV2Object(value), parameters = mediaV2Object(row.parameters)
+        const allowed = ['id', 'parameters', 'billing_unit', 'quantity', 'unit_price_cny', 'total_cny', 'quote_required', 'policy_revision']
+        if (Object.keys(row).some(key => !allowed.includes(key)) || Object.keys(parameters).length > 100
+          || row.quote_required !== true || row.policy_revision !== revision) invalid()
+        const values: Record<string, string | number | boolean> = {}
+        for (const [name, value] of Object.entries(parameters)) {
+          fieldName(name)
+          if (name === 'prompt' || name === 'negative_prompt') invalid()
+          if (typeof value === 'string') values[name] = text(value, 4000)
+          else if (typeof value === 'number' && Number.isFinite(value) || typeof value === 'boolean') values[name] = value
+          else invalid()
+        }
+        const unit = oneOf(row.billing_unit, ['per_video', 'per_second']), quantity = number(row.quantity, Number.MIN_VALUE)
+        if (unit === 'per_video' && quantity !== 1) invalid()
+        return { id: sha(row.id), parameters: values, billing_unit: unit, quantity,
+          unit_price_cny: decimal(row.unit_price_cny), total_cny: decimal(row.total_cny), quote_required: true, policy_revision: revision }
+      }, 128)
+    if (rows !== undefined && new Set(rows.map(row => row.id)).size !== rows.length) invalid()
+    return { currency: 'CNY', policy_revision: revision, ...rows === undefined ? {} : { specification_rows: rows } }
+  } catch { return null }
 }
 const BATCH_FIELDS = ['schema_version', 'requested_output_count', 'expected_main_output_count', 'output_duration_seconds',
   'total_output_seconds', 'meter', 'admission_unit', 'admission_weight', 'partial_policy', 'policy_revision'] as const
@@ -373,11 +439,17 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
         requires_assets: bool(item.requires_assets),
         ...item.description === undefined ? {} : { description: text(item.description, 2000, true) } } }, 4),
       pricing: { display: text(pricing.display, 1000),
-        credits_per_yuan: number(pricing.credits_per_yuan, Number.MIN_VALUE), quote_required: true },
+        credits_per_yuan: number(pricing.credits_per_yuan, Number.MIN_VALUE), quote_required: true,
+        ...pricing.currency === undefined ? {} : { currency: params({ value: pricing.currency }, false).value },
+        ...pricing.policy_revision === undefined ? {} : { policy_revision: params({ value: pricing.policy_revision }, false).value },
+        ...pricing.specification_rows === undefined ? {}
+          : { specification_rows: params({ value: pricing.specification_rows }, false).value } },
       ...model.description === undefined ? {} : { description: text(model.description, 4000, true) },
       ...model.conditions === undefined ? {} : { conditions: params({ conditions: model.conditions }, false).conditions },
       ...model.parameter_conditions === undefined ? {}
         : { parameter_conditions: params({ value: model.parameter_conditions }, false).value },
+      ...model.selection_constraints === undefined ? {}
+        : { selection_constraints: params({ value: model.selection_constraints }, false).value },
       ...model.quantity === undefined ? {} : { quantity: params({ value: model.quantity }, false).value } }
     if (pricing.quote_required !== true || new Set(result.asset_fields.map(field => field.name)).size !== result.asset_fields.length
       || new Set(result.intents.map(item => item.id)).size !== result.intents.length || result.intents.length === 0) invalid()
@@ -388,8 +460,12 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
     media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true,
     ...caps.same_operation_configuration_requote === undefined ? {}
       : { same_operation_configuration_requote: bool(caps.same_operation_configuration_requote) },
+    ...caps.exact_specification_pricing_v1 === undefined ? {}
+      : { exact_specification_pricing_v1: bool(caps.exact_specification_pricing_v1) },
+    ...caps.explicit_requote_v1 === undefined ? {} : { explicit_requote_v1: bool(caps.explicit_requote_v1) },
     ...caps.material_conditions_v1 === undefined ? {} : { material_conditions_v1: bool(caps.material_conditions_v1) },
     ...caps.parameter_conditions_v1 === undefined ? {} : { parameter_conditions_v1: bool(caps.parameter_conditions_v1) },
+    ...caps.selection_constraints_v1 === undefined ? {} : { selection_constraints_v1: bool(caps.selection_constraints_v1) },
     ...caps.native_video_batch_v1 === undefined ? {} : { native_video_batch_v1: bool(caps.native_video_batch_v1) },
     ...caps.max_upload_bytes === undefined ? {} : { max_upload_bytes: number(caps.max_upload_bytes, 1, true) },
   }, models, credits_per_yuan: number(row.credits_per_yuan, Number.MIN_VALUE),

@@ -68,7 +68,7 @@ export interface PreferencePricing {
   readonly status: 'available' | 'unavailable'
   readonly basis: 'default'
   readonly source: 'public-retail'
-  readonly unit: 'points/image' | 'points/second'
+  readonly unit: 'points/image' | 'points/second' | 'points/video'
   readonly credits_per_yuan?: string
   readonly coverage: 'complete' | 'partial' | 'none'
   readonly rows: readonly PreferencePricingRow[]
@@ -123,10 +123,13 @@ function defaults(value: unknown): value is PreferenceDefault {
   return record(value) && (value.model === null || typeof value.model === 'string') && typeof value.configured === 'boolean' && typeof value.available === 'boolean'
 }
 
+function pricingUnit(value: unknown, kind: PreferenceKind): value is PreferencePricing['unit'] {
+  return kind === 'image' ? value === 'points/image' : value === 'points/second' || value === 'points/video'
+}
 function pricing(value: unknown, kind: PreferenceKind): PreferencePricing | undefined {
-  const unit = kind === 'image' ? 'points/image' : 'points/second'
+  const unit = record(value) ? value.unit : undefined
   if (!record(value) || value.schema_version !== 1 || value.basis !== 'default' || value.source !== 'public-retail'
-    || value.unit !== unit
+    || !pricingUnit(unit, kind)
     || value.status !== 'available' && value.status !== 'unavailable'
     || value.coverage !== 'complete' && value.coverage !== 'partial' && value.coverage !== 'none'
     || !Array.isArray(value.rows) || value.rows.length > 512

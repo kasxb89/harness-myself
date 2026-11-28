@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { describe, expect, it } from 'vitest'
-import { mediaV2Object, parseMediaV2Catalog, parseMediaV2Operation, parseMediaV2Quote, parseMediaV2Request, parseMediaV2Task, parseMediaV2Batch, parseMediaV2TaskBatch, mediaV2TaskComplete } from '../src/media-v2-protocol.ts'
+import { mediaV2Object, parseMediaV2Catalog, parseMediaV2Operation, parseMediaV2Quote, parseMediaV2Request, parseMediaV2Task, parseMediaV2Batch, parseMediaV2TaskBatch, mediaV2TaskComplete, readMediaV2SpecificationPricing } from '../src/media-v2-protocol.ts'
 
 const request = { client_operation_id: '02d6a836-08a6-4db8-8e08-1e562c50ee3c', model: 'synthetic-native',
   model_version: 'original-version', intent: 'reference', parameters: { prompt: '原画面' },
@@ -9,7 +9,77 @@ const capabilities = { media_generation_v2: true, quote_required: true, durable_
 const syntheticAudio = { id: 'synthetic-audio', display_name: 'Synthetic audio', kind: 'audio', model_version: 'audio-1',
   parameters_schema: { type: 'object', properties: { text: { type: 'string' } } }, asset_fields: [],
   intents: [{ id: 'text', label: 'Text', requires_assets: false }], enabled: true,
-  pricing: { display: 'Synthetic quote only', credits_per_yuan: 1000, quote_required: true } }
+  pricing: { display: 'Synthetic quote only', credits_per_yuan: 1000, quote_required: true as const } }
+
+describe('selection constraint catalog carrier', () => {
+  const selection = { schema_version: 1, combinations: [{ parameters: { text: { allowed_values: ['verse', 'chorus'] } },
+    required_parameters: ['text'] }] }
+  const catalog = { capabilities: { ...capabilities, selection_constraints_v1: true }, credits_per_yuan: 1000,
+    models: [{ ...syntheticAudio, selection_constraints: selection }, { ...syntheticAudio, id: 'unaffected' }] }
+  it('retains selection constraints without substituting schema or altering sibling models', () => {
+    const decoded = parseMediaV2Catalog(catalog)
+    expect(decoded.models[0]?.selection_constraints).toEqual(selection)
+    expect(decoded.models[0]?.parameters_schema).toEqual(syntheticAudio.parameters_schema)
+    expect(decoded.models[1]).toEqual({ ...syntheticAudio, id: 'unaffected' })
+  })
+  it('preserves unknown finite constraints losslessly for the per-model consumer to fail closed', () => {
+    const unknown = { schema_version: 999, '$future-key': { nested: [null, false, { 'not-a-native-field': 3 }] } }
+    const decoded = parseMediaV2Catalog({ ...catalog,
+      models: [{ ...syntheticAudio, selection_constraints: unknown }, { ...syntheticAudio, id: 'unaffected' }] })
+    expect(decoded.models[0]?.selection_constraints).toEqual(unknown)
+    expect(decoded.models[1]?.id).toBe('unaffected')
+  })
+  it.each([true, false])('strictly retains the %s selection capability boolean', (enabled) => {
+    expect(parseMediaV2Catalog({ ...catalog, capabilities: { ...capabilities, selection_constraints_v1: enabled } }).capabilities)
+      .toMatchObject({ selection_constraints_v1: enabled })
+  })
+  it('rejects a malformed capability without claiming to validate unknown rule semantics', () => {
+    expect(() => parseMediaV2Catalog({ ...catalog, capabilities: { ...capabilities, selection_constraints_v1: 'true' } })).toThrow()
+  })
+})
+
+describe('exact specification price metadata', () => {
+  const revision = 'c'.repeat(64)
+  const row = { id: 'd'.repeat(64), parameters: { mode: 'text-to-video', duration: '30', count: 1, audio: false },
+    billing_unit: 'per_video', quantity: 1, unit_price_cny: '1.37', total_cny: '1.37', quote_required: true, policy_revision: revision }
+  const pricing = { ...syntheticAudio.pricing, currency: 'CNY', policy_revision: revision, specification_rows: [row] }
+  const catalog = { capabilities: { ...capabilities, exact_specification_pricing_v1: true, explicit_requote_v1: false },
+    models: [{ ...syntheticAudio, pricing }], credits_per_yuan: 1250 }
+  it('retains exact scalar rows and both explicit capability booleans without changing totals', () => {
+    const parsed = parseMediaV2Catalog(catalog)
+    expect(parsed.models[0]?.pricing).toEqual(pricing)
+    expect(readMediaV2SpecificationPricing(parsed.models[0]!.pricing)).toEqual({ currency: 'CNY', policy_revision: revision, specification_rows: [row] })
+    expect(parsed.capabilities).toMatchObject({ exact_specification_pricing_v1: true, explicit_requote_v1: false })
+    expect(catalog.models[0]?.pricing.specification_rows[0]?.total_cny).toBe('1.37')
+    const seconds = { ...row, billing_unit: 'per_second', quantity: 30, unit_price_cny: '0.045666666666666666666' }
+    expect(parseMediaV2Catalog({ ...catalog, models: [{ ...syntheticAudio, pricing: { ...pricing,
+      specification_rows: [seconds] } }] }).models[0]?.pricing).toEqual({ ...pricing, specification_rows: [seconds] })
+    expect(readMediaV2SpecificationPricing(syntheticAudio.pricing)).toBeUndefined()
+    expect(readMediaV2SpecificationPricing({ ...syntheticAudio.pricing, currency: 'CNY', policy_revision: revision }))
+      .toEqual({ currency: 'CNY', policy_revision: revision })
+  })
+  it.each(['exact_specification_pricing_v1', 'explicit_requote_v1'])('rejects nonboolean %s', (key) => {
+    expect(() => parseMediaV2Catalog({ ...catalog, capabilities: { ...catalog.capabilities, [key]: 'true' } })).toThrow()
+  })
+  it('preserves malformed exact metadata locally but refuses to trust it, without breaking unrelated models', () => {
+    const invalid = [{ ...row, total_cny: '1e3' }, { ...row, unit_price_cny: '-1' }, { ...row, quantity: 0 },
+      { ...row, quantity: 30 }, { ...row, policy_revision: 'e'.repeat(64) }, { ...row, id: 'D'.repeat(64) },
+      { ...row, quote_required: false }, { ...row, parameters: { duration: ['30'] } },
+      { ...row, parameters: { prompt: 'private text' } }, { ...row, parameters: { duration: null } }]
+    for (const value of invalid) {
+      const parsed = parseMediaV2Catalog({ ...catalog, models: [{ ...syntheticAudio,
+        pricing: { ...pricing, specification_rows: [value] } }, { ...syntheticAudio, id: 'unaffected' }] })
+      expect(parsed.models[0]?.pricing.specification_rows).toEqual([value])
+      expect(readMediaV2SpecificationPricing(parsed.models[0]!.pricing)).toBeNull()
+      expect(parsed.models[1]?.id).toBe('unaffected')
+    }
+    for (const rows of [[row, row], Array.from({ length: 129 }, () => row)]) {
+      const parsed = parseMediaV2Catalog({ ...catalog, models: [{ ...syntheticAudio,
+        pricing: { ...pricing, specification_rows: rows } }] })
+      expect(readMediaV2SpecificationPricing(parsed.models[0]!.pricing)).toBeNull()
+    }
+  })
+})
 
 async function actualGoCatalog(): Promise<Record<string, unknown> & { models: readonly Record<string, unknown>[] }> {
   const value: unknown = JSON.parse(await readFile(new URL('./fixtures/media-v2-native-go-catalog.json', import.meta.url), 'utf8'))

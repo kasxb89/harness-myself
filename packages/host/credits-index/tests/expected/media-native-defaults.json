@@ -1,0 +1,62 @@
+{
+  "models": [
+    {
+      "audio_output": "unknown",
+      "audio_toggle": false,
+      "display_name": "Native exact video",
+      "durations": [
+        30,
+      ],
+      "durations_by_resolution": {
+        "1080p": [
+          30,
+        ],
+      },
+      "execution": "media-v2",
+      "frame_slots": 0,
+      "id": "ycapi-seedance-2-0-official",
+      "max_reference_audios": 0,
+      "max_reference_images": 0,
+      "max_reference_videos": 0,
+      "mix_frames_and_references": false,
+      "modes": [],
+      "qualities": [
+        "standard",
+      ],
+      "ratios": [
+        "16:9",
+      ],
+      "read_details": {
+        "model": "ycapi-seedance-2-0-official",
+        "tool": "list_media_models_v2",
+      },
+      "resolutions": [
+        "1080p",
+      ],
+      "seed": false,
+      "specifications": [
+        {
+          "quality": "standard",
+          "ratio": "16:9",
+          "resolution": "1080p",
+          "seconds": 30,
+        },
+      ],
+    },
+  ],
+  "result": {
+    "code": "NATIVE_MEDIA_REQUIRED",
+    "message": "所选型号使用原生媒体工具；请先用 list_media_models_v2 读取同一型号的当前参数，再报价生成。已保留偏好和素材，尚未提交生成。",
+    "status": "failed",
+  },
+  "selected": {
+    "error": "MEDIA_PARAMETERS_INVALID",
+    "model": "ycapi-seedance-2-0-official",
+    "parameters": {
+      "quality": "standard",
+      "ratio": "16:9",
+      "resolution": "1080p",
+      "seconds": 10,
+    },
+  },
+}

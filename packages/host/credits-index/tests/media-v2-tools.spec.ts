@@ -248,6 +248,29 @@ async function planToolFixture() {
     } }
 }
 
+it.each([1, 999])('carries selection constraints through exact tool details without schema rewriting: v%s', async (version) => {
+  const f = await planToolFixture()
+  const selection = version === 1 ? { schema_version: version,
+    combinations: [{ parameters: { quality: { allowed_values: ['standard'] } }, required_parameters: ['quality'] }] }
+    : { schema_version: version, '$future-selection': { preserve: [true, 'native', null] } }
+  const model = { id: 'selection-model', kind: 'image', display_name: 'Selection metadata', model_version: 'selection-version',
+    enabled: true, parameters_schema: { type: 'object', properties: { quality: { type: 'string', enum: ['standard', 'high'] } } },
+    asset_fields: [], intents: [{ id: 'text', label: 'Text', requires_assets: false }],
+    selection_constraints: selection, pricing: { display: 'Quote required', credits_per_yuan: 1250, quote_required: true } }
+  const fetch = vi.spyOn(f.account, 'fetch').mockImplementation(async (path, init) => {
+    expect(path).toBe('/v1/media-v2/models'); expect(init.method).toBe('GET')
+    return Response.json({ success: true, data: { credits_per_yuan: 1250, capabilities: {
+      media_generation_v2: true, quote_required: true, durable_operation_receipt: true,
+      all_artifacts: true, selection_constraints_v1: true }, models: [model] } })
+  })
+  const listed = await f.call('list_media_models_v2', { model: model.id })
+  expect(listed.status).toBe('listed'); expect(listed.details_included).toBe(true)
+  expect(listed.models).toEqual([model])
+  expect(listed.capabilities).toMatchObject({ selection_constraints_v1: true })
+  expect(fetch).toHaveBeenCalledTimes(1)
+  expect(await f.client.records(f.account)).toEqual([])
+})
+
 it('binds separate shot operations and returns the original plan and every saved output without a retry', async () => {
   const f = await planToolFixture()
   const one = await f.call('quote_media_operation', { ...f.input, plan_id: 'plan-original', shot_ids: ['shot-1'] })
@@ -304,6 +327,18 @@ it('retains plan-level ownership while distinct work keys and later human reques
     planId: 'plan-original', sessionId: f.agent.id, workspaceRoot: f.directory,
   })))
   expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(3)
+})
+
+it('keeps an explicit tool price reconfirmation local and requires the original operation ID', async () => {
+  const f = await planToolFixture(), quote = vi.spyOn(f.client, 'quote')
+  const refused = await f.call('quote_media_operation', { ...f.input, reconfirm_price: true })
+  expect(refused.status).toBe('unconfirmed'); expect(quote).not.toHaveBeenCalled(); expect(f.calls).toEqual([])
+  const first = await f.call('quote_media_operation', f.input)
+  const second = await f.call('quote_media_operation', { ...f.input, client_operation_id: first.client_operation_id, reconfirm_price: true })
+  expect(second.client_operation_id).toBe(first.client_operation_id)
+  expect(quote.mock.calls.at(-1)?.[4]).toEqual({ reconfirmPrice: true })
+  expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(1)
+  expect(JSON.stringify(f.calls)).not.toContain('reconfirm_price')
 })
 
 it('validates the bound asset before one background submit and retains all saved paths for original queries', async () => {

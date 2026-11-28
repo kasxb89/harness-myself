@@ -1,0 +1,78 @@
+{
+  "source_sha256": "2016a8523d2b9bbd62da36078379c53ba101e6d97d11262c1e32663256aff01f",
+  "source_pointer": "/negative_cases",
+  "negative_cases": [
+    {
+      "allowed": false,
+      "billing": 0,
+      "model": "ycapi-seedance-2-5-special",
+      "parameters": {
+        "aspect_ratio": "16:9",
+        "count": 1,
+        "duration": "30",
+        "mode": "text-to-video",
+        "prompt": "Keep the original 30-second intent",
+        "quality": "标准",
+        "resolution": "480p"
+      },
+      "vendor_IO": 0
+    },
+    {
+      "allowed": false,
+      "billing": 0,
+      "model": "ycapi-kling-v4",
+      "parameters": {
+        "aspect_ratio": "16:9",
+        "count": 1,
+        "duration": "30",
+        "mode": "text-to-video",
+        "prompt": "Keep the original 30-second intent",
+        "quality": "standard",
+        "resolution": "4k"
+      },
+      "vendor_IO": 0
+    },
+    {
+      "allowed": false,
+      "billing": 0,
+      "model": "ycapi-minimax-h3",
+      "parameters": {
+        "aspect_ratio": "16:9",
+        "count": 1,
+        "duration": "30",
+        "mode": "text-to-video",
+        "prompt": "Keep the original 30-second intent",
+        "resolution": "480p"
+      },
+      "vendor_IO": 0
+    },
+    {
+      "allowed": false,
+      "billing": 0,
+      "model": "ycapi-minimax-h3",
+      "parameters": {
+        "aspect_ratio": "16:9",
+        "count": 1,
+        "duration": "30",
+        "mode": "text-to-video",
+        "prompt": "Keep the original 30-second intent",
+        "resolution": "1080p"
+      },
+      "vendor_IO": 0
+    },
+    {
+      "allowed": false,
+      "billing": 0,
+      "model": "ycapi-minimax-h3",
+      "parameters": {
+        "aspect_ratio": "16:9",
+        "count": 1,
+        "duration": "30",
+        "mode": "text-to-video",
+        "prompt": "Keep the original 30-second intent",
+        "resolution": "2k"
+      },
+      "vendor_IO": 0
+    }
+  ]
+}

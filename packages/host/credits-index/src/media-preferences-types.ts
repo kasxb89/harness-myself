@@ -31,7 +31,7 @@ export interface MediaPreferencePricing {
   readonly status: 'available' | 'unavailable'
   readonly basis: 'default'
   readonly source: 'public-retail'
-  readonly unit: 'points/image' | 'points/second'
+  readonly unit: 'points/image' | 'points/second' | 'points/video'
   readonly credits_per_yuan?: string
   readonly coverage: 'complete' | 'partial' | 'none'
   readonly rows: readonly MediaPreferencePriceRow[]

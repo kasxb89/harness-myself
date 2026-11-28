@@ -24,7 +24,7 @@ describe('product failure presentation', () => {
     ['INVALID_REQUEST', 'invalid-input'], ['INVALID_ARGUMENT', 'invalid-input'], ['INVALID_ARGS', 'invalid-input'],
     ['VIDEO_EDIT_INVALID_INPUT', 'invalid-input'], ['RATIO_NOT_SUPPORTED', 'invalid-input'],
     ['SPECIFICATION_NOT_SUPPORTED', 'invalid-input'], ['SPECIFICATION_REQUIRED', 'invalid-input'],
-    ['MEDIA_PARAMETERS_INVALID', 'invalid-input'], ['MEDIA_MODEL_MISMATCH', 'invalid-input'],
+    ['MEDIA_PARAMETERS_INVALID', 'invalid-input'], ['MEDIA_MODEL_MISMATCH', 'invalid-input'], ['NATIVE_MEDIA_REQUIRED', 'invalid-input'],
     ['HTTP_400', 'invalid-input'], ['HTTP_413', 'invalid-input'], ['HTTP_415', 'invalid-input'],
     ['IMAGE_INPUT_TOO_LARGE', 'invalid-input'], ['IMAGE_FORMAT_UNSUPPORTED', 'invalid-input'],
     ['IMAGE_EMPTY', 'invalid-input'], ['HTTP_403', 'forbidden'], ['HTTP_429', 'busy'],

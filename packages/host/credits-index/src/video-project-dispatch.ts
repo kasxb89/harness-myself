@@ -20,6 +20,8 @@ export interface VideoProjectDispatchOptions {
   readonly queue: VideoServerQueueOptions
   /** Resolve a model route only for new legacy work or noncanonical historical task IDs. */
   route(request: VideoProjectRequest): Promise<string>
+  /** Resolve only a historical GET fallback; it never authorizes a new legacy submission. */
+  queryRoute?(model: string, signal: AbortSignal): Promise<string>
 }
 
 /**
@@ -84,8 +86,10 @@ export function createVideoProjectDispatch(options: VideoProjectDispatchOptions)
     async check(taskId, request, signal) {
       if (!taskId.startsWith('vq_')) {
         // A saved gateway task remains readable after its model disappears from the new-work catalog.
-        const route = /^task_[A-Za-z0-9]{32}$/u.test(taskId) ? '/v1/tasks' : () => options.route(request)
-        return options.relay.check(taskId, route, signal, typeof request.model === 'string' ? request.model : undefined)
+        const model = typeof request.model === 'string' ? request.model : undefined
+        const route = /^task_[A-Za-z0-9]{32}$/u.test(taskId) ? '/v1/tasks' : () =>
+          options.queryRoute === undefined || model === undefined ? options.route(request) : options.queryRoute(model, signal)
+        return options.relay.check(taskId, route, signal, model)
       }
       recoveringQueue = true
       let item: VideoServerQueueItem

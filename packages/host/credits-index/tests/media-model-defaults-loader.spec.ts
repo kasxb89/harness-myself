@@ -1,9 +1,11 @@
 /** Effective per-request model choices through the production Loader and tool registry. */
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { afterEach, expect, it, vi } from 'vitest'
+import { z } from 'zod'
 import { Context } from '@deepseek-ai/cordis'
 import Loader, { type ModuleLoaderV2 } from '@deepseek-ai/cordis-plugin-loader'
 import Include from '@deepseek-ai/cordis-plugin-include'
@@ -158,6 +160,109 @@ async function fixture(savedPreferences = true, squareOnly = false,
   return { ctx, agent, human, call, posts, submissions, quotes, hideSavedModel: () => { visible = visible.filter(id => id !== video) },
     setDirectoryReply: (reply: (path: string) => Response | undefined): void => { directoryReply = reply } }
 }
+
+it('uses the authenticated native controls for a promoted model without submitting legacy five-second work', async () => {
+  const f = await fixture(true, false, { seconds: 10, resolution: '1080p', ratio: '16:9', quality: 'standard' })
+  const native = { id: video, display_name: 'Native exact video', kind: 'video', model_version: 'n'.repeat(64),
+    enabled: true, asset_fields: [], intents: [{ id: 'text', label: 'Text', requires_assets: false }],
+    pricing: { display: 'Original exact quote required', credits_per_yuan: 1250, quote_required: true },
+    parameters_schema: { type: 'object', required: ['prompt', 'duration', 'resolution', 'aspect_ratio', 'count'],
+      properties: { prompt: { type: 'string' }, duration: { type: 'string', enum: ['30'] },
+        resolution: { type: 'string', enum: ['1080p'] }, aspect_ratio: { type: 'string', enum: ['16:9'] },
+        quality: { type: 'string', enum: ['standard'] }, count: { type: 'integer', const: 1 } } } }
+  let nativeReads = 0
+  let nativeAvailable = true
+  f.setDirectoryReply((path) => {
+    if (path === '/harness/api/pricing') return Response.json({ success: true, data: pricing.map(row => row.model_name === video
+      ? { ...row, media_runtime: { schema_version: 1, preferred: 'media-v2' } } : row) })
+    if (path === '/harness/v1/media-v2/models') {
+      nativeReads += 1
+      return Response.json({ success: true, data: { capabilities: { media_generation_v2: true, quote_required: true,
+        durable_operation_receipt: true, all_artifacts: true }, models: nativeAvailable ? [native] : [], credits_per_yuan: 1250 } })
+    }
+  })
+  await f.human('按偏好生成一段视频')
+  const listed = await f.call('list_video_models', {})
+  expect(listed.models).toEqual(expect.arrayContaining([expect.objectContaining({ id: video,
+    execution: 'media-v2', durations: [30], resolutions: ['1080p'], ratios: ['16:9'],
+    read_details: { tool: 'list_media_models_v2', model: video } })]))
+  expect(listed).toMatchObject({ default_model_id: video, default_available: true,
+    selected_parameters: { seconds: 10 }, default_error_code: 'MEDIA_PARAMETERS_INVALID' })
+  expect(nativeReads).toBeGreaterThan(0)
+  const result = await f.call('generate_video', { model: video, prompt: 'A synthetic lake', duration_seconds: 30,
+    resolution: '1080p', ratio: '16:9', quality: 'standard' })
+  expect(result).toMatchObject({ status: 'failed', code: 'NATIVE_MEDIA_REQUIRED' })
+  expect(f.posts).toEqual([])
+  expect(f.quotes).toEqual([])
+  expect(f.submissions).toEqual([])
+  const modelViews: readonly unknown[] = Array.isArray(listed.models) ? listed.models : []
+  await expect({ models: modelViews.filter(model =>
+    model !== null && typeof model === 'object' && 'id' in model && model.id === video),
+  selected: { model: listed.default_model_id, parameters: listed.selected_parameters, error: listed.default_error_code }, result })
+    .toMatchFileSnapshot('./expected/media-native-defaults.json')
+  nativeAvailable = false
+  await f.human('查看我仍有权限的旧版视频型号')
+  const legacy = await f.call('list_video_models', {})
+  expect(legacy.models).toEqual(expect.arrayContaining([expect.objectContaining({ id: video, durations: [5, 10] })]))
+  expect(legacy).not.toHaveProperty('default_error_code')
+  expect(f.posts).toEqual([])
+})
+
+it('carries the actual Go legacy/native catalog pair through the production chat Loader without generation', async () => {
+  const raw = await readFile(new URL('./fixtures/yc30-r02/legacy-native-pair.json', import.meta.url))
+  expect(createHash('sha256').update(raw).digest('hex')).toBe('7dfbce80f0ade1a306b577275d7b16eb1bda0c835895f5c487bae0f45abe8af8')
+  const pair = z.object({ model: z.string(), responses: z.object({ qualified: z.unknown(), native_qualified: z.unknown() }) })
+    .parse(JSON.parse(raw.toString('utf8')))
+  const versions = z.object({ data: z.array(z.object({ model_name: z.string(), model_config_version: z.string().optional() })) })
+    .parse(pair.responses.qualified)
+  const f = await fixture(false)
+  const reads: string[] = []
+  f.setDirectoryReply((path) => {
+    if (path === '/harness/api/pricing') { reads.push(path); return Response.json(pair.responses.qualified) }
+    if (path === '/harness/v1/media-v2/models') { reads.push(path); return Response.json(pair.responses.native_qualified) }
+    if (path === '/harness/v1/models') return Response.json({ data: versions.data.filter(row => row.model_name === pair.model)
+      .map(row => ({ id: row.model_name, supported_endpoint_types: ['openai-video'], model_config_version: row.model_config_version })) })
+  })
+  await f.human(`用 ${pair.model} 生成30秒视频`)
+  const listed = await f.call('list_video_models', {})
+  const models: readonly unknown[] = Array.isArray(listed.models) ? listed.models : []
+  const current = models.find(model => model !== null && typeof model === 'object' && 'id' in model && model.id === pair.model)
+  expect(current).toMatchObject({ execution: 'media-v2', read_details: { tool: 'list_media_models_v2', model: pair.model } })
+  expect(z.object({ durations: z.array(z.number()) }).parse(current).durations).toContain(30)
+  const refused = await f.call('generate_video', { model: pair.model, prompt: 'Synthetic clouds', duration_seconds: 30 })
+  expect(refused).toMatchObject({ status: 'failed', code: 'NATIVE_MEDIA_REQUIRED' })
+  expect(reads).toContain('/harness/v1/media-v2/models')
+  expect(f.posts).toEqual([])
+})
+
+it('lists an authenticated native-only model without requiring an unrelated legacy pricing row', async () => {
+  const raw = await readFile(new URL('./fixtures/yc30-r02/legacy-native-pair.json', import.meta.url))
+  const pair = z.object({ model: z.string(), responses: z.object({ native_qualified: z.unknown() }) })
+    .parse(JSON.parse(raw.toString('utf8')))
+  const native = z.object({ data: z.object({ models: z.array(z.unknown()) }).loose() }).loose()
+    .parse(pair.responses.native_qualified)
+  const image = { id: 'synthetic-native-image', kind: 'image', display_name: 'Native image', model_version: 'synthetic-image-v1',
+    enabled: true, intents: [{ id: 'text', label: 'Text', requires_assets: false }], asset_fields: [],
+    parameters_schema: { type: 'object', properties: { prompt: { type: 'string' }, aspect_ratio: { type: 'string', enum: ['1:1'] },
+      resolution: { type: 'string', enum: ['1k'] }, count: { type: 'integer', const: 1 } } },
+    pricing: { display: 'Synthetic quote required', quote_required: true } }
+  const f = await fixture(false)
+  f.setDirectoryReply((path) => {
+    if (path === '/harness/api/pricing') return Response.json({ success: true, data: [] })
+    if (path === '/harness/v1/models') return Response.json({ data: [] })
+    if (path === '/harness/v1/media-v2/models') return Response.json({ ...native, data: { ...native.data,
+      models: [...native.data.models, image] } })
+  })
+  await f.human('查看可用的原生视频型号')
+  const listed = await f.call('list_video_models', {})
+  const videos = z.array(z.object({ id: z.string(), execution: z.string(), durations: z.array(z.number()) })).parse(listed.models)
+  expect(videos).toHaveLength(1)
+  expect(videos[0]).toMatchObject({ id: pair.model, execution: 'media-v2' })
+  expect(videos[0]?.durations).toContain(30)
+  const images = await f.call('list_image_models', {})
+  expect(images.models).toEqual([expect.objectContaining({ id: image.id, execution: 'media-v2', sizes: ['1:1'] })])
+  expect(f.posts).toEqual([])
+})
 
 it.each(['image', 'video'] as const)('rereads a changed %s listing pair before exposing its new controls', async (kind) => {
   const f = await fixture(false)

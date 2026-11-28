@@ -26,6 +26,7 @@
     "tests/media-material-conditions.e2e.ts",
     "tests/replica-workbench.e2e.ts",
     "tests/yc-native-media.e2e.ts",
+    "tests/media-exact-pricing.e2e.ts",
     "tests/session-delete.e2e.ts",
     "tests/sidebar-login-reminder.e2e.ts",
     "tests/chat-media-preferences.e2e.ts",

@@ -1222,3 +1222,128 @@ it('generic unit: keeps a removed scalar enum selection visible and disabled aft
   expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
   expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
 })
+
+it.each([
+  ['per_video', 1, '1.25', '1.25', '条'],
+  ['per_second', 30, '0.05', '1.50', '秒'],
+] as const)('generic exact price view: keeps backend %s unit and total separate from the authoritative quote', async (unit, quantity, price, total, label) => {
+  const parameters = { mode: 'text-to-video', duration: '30', count: 1, aspect_ratio: '16:9', resolution: '720p' }
+  const candidate: MediaV2Model = { ...source, kind: 'video', asset_fields: [],
+    parameters_schema: { properties: Object.fromEntries(Object.entries(parameters).map(([name, value]) =>
+      [name, { type: typeof value === 'number' ? 'integer' : 'string', default: value }])) },
+    intents: [{ id: 'text', label: 'Text', requires_assets: false }], pricing: { ...source.pricing,
+      currency: 'CNY', policy_revision: 'b'.repeat(64), specification_rows: [{ id: 'c'.repeat(64), parameters,
+        billing_unit: unit, quantity, unit_price_cny: price, total_cny: total, quote_required: true, policy_revision: 'b'.repeat(64) }] } }
+  const api = backend([candidate]); await opened(api.transport, 'video')
+  expect(screen.getByText(`参考单价: ¥${price}/${label} · 参考总额: ¥${total}`)).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+  expect(screen.getByText('¥0.25')).toBeTruthy()
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(1); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+it('generic explicit price reconfirm: renews only a quoted original UUID on an explicit supported click', async () => {
+  const request: MediaV2Request = { client_operation_id: 'original-price-reconfirm', model: source.id,
+    model_version: 'old-version', intent: 'text', parameters: {}, assets: {} }
+  const original = quoted(request), api = backend([source], [original]), base = api.transport.getMockImplementation()!
+  api.transport.mockImplementation((path, init) => path === `${prefix}/models`
+    ? Promise.resolve(envelope({ models: [source], credits_per_yuan: 1000, capabilities: { explicit_requote_v1: true } }))
+    : base(path, init))
+  sessionStorage.setItem('dsh:media-v2:draft-v1:image:account-a', JSON.stringify({ modelId: source.id,
+    intent: 'text', parameters: {}, assets: [], currentId: request.client_operation_id }))
+  await opened(api.transport)
+  const card = screen.getByText('操作编号: original-price-reconfirm').closest('article')
+  if (card === null) throw new Error('Expected the original quoted operation')
+  const priceButton = screen.getByRole('button', { name: '获取准确积分' })
+  expect(priceButton).toHaveProperty('disabled', false)
+  fireEvent.click(priceButton); await screen.findByText('本次费用: 250 积分')
+  const submission = api.transport.mock.calls.find(([path]) => path === `${prefix}/quotes`)
+  expect(new Headers(submission?.[1]?.headers).get('X-Yunshu-Media-Requote')).toBe('1')
+  expect(readBody(submission?.[1])).toMatchObject({ client_operation_id: request.client_operation_id, parameters: {}, assets: {} })
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(1); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+  fireEvent.click(within(card).getByRole('button', { name: '更新原任务' }))
+  await waitFor(() => { expect(calls(api.transport, `${prefix}/operations/${request.client_operation_id}`)).toBe(1) })
+  for (const [path, init] of api.transport.mock.calls.filter(([path]) => path.startsWith(`${prefix}/operations/`))) {
+    expect(new Headers(init?.headers).has('X-Yunshu-Media-Requote')).toBe(false)
+    expect(path).toContain(request.client_operation_id)
+  }
+})
+
+it('generic exact pricing: malformed metadata blocks new quote while retaining original generation material', async () => {
+  const candidate: MediaV2Model = { ...source, pricing: { ...source.pricing, currency: 'USD',
+    policy_revision: 'b'.repeat(64), specification_rows: [] } }
+  const api = backend([candidate]); await opened(api.transport); await upload(api.transport)
+  fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+  expect(screen.getByText('当前客户端尚不支持这项参数规则，已停止报价，请更新后再使用')).toBeTruthy()
+  expect(screen.getByText('one.png')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('generic explicit price reconfirm: keeps the first quote, recovery and accepted polling outside the requote header', async () => {
+  const api = backend(), base = api.transport.getMockImplementation()!
+  let quotes = 0
+  api.transport.mockImplementation(async (path, init) => {
+    if (path === `${prefix}/models`) return envelope({ models: [source], credits_per_yuan: 1000,
+      capabilities: { explicit_requote_v1: true } })
+    const result = await base(path, init)
+    if (path === `${prefix}/quotes` && ++quotes === 2) throw new Error('lost explicit quote reply')
+    return result
+  })
+  await opened(api.transport)
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' })); await screen.findByText('本次费用: 250 积分')
+  const first = api.transport.mock.calls.find(([path]) => path === `${prefix}/quotes`)
+  expect(new Headers(first?.[1]?.headers).has('X-Yunshu-Media-Requote')).toBe(false)
+  const originalId = api.records()[0]?.request.client_operation_id
+  if (originalId === undefined) throw new Error('Expected original quote UUID')
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+  await waitFor(() => { expect(calls(api.transport, `${prefix}/operations/${originalId}`)).toBe(1) })
+  const requests = api.transport.mock.calls.filter(([path]) => path === `${prefix}/quotes`)
+  expect(requests).toHaveLength(2)
+  expect(new Headers(requests[1]?.[1]?.headers).get('X-Yunshu-Media-Requote')).toBe('1')
+  expect(readBody(requests[0]?.[1])).toEqual(readBody(requests[1]?.[1]))
+  for (const [, init] of api.transport.mock.calls.filter(([path]) => path.startsWith(`${prefix}/operations/`))) {
+    expect(new Headers(init?.headers).has('X-Yunshu-Media-Requote')).toBe(false)
+  }
+  await waitFor(() => { expect(screen.getByRole('button', { name: '确认生成' })).toHaveProperty('disabled', false) })
+  fireEvent.click(screen.getByRole('button', { name: '确认生成' }))
+  await waitFor(() => { expect(api.records()[0]?.state).toBe('accepted') })
+  fireEvent.click(screen.getByRole('button', { name: '获取准确积分' }))
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(2)
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(1)
+})
+
+it('generic finite selections: retains an incompatible saved duration and generation image without a quote', async () => {
+  const rawCandidate = { ...source, parameters_schema: { ...source.parameters_schema, properties: {
+    ...sourceProperties(), duration: { type: 'integer', enum: [15, 30], default: 30,
+      'x-ycapi-contract': { label: { zh: '有限时长' } } },
+    resolution: { type: 'string', enum: ['768P', '1080P'], default: '1080P' },
+  } }, selection_constraints: { schema_version: 1, combinations: [
+    { parameters: { duration: { allowed_values: [30] }, resolution: { allowed_values: ['768P'] } }, required_parameters: ['duration', 'resolution'] },
+    { parameters: { duration: { allowed_values: [15] }, resolution: { allowed_values: ['1080P'] } }, required_parameters: ['duration', 'resolution'] },
+  ] } }
+  const candidate = parseMediaV2Catalog({ models: [rawCandidate], credits_per_yuan: 1000 }).models[0]!
+  const api = backend([candidate]); await opened(api.transport); await upload(api.transport)
+  fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+  expect(screen.getByLabelText('有限时长')).toHaveProperty('value', '30')
+  expect(within(screen.getByLabelText('有限时长')).getByRole('option', { name: '30' })).toHaveProperty('disabled', true)
+  expect(within(screen.getByLabelText('有限时长')).getByRole('option', { name: '15' })).toHaveProperty('disabled', false)
+  expect(screen.getByText('one.png')).toBeTruthy()
+  expect(screen.getByRole('combobox', { name: '使用方式' })).toHaveProperty('value', 'reference')
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})
+
+it('generic finite selections: blocks an unknown policy locally but still queries the original accepted UUID', async () => {
+  const candidate: MediaV2Model = { ...source, selection_constraints: { schema_version: 999, combinations: [], future_policy: true } }
+  const original: MediaV2Record = { version: 1, owner: 'nonsecret-account', state: 'accepted', updated_at: 1,
+    request: { client_operation_id: 'accepted-before-selection-change', model: source.id, model_version: 'old-v0',
+      intent: 'text', parameters: {}, assets: {} }, task: { id: 'original-accepted-task', model: source.id, kind: 'image',
+      status: 'pending', is_final: false, artifacts: [] } }
+  const api = backend([candidate], [original]); await opened(api.transport); await upload(api.transport)
+  expect(screen.getByText('当前客户端尚不支持这项参数规则，已停止报价，请更新后再使用')).toBeTruthy()
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  fireEvent.click(screen.getByRole('button', { name: '更新原任务' }))
+  await waitFor(() => { expect(calls(api.transport, `${prefix}/operations/${original.request.client_operation_id}`)).toBe(1) })
+  expect(screen.getByText('one.png')).toBeTruthy()
+  expect(api.records()[0]?.request).toEqual(original.request)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0); expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})

@@ -24,6 +24,21 @@ describe('per-row model configuration identity', () => {
   })
 })
 
+describe('published native execution preference', () => {
+  const row = { model_name: 'neutral-video', supported_endpoint_types: ['openai-video'], parameters: {
+    seconds: { enum: [5, 10] }, resolution: { enum: ['720p'] }, ratio: { enum: ['16:9'] },
+  } }
+  it('marks native admission separately without mutating legacy parameters for existing receipts', () => {
+    const legacy = catalogFromPricing([row], null)[0]
+    expect(catalogFromPricing([{ ...row, media_runtime: { schema_version: 1, preferred: 'media-v2' } }], null))
+      .toEqual([{ ...legacy, execution: 'media-v2' }])
+  })
+  it.each([null, {}, { schema_version: 2, preferred: 'media-v2' }, { schema_version: 1, preferred: 'future' },
+    { schema_version: 1, preferred: 'media-v2', route: '/invented' }])('does not downgrade an unknown execution declaration to legacy: %j', (runtime) => {
+    expect(catalogFromPricing([{ ...row, media_runtime: runtime }], null)).toEqual([])
+  })
+})
+
 describe('internal image capability', () => {
   it('offers six references on the internal task route without granting edits to text-only models', () => {
     const catalog = catalogFromPricing([

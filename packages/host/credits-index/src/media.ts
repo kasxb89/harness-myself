@@ -140,6 +140,10 @@ export interface VideoParams {
 /** One model and its published parameters, as the panels need them. */
 export interface ModelCapability {
   readonly id: string
+  /** Current native execution is kept separate from legacy generator request shapes. */
+  readonly execution?: 'media-v2'
+  /** Native catalog version; never substituted for a legacy published configuration hash. */
+  readonly nativeModelVersion?: string
   /** Published configuration pinned independently from account authority and personal preferences. */
   readonly modelConfigVersion?: ModelConfigVersion
   readonly kind: MediaKind
@@ -816,6 +820,10 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
     const record = objectRecord(row)
     const id = typeof record?.model_name === 'string' ? record.model_name : null
     if (record === null || id === null) continue
+    const runtime = objectRecord(record.media_runtime)
+    // A future execution declaration must never fall through to a legacy request shape.
+    if (record.media_runtime !== undefined && (runtime?.schema_version !== 1 || runtime.preferred !== 'media-v2'
+      || Object.keys(runtime).some(key => key !== 'schema_version' && key !== 'preferred'))) continue
     const endpoints = stringList(record.supported_endpoint_types)
     const fields = schemaFields(record.billing_usage_schema)
     const kind = mediaKind(id, endpoints, fields, record)
@@ -840,6 +848,7 @@ export function catalogFromPricing(rows: readonly unknown[], userGroup: string |
       ?? (kind === 'image' ? '/v1/images/generations' : kind === 'video' ? '/v1/videos' : '/v1/audio/speech')
     catalog.push({
       id,
+      ...runtime === null ? {} : { execution: 'media-v2' as const },
       ...modelConfigVersion === undefined ? {} : { modelConfigVersion },
       kind,
       displayName: typeof record.display_name === 'string' && record.display_name.trim() !== '' ? record.display_name

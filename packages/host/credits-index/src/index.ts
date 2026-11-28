@@ -40,7 +40,7 @@ import { SessionRefresh, type StoredAccount, type StoredSession } from './sessio
 import { sessionTransportFailure, type SessionFailure } from './session-failure.ts'
 import { PhoneAuthState, type PhoneDeliveryStatus } from './phone-auth-state.ts'
 import { MediaDefaultsCache, mediaDefaultSelection, requireMediaDefault, type MediaDefaultSelection } from './media-defaults.ts'
-import { MediaPreferencesStore, mediaPreferencesScope } from './media-preferences.ts'
+import { MediaPreferencesStore, mediaPreferencesScope, validateMediaPreference } from './media-preferences.ts'
 import { registerMediaRequestSelection, canonicalMediaModelId, canonicalMediaRequestParameters, mediaRequestModelChoiceOf, resolveMediaRequestSelection, needsMediaRequestSelectionCatalog, type MediaRequestSelectionContext } from './media-request-selection.ts'
 import { mediaPreferencePrices } from './media-preference-pricing.ts'
 import type { MediaPreferenceModel, MediaPreferencePricing } from './media-preference-pricing-types.ts'
@@ -63,6 +63,8 @@ import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
 import { createDemandProxy, type DemandProxyOptions } from './demand-proxy.ts'
 import { MediaV2Client, MediaV2Error } from './media-v2-client.ts'
+import type { MediaV2Catalog } from './media-v2-protocol.ts'
+import { projectNativeMediaPreferences, nativeMediaPreferencePrices } from './media-native-preferences.ts'
 import { createMediaV2Proxy } from './media-v2-proxy.ts'
 import { registerMediaV2Tools } from './media-v2-tools.ts'
 import { readMediaV2File } from './media-v2-file.ts'
@@ -359,7 +361,7 @@ type ResolvedConfig = Omit<Required<Config>, 'videoProjectConcurrency' | 'imageC
 
 /** The single prefix this plugin owns. */
 const ROUTE_PREFIX = '/credits'
-const NATIVE_MEDIA_GUIDANCE = ' Native media-generation-v2 models and processors use list_media_models_v2 with explicit intent, typed parameters and ordered assets, then quote_media_operation, generate_media_operation and query_media_operation. Models absent from this legacy catalog cannot fall back to this tool or text generation; preserve their original V2 operation rather than using a legacy route.'
+const NATIVE_MEDIA_GUIDANCE = ' Native media-generation-v2 models and processors use list_media_models_v2 with explicit intent, typed parameters and ordered assets, then quote_media_operation, generate_media_operation and query_media_operation. A listed execution=media-v2 or read_details selects that native tool path, including when the exact same ID previously used a legacy generator. Read its native schema before mapping saved scalar preferences; never reuse old clip lengths, silently shorten duration or drop reference material. Models absent from this legacy catalog cannot fall back to this tool or text generation; preserve their original V2 operation rather than using a legacy route.'
 
 /**
  * Credential address holding the session token. The store only accepts
@@ -1192,6 +1194,8 @@ export function apply(ctx: Context, config: Config): void {
     imageServerRecovery?: ReadonlySet<string>
     imageServerUpdateRequired?: ReadonlySet<string>
     preferencePrices?: ReadonlyMap<string, MediaPreferencePricing>
+    legacyVisible?: ReadonlySet<string>
+    nativeCatalog?: MediaV2Catalog
   }> => {
     let group: string | null = null
     try {
@@ -1394,7 +1398,8 @@ export function apply(ctx: Context, config: Config): void {
     if (!visible.ok || !catalog.ok) throw new CreativeError('DEFAULT_MEDIA_MODEL_UNAVAILABLE', 409,
       '暂时无法核对默认模型的当前账号权限；尚未提交生成。请重新读取模型目录后重试。')
     return mediaDefaultSelection(defaults, kind, catalog.models,
-      new Set([...visible.chat, ...visible.image, ...visible.video, ...visible.audio]))
+      new Set([...visible.chat, ...visible.image, ...visible.video, ...visible.audio,
+        ...suppliedCatalog?.filter(model => model.execution === 'media-v2').map(model => model.id) ?? []]))
   }
 
   /** Preserve the selected identity even when its complete output specification still needs a choice. */
@@ -1424,6 +1429,10 @@ export function apply(ctx: Context, config: Config): void {
         metadata = { default_model_id: choice.model, default_configured: true,
           default_available: models.some(model => model.kind === kind && model.id === choice.model),
           default_source: choice.source, selected_parameters: { ...choice.parameters } }
+        if (models.some(model => model.kind === kind && model.id === choice.model && model.execution === 'media-v2')) {
+          validateMediaPreference(kind, { model: choice.model, parameters: { ...choice.parameters } }, models)
+          return metadata
+        }
         const { model: _model, ...parameters } = resolveMediaRequestSelection(exec, kind, {}, models, scope,
           kind === 'video' ? { videoProject: true } : undefined)
         return { ...metadata, selected_parameters: parameters }
@@ -1472,18 +1481,76 @@ export function apply(ctx: Context, config: Config): void {
     if (!catalog.ok || !visible.ok) throw new CreativeError('MODEL_CATALOG_UNAVAILABLE', 409,
       '当前无法读取账号可用的创作模型，请稍后重试；尚未提交生成。')
     const allowed = new Set([...visible.chat, ...visible.image, ...visible.video, ...visible.audio])
-    const models = catalog.models.filter(model => allowed.has(model.id))
+    let models = catalog.models.filter(model => allowed.has(model.id) || model.execution === 'media-v2')
+    const nativeCatalog = models.some(model => model.execution === 'media-v2') ? await readNativeCatalog(session, signal) : undefined
+    if (nativeCatalog !== undefined) {
+      const confirmed = new Set(nativeCatalog.models.filter(model => model.enabled).map(model => model.id))
+      models = models.flatMap((model) => {
+        if (model.execution !== 'media-v2' || confirmed.has(model.id)) return [model]
+        if (!allowed.has(model.id)) return []
+        const { execution: _nativeUnavailableForAccount, ...original } = model
+        return [original]
+      })
+    }
     if (publicUnitPrices !== undefined) for (const model of models) {
       const price = catalog.preferencePrices?.get(model.id)
       if (price !== undefined) publicUnitPrices.set(model.id, price)
     }
-    return { ...catalog, models }
+    return { ...catalog, models, legacyVisible: allowed, ...nativeCatalog === undefined ? {} : { nativeCatalog } }
   }
 
   const readPreferenceCatalog = async (session: StoredSession, signal?: AbortSignal,
     publicUnitPrices?: Map<string, MediaPreferencePricing>): Promise<ModelCapability[]> => {
     const catalog = await readAuthorizedMediaCatalog(session, signal, publicUnitPrices)
-    return catalog.models.filter(model => model.kind === 'image' || model.kind === 'video')
+    return await nativePreferenceModels(session, catalog.models, signal, publicUnitPrices, catalog.legacyVisible, catalog.nativeCatalog)
+  }
+
+  /** Read native permissions under the same initiating login as the legacy listing. */
+  const readNativeCatalog = async (session: StoredSession, signal?: AbortSignal) => {
+    const life = signal ?? AbortSignal.timeout(resolved.timeoutMs)
+    const epoch = identityVersion, owner = productOwner(session)
+    const account = await captureMediaV2Account(life)
+    const native = await mediaV2Client.catalog(account, life)
+    const latest = await store.read()
+    if (epoch !== identityVersion || latest?.token === undefined || productOwner(latest) !== owner || !await account.isCurrent()) {
+      throw new CreativeError('ACCOUNT_CHANGED', 409, '登录状态已变化，请重新读取原生模型目录。')
+    }
+    return native
+  }
+
+  /** Native permission is confirmed before a public runtime hint can shadow a legacy choice. */
+  const nativePreferenceModels = async (session: StoredSession, models: readonly ModelCapability[], signal?: AbortSignal,
+    publicUnitPrices?: Map<string, MediaPreferencePricing>, legacyVisible?: ReadonlySet<string>,
+    suppliedNative?: MediaV2Catalog): Promise<ModelCapability[]> => {
+    const preferred = new Set(models.filter(model => model.execution === 'media-v2').map(model => model.id))
+    let native: MediaV2Catalog
+    try { native = suppliedNative ?? await readNativeCatalog(session, signal) }
+    catch (error) {
+      // Older deployments have no native endpoint. A published native hint must not take this compatibility path.
+      if (error instanceof MediaV2Error && error.status === 404 && preferred.size === 0) {
+        return models.filter(model => model.kind === 'image' || model.kind === 'video')
+      }
+      throw error
+    }
+    const legacyIds = new Set(models.map(model => model.id))
+    const confirmed = new Set(native.models.filter(model => model.enabled
+      && (preferred.has(model.id) || !legacyIds.has(model.id))).map(model => model.id))
+    const legacy = models.flatMap((model) => {
+      if (model.kind !== 'image' && model.kind !== 'video' || confirmed.has(model.id)) return []
+      if (model.execution !== 'media-v2') return [model]
+      if (legacyVisible?.has(model.id) !== true) return []
+      const { execution: _nativeUnavailableForAccount, ...original } = model
+      return [original]
+    })
+    const projected = native.models.filter(model => confirmed.has(model.id)).flatMap((model) => {
+      const projection = projectNativeMediaPreferences(model)
+      return projection === undefined ? [] : [projection]
+    })
+    for (const id of confirmed) publicUnitPrices?.delete(id)
+    if (publicUnitPrices !== undefined) for (const [id, price] of nativeMediaPreferencePrices(native.models, projected)) {
+      publicUnitPrices.set(id, price)
+    }
+    return [...legacy, ...projected]
   }
 
   /** Apply only this exact human request's captured choices; recovery calls do not enter here. */
@@ -1499,6 +1566,11 @@ export function apply(ctx: Context, config: Config): void {
     const session = await liveSession()
     if (session?.token === undefined) throw new CreativeError('UNAUTHORIZED', 409, '请先登录后生成。')
     const models = await readPreferenceCatalog(session, exec.signal)
+    const choice = mediaRequestModelChoiceOf(exec, kind, models, mediaPreferencesScope(apiBaseUrl, session.account.id))
+    if (models.some(model => model.execution === 'media-v2' && model.id === (choice?.model ?? requested.model))) {
+      throw new CreativeError('NATIVE_MEDIA_REQUIRED', 409,
+        '所选型号使用原生媒体工具；请先用 list_media_models_v2 读取同一型号的当前参数，再报价生成。已保留偏好和素材，尚未提交生成。')
+    }
     if (kind === 'video' && context?.videoProject === true) {
       let plannedDurations = Array.isArray(args.shot_durations_seconds)
         && args.shot_durations_seconds.every(value => typeof value === 'number' && Number.isSafeInteger(value) && value > 0)
@@ -1544,6 +1616,9 @@ export function apply(ctx: Context, config: Config): void {
         catalog: catalog.models,
       }
     }
+    if (model.execution === 'media-v2') return { ok: false, code: 'NATIVE_MEDIA_REQUIRED',
+      message: '所选型号使用原生媒体参数，请通过“模型与处理”或 list_media_models_v2 读取同一型号；已保留原素材，尚未提交生成。',
+      catalog: catalog.models }
     if (kind === 'image' && catalog.imageServerUpdateRequired?.has(model.id) === true) {
       return { ok: false, code: 'IMAGE_SERVER_UPDATE_REQUIRED',
         message: '当前服务端尚未支持此模型的图片回执恢复，暂未提交且不会扣费；请稍后重试或选择其他图片模型。', catalog: catalog.models }
@@ -1686,6 +1761,8 @@ export function apply(ctx: Context, config: Config): void {
     model: ModelCapability,
     body: Record<string, unknown>,
   ): Promise<{ ok: true; request: Record<string, unknown> } | { ok: false; code: string; message: string }> => {
+    if (model.execution === 'media-v2') return { ok: false, code: 'NATIVE_MEDIA_REQUIRED',
+      message: '该型号必须使用原生媒体参数报价，不能转换成旧版视频请求；已保留原素材，尚未提交生成。' }
     const params = model.params as VideoParams
     body = canonicalMediaRequestParameters(model, body)
     for (const field of ['size', 'resolution', 'ratio', 'mode', 'quality']) {
@@ -4498,6 +4575,9 @@ export function apply(ctx: Context, config: Config): void {
           // Signed-in panels use the same account-authorized directory as chat preferences.
           const session = await store.read()
           const catalog = session?.token === undefined ? await readMediaCatalog() : await readAuthorizedMediaCatalog(session)
+          const models = session?.token === undefined ? catalog.models.filter(model => model.execution !== 'media-v2')
+            : await nativePreferenceModels(session, catalog.models, undefined, undefined,
+              catalog.legacyVisible, catalog.nativeCatalog)
           json(response, 200, {
             ok: catalog.ok,
             code: catalog.code ?? null,
@@ -4507,8 +4587,8 @@ export function apply(ctx: Context, config: Config): void {
             group: catalog.group,
             payload: {
               group: catalog.group,
-              image: catalog.models.filter(model => model.kind === 'image'),
-              video: catalog.models.filter(model => model.kind === 'video'),
+              image: models.filter(model => model.kind === 'image' && model.execution !== 'media-v2'),
+              video: models.filter(model => model.kind === 'video' && model.execution !== 'media-v2'),
               audio: catalog.models.filter(model => model.kind === 'audio'),
             },
           })
@@ -5260,6 +5340,8 @@ export function apply(ctx: Context, config: Config): void {
       const capability = catalog.models.find(value => value.kind === 'video' && value.id === model)
       if (capability === undefined) throw new CreativeError('VIDEO_MODEL_UNAVAILABLE', 409,
         '所选视频型号当前不可用，尚未提交生成；请查看当前可用型号。')
+      if (capability.execution === 'media-v2') throw new CreativeError('NATIVE_MEDIA_REQUIRED', 409,
+        '所选型号使用原生媒体工具，请读取 list_media_models_v2 的同一型号，不要沿用旧版片段参数；尚未提交生成。')
       const params = capability.params as VideoParams
       const implicitConfigured = defaultedModel && model === targetModel && model !== DEFAULT_CHAT_VIDEO_MODEL
       if (!implicitConfigured) resolution ??= capability.source === 'plugin:blackrxai-video' || params.specifications !== undefined
@@ -5479,6 +5561,8 @@ export function apply(ctx: Context, config: Config): void {
         const requestRoute = async (request: VideoProjectRequest): Promise<string> => {
           if (typeof request.model !== 'string') throw new VideoProjectError('VIDEO_REQUEST_INVALID', '视频请求缺少原始模型，已停止操作')
           const cached = models.get(request.model)
+          if (cached?.execution === 'media-v2') throw new VideoProjectError('NATIVE_MEDIA_REQUIRED',
+            '该型号的新作品必须使用原生媒体参数；请保留原任务编号查询，不会转换或重新提交。')
           if (cached !== undefined) return cached.route
           const capability = await capabilityFor('video', request.model)
           if (!capability.ok) throw new VideoProjectError(capability.code, capability.message)
@@ -5488,6 +5572,18 @@ export function apply(ctx: Context, config: Config): void {
         const dispatch = createVideoProjectDispatch({ relay,
           queue: { origin: apiBaseUrl, timeoutMs: resolved.timeoutMs, key: () => binding.key(),
             clientSource: videoClientSource(), accountId: binding.identity.accountId },
+          queryRoute: async (model, signal) => {
+            await binding.key()
+            const session = await liveSession()
+            if (session?.token === undefined) throw new VideoProjectError('AUTH_REQUIRED', '请在原账号查询任务。')
+            const { catalog, visible } = await readConsistentMediaCatalogPair(session, signal)
+            signal.throwIfAborted()
+            await binding.key()
+            const original = catalog.models.find(value => value.kind === 'video' && value.id === model)
+            if (!catalog.ok || !visible.ok || !visible.video.includes(model) || original === undefined) throw new VideoProjectError('VIDEO_MODEL_UNAVAILABLE',
+              '暂时无法读取原任务的兼容查询路径，请保留原任务编号；不会重新生成。')
+            return original.route
+          },
           route: requestRoute })
         const references = new Map<string, string>()
         let preparedBytes = 0
@@ -5598,6 +5694,7 @@ export function apply(ctx: Context, config: Config): void {
       default_source: { type: 'string' }, selected_parameters: { type: 'object', additionalProperties: true },
       models: { type: 'array', items: { type: 'object', properties: {
         id: { type: 'string' }, display_name: { type: 'string' }, parameters_verified: { type: 'boolean' },
+        execution: { type: 'string' }, read_details: { type: 'object', additionalProperties: true },
         sizes: { type: 'array', items: { type: 'string' } },
         resolutions: { type: 'array', items: { type: 'string' } },
         max_count: { type: 'number' }, max_reference_images: { type: 'number' },
@@ -5637,12 +5734,17 @@ export function apply(ctx: Context, config: Config): void {
           return { status: 'failed', code: 'IMAGE_MODELS_UNAVAILABLE', message: '图片模型目录暂不可用，请稍后重试；尚未提交生成。' }
         }
         const allowed = new Set(visible.image)
-        const models = catalog.models.filter(model => model.kind === 'image' && allowed.has(model.id)).map((model) => {
+        const candidates = catalog.models.filter(model => model.kind === 'image' && (allowed.has(model.id) || model.execution === 'media-v2'))
+        const effective = (session?.token === undefined ? candidates
+          : await nativePreferenceModels(session, candidates, signal, undefined, allowed)).filter(model => model.kind === 'image')
+        const models = effective.map((model) => {
           const params = model.params as ImageParams
           const generationModes = imageGenerationModes(model)
           const editing = generationModes.includes('image-to-image')
           const editSpecifications = params.editSpecifications === undefined ? undefined : imageSpecifications(params, true)
           return { id: model.id, display_name: model.displayName, parameters_verified: model.verified,
+            ...model.execution === undefined ? {} : { execution: model.execution,
+              read_details: { tool: 'list_media_models_v2', model: model.id } },
             sizes: model.verified || model.notes.includes('sizes') || model.notes.includes('specifications') ? [...params.sizes] : [],
             ...params.resolutions === undefined ? {} : { resolutions: [...params.resolutions] },
             max_count: params.maxCount, max_reference_images: editing ? params.maxEdits : 0,
@@ -5658,7 +5760,7 @@ export function apply(ctx: Context, config: Config): void {
             seed: (model.verified || model.notes.includes('seed')) && params.seed }
         })
         const defaultMetadata = await listedMediaDefault(exec, 'image',
-          catalog.models.filter(model => model.kind === 'image' && visible.image.includes(model.id)),
+          effective,
           binding.identity.accountId, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
@@ -5991,9 +6093,14 @@ export function apply(ctx: Context, config: Config): void {
         exec.signal.throwIfAborted()
         if (!catalog.ok || !visible.ok) return { status: 'failed', code: 'VIDEO_MODELS_UNAVAILABLE', message: '暂时无法读取当前账号的视频模型，请稍后重试；尚未提交生成。' }
         const allowed = new Set(visible.video)
-        const models = catalog.models.filter(model => model.kind === 'video' && allowed.has(model.id)).map((model) => {
+        const candidates = catalog.models.filter(model => model.kind === 'video' && (allowed.has(model.id) || model.execution === 'media-v2'))
+        const effective = (session?.token === undefined ? candidates
+          : await nativePreferenceModels(session, candidates, exec.signal, undefined, allowed)).filter(model => model.kind === 'video')
+        const models = effective.map((model) => {
           const params = model.params as VideoParams
           return { id: model.id, display_name: model.displayName, durations: [...params.durations],
+            ...model.execution === undefined ? {} : { execution: model.execution,
+              read_details: { tool: 'list_media_models_v2', model: model.id } },
             ...params.defaultDuration === undefined ? {} : { default_duration: params.defaultDuration },
             ...params.durationByResolution === undefined ? {} : {
               durations_by_resolution: Object.fromEntries(Object.entries(params.durationByResolution)
@@ -6009,7 +6116,7 @@ export function apply(ctx: Context, config: Config): void {
             ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) } }
         })
         const defaultMetadata = await listedMediaDefault(exec, 'video',
-          catalog.models.filter(model => model.kind === 'video' && visible.video.includes(model.id)),
+          effective,
           binding.identity.accountId, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()

@@ -5,7 +5,7 @@ import { Button, IconCloseOutlineRegular, IconSettingsOutlineRegular, Input, Men
 import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { MediaPreferenceChoices, MediaPreferencesInjected } from './media-preferences-controller.ts'
-import { preferenceFields, validPreferenceSelection, type MediaSelection, type PreferenceFailure, type PreferenceFieldKey, type PreferenceKind, type PreferenceScalar } from './media-preferences.ts'
+import { preferenceFields, validPreferenceSelection, type MediaSelection, type PreferenceFailure, type PreferenceFieldKey, type PreferenceKind, type PreferencePricing, type PreferenceScalar } from './media-preferences.ts'
 import type { CreditsKey } from './locales.ts'
 import { mediaPreferencePrice, type MediaPreferencePrice } from './media-preference-prices.ts'
 import { formatCreditUnitPrice } from './price-comparisons.ts'
@@ -27,8 +27,9 @@ function equalSelection(left: MediaSelection | null, right: MediaSelection | nul
     && Object.entries(left.parameters).every(([key, value]) => right.parameters[key] === value)
 }
 
-function priceLabel(value: MediaPreferencePrice, kind: PreferenceKind, t: Props['t']): string {
-  const unit = t(kind === 'image' ? 'media.price.unit.image' : 'media.price.unit.video')
+function priceLabel(value: MediaPreferencePrice, priceUnit: PreferencePricing['unit'] | undefined, t: Props['t']): string {
+  const unit = t(priceUnit === 'points/image' ? 'media.price.unit.image' : priceUnit === 'points/second'
+    ? 'media.price.unit.video' : priceUnit === 'points/video' ? 'media.price.unit.videoWork' : 'media.price.unit.unknown')
   if (value.kind === 'unknown') return t('media.price.unknown', { unit })
   const minimum = formatCreditUnitPrice(value.points.minimum, t('media.price.locale'))
   const maximum = formatCreditUnitPrice(value.points.maximum, t('media.price.locale'))
@@ -74,9 +75,9 @@ function MediaPreferenceEditor({ useMediaPreferences, loadCatalog, savePreferenc
   const defaultModel = state.catalog?.defaults[kind]
   const defaultCapability = defaultModel?.available === true ? models.find(model => model.id === defaultModel.model) : undefined
   const defaultName = defaultCapability?.displayName ?? defaultModel?.model
-  const currentPrice = priceLabel(mediaPreferencePrice(selection === null ? defaultCapability : currentModel,
-    selection?.parameters), kind, t)
-  const defaultPrice = priceLabel(mediaPreferencePrice(defaultCapability), kind, t)
+  const priceModel = selection === null ? defaultCapability : currentModel
+  const currentPrice = priceLabel(mediaPreferencePrice(priceModel, selection?.parameters), priceModel?.pricing?.unit, t)
+  const defaultPrice = priceLabel(mediaPreferencePrice(defaultCapability), defaultCapability?.pricing?.unit, t)
   const close = (): void => { setOpen(false); setEditor(null); triggerRef.current?.focus() }
   useEffect(() => {
     if (!open) return
@@ -153,7 +154,7 @@ function MediaPreferenceEditor({ useMediaPreferences, loadCatalog, savePreferenc
               aria-describedby={`${titleId}-price-${index}`} aria-pressed={selection?.model === model.id} disabled={state.saving}
               onClick={() => { if (selection?.model !== model.id) choose({ model: model.id, parameters: {} }) }}>
               <span className={css.modelLine}><span>{model.displayName}</span><span className={css.price} id={`${titleId}-price-${index}`}>
-                {priceLabel(mediaPreferencePrice(model, selection?.model === model.id ? selection.parameters : {}), kind, t)}
+                {priceLabel(mediaPreferencePrice(model, selection?.model === model.id ? selection.parameters : {}), model.pricing?.unit, t)}
               </span></span><small>{model.id}</small>
             </button>)}
           {models.length > 0 && !models.some(model => `${model.displayName} ${model.id}`.toLowerCase().includes(search[kind].toLowerCase().trim())) && <p className={css.note}>{t('media.noResults')}</p>}

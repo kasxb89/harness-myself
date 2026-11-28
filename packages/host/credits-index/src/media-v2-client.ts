@@ -165,9 +165,10 @@ export class MediaV2Client {
     this.pending.set(key, operation)
     try { return await operation } finally { if (this.pending.get(key) === operation) this.pending.delete(key) }
   }
-  private async json(account: MediaV2Account, path: string, method: 'GET' | 'POST', body: unknown, signal: AbortSignal): Promise<unknown> {
+  private async json(account: MediaV2Account, path: string, method: 'GET' | 'POST', body: unknown, signal: AbortSignal, reconfirmPrice = false): Promise<unknown> {
     const response = await account.fetch(`/v1/media-v2${path}`, { method, headers: { accept: 'application/json',
       'X-Yunshu-Media-Batch-Version': '1',
+      ...reconfirmPrice && method === 'POST' && path === '/quotes' ? { 'X-Yunshu-Media-Requote': '1' } : {},
       ...method === 'GET' ? {} : { 'content-type': 'application/json' } },
     ...method === 'GET' ? {} : { body: JSON.stringify(body) }, signal: AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs)]) })
     const text = (await readMediaBytes(response, 8 * 1024 * 1024, signal)).toString('utf8')
@@ -199,9 +200,10 @@ export class MediaV2Client {
     const raw = mediaV2Object(await this.json(account, '/models', 'GET', undefined, signal))
     const models = Array.isArray(raw.models) ? raw.models.map((value) => {
       const model = mediaV2Object(value), pricing = mediaV2Object(model.pricing)
-      return { ...model, pricing: { ...pricing, credits_per_yuan: this.options.creditsPerYuan } }
+      return { ...model, pricing: { ...pricing,
+        credits_per_yuan: pricing.credits_per_yuan ?? raw.credits_per_yuan ?? this.options.creditsPerYuan } }
     }) : raw.models
-    const catalog = parseMediaV2Catalog({ ...raw, models, credits_per_yuan: this.options.creditsPerYuan,
+    const catalog = parseMediaV2Catalog({ ...raw, models, credits_per_yuan: raw.credits_per_yuan ?? this.options.creditsPerYuan,
       ...this.options.pollIntervalMs === undefined ? {} : { poll_after_ms: this.options.pollIntervalMs } })
     // This is the Host's effective upload cap, not a claim that an older server declared a larger limit.
     return { ...catalog, capabilities: { ...catalog.capabilities,
@@ -349,10 +351,14 @@ export class MediaV2Client {
     if (result.client_asset_id !== id || result.model !== model) throw new MediaV2Error('asset_binding_mismatch', '原上传素材归属不匹配。')
     return result
   }
-  private projectQuote(value: unknown, recovery = false): MediaV2Quote {
+  private projectQuote(value: unknown, recovery = false, record?: MediaV2Record): MediaV2Quote {
     const raw = mediaV2Object(value)
-    const quote = parseMediaV2Quote({ ...raw, credits_per_yuan: this.options.creditsPerYuan,
-      credits: Math.round(Number(raw.retail_cny) * this.options.creditsPerYuan) })
+    const retained = [record?.quote,
+      ...record?.configuration_requotes?.flatMap(action => [action.previous_quote, action.result_quote]) ?? []]
+      .find(quote => quote?.quote_id === raw.quote_id)
+    const rate = retained?.credits_per_yuan ?? raw.credits_per_yuan ?? this.options.creditsPerYuan
+    const quote = parseMediaV2Quote({ ...raw, credits_per_yuan: rate,
+      credits: Math.round(Number(raw.retail_cny) * Number(rate)) })
     this.matchQuoteBatch(quote, quote, recovery)
     return quote
   }
@@ -409,15 +415,21 @@ export class MediaV2Client {
    * @param input - Exact user-selected fields or original file bytes.
    * @param signal - Cancellation for this invocation; cancellation never submits another operation.
    * @param origin - Optional trusted local plan binding, frozen before the first quote and excluded from the wire.
+   * @param options - An explicit user price-reconfirmation action; never inferred from a failed or unknown response.
    * @returns The original operation with its free quote or previously accepted task.
    */
-  async quote(account: MediaV2Account, input: unknown, signal: AbortSignal, origin?: MediaV2PlanOrigin): Promise<MediaV2Record> {
+  async quote(account: MediaV2Account, input: unknown, signal: AbortSignal, origin?: MediaV2PlanOrigin,
+    options?: { reconfirmPrice?: boolean }): Promise<MediaV2Record> {
     const binding = origin === undefined ? undefined : planOrigin(origin)
     let request: MediaV2Request
     try { request = parseMediaV2Request(input) }
     catch { throw new MediaV2Error('invalid_parameters', '参数或参考素材不完整，请保留草稿并补全；尚未提交生成。', 422) }
     return await this.single(account, request.client_operation_id, async () => {
       const previous = await this.read(account, request.client_operation_id)
+      const reconfirmPrice = options?.reconfirmPrice === true
+      if (reconfirmPrice && previous?.quote === undefined) {
+        throw new MediaV2Error('operation_conflict', '请先核对原报价，再明确确认重新核价；尚未请求新报价。')
+      }
       if (previous !== undefined && !isDeepStrictEqual(previous.origin, binding)) {
         throw new MediaV2Error('operation_conflict', '原操作的创作计划关联已冻结，不能省略、补绑或改绑；请查询原编号。')
       }
@@ -435,14 +447,17 @@ export class MediaV2Client {
         if (!['quoted', 'quote-rejected'].includes(record.state) || record.quote === undefined) {
           throw new MediaV2Error('operation_unknown', '原操作尚未确认未受理，请只查询原编号。')
         }
-        // A lost first quotation is recovered with GET only, never another quote POST.
-        if (previous.quote === undefined && previous.state === 'quoting') return record
+        // An uncertain quote/submit invocation first recovers its original receipt, never another quote POST.
+        if (['quoting', 'submitting', 'unknown'].includes(previous.state)) return record
         const catalog = await this.catalog(account, signal)
+        if (reconfirmPrice && catalog.capabilities.explicit_requote_v1 !== true) {
+          throw new MediaV2Error('operation_conflict', '当前服务尚未声明显式重新核价，请保留原报价。')
+        }
         const configurable = catalog.capabilities.same_operation_configuration_requote === true
         if (request.model_version !== record.request.model_version && !configurable) {
           throw new MediaV2Error('operation_conflict', '当前服务尚未声明同操作更新配置，请保留原报价。')
         }
-        if (configurable) {
+        if (configurable || reconfirmPrice) {
           if ((record.configuration_requotes?.length ?? 0) >= 256) throw new MediaV2Error('operation_conflict', '原配置报价历史已满，请保留原记录。')
           record.configuration_requotes = [...record.configuration_requotes ?? [],
             { requested_at: Date.now(), request, previous_quote: record.quote }]
@@ -452,7 +467,7 @@ export class MediaV2Client {
       }
       record.state = 'quoting'; record.updated_at = Date.now(); await this.save(record)
       let reply: unknown
-      try { reply = await this.json(account, '/quotes', 'POST', request, signal) }
+      try { reply = await this.json(account, '/quotes', 'POST', request, signal, reconfirmPrice) }
       catch (error) {
         // A confirmed free-quote validation rejection precedes every task POST. Preserve it separately from an uncertain submission.
         if (error instanceof MediaV2Error && [400, 422].includes(error.status) && ['invalid_request', 'invalid_parameters', 'reference_required',
@@ -462,7 +477,7 @@ export class MediaV2Client {
         }
         throw error
       }
-      const quote = this.projectQuote(reply)
+      const quote = this.projectQuote(reply, false, record)
       if (quote.operation_state === 'quoted') this.matchQuote(request, quote)
       this.matchRetainedQuote(record, quote, request)
       const action = record.configuration_requotes?.at(-1)
@@ -537,7 +552,7 @@ export class MediaV2Client {
       }
     }
     const operation: MediaV2Operation = parseMediaV2Operation({ ...raw,
-      ...retainedQuote === undefined ? {} : { quote: this.projectQuote(retainedQuote, true) } })
+      ...retainedQuote === undefined ? {} : { quote: this.projectQuote(retainedQuote, true, record) } })
     if (operation.client_operation_id !== id) throw new MediaV2Error('operation_conflict', '原操作回执不匹配，不能重新生成。')
     if (operation.quote !== undefined) {
       this.matchRetainedQuote(record, operation.quote, undefined, true)

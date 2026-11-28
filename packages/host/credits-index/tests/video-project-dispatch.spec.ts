@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createVideoProjectDispatch } from '../src/video-project-dispatch.ts'
 import type { VideoProjectAttemptId } from '../src/video-project.ts'
 import type { VideoProjectRequest, VideoProjectSubmission } from '../src/video-project-types.ts'
-import type { VideoProjectRelay } from '../src/video-project-provider.ts'
+import { createVideoProjectRelay, type VideoProjectRelay } from '../src/video-project-provider.ts'
 import { VideoSubmissionRejection } from '../src/video-submission-result.ts'
 import { readModelConfigVersion } from '../src/model-config-version.ts'
 
@@ -48,6 +48,51 @@ function fixture(handler?: (call: Call) => Response | Promise<Response>) {
     queue: { origin: 'https://queue.example/harness', timeoutMs: 1000, key: async () => 'synthetic-user-key', clientSource: 'desktop', fetch } })
   return { dispatch, relay, route, calls }
 }
+
+describe('native promotion keeps historical project GET routes separate from admission', () => {
+  it('recovers an original noncanonical task after canonical404 without enabling a legacy POST', async () => {
+    const taskId = 'original-accepted-provider-task', original: VideoProjectRequest = { model: 'promoted-native-video', seconds: '10' }
+    const calls: { path: string; method: string }[] = []
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const path = new URL(input instanceof Request ? input.url : input.toString()).pathname
+      calls.push({ path, method: init?.method ?? 'GET' })
+      if (path === '/harness/v1/tasks/' + taskId) return response({ error: 'not_found' }, 404)
+      if (path === '/harness/original/videos/' + taskId) return response({ id: taskId, status: 'succeeded' })
+      if (path === '/harness/api/status') return response({ data: {} })
+      throw new Error('Unexpected route or actual network is prohibited')
+    })
+    try {
+      const relay = createVideoProjectRelay({ origin: 'https://synthetic.invalid/harness', timeoutMs: 1000,
+        maxDownloadBytes: 1024, cacheRoot: '/unused-metadata-only-cache', key: async () => 'synthetic-key' })
+      const route = vi.fn(async () => { throw new Error('NATIVE_MEDIA_REQUIRED') })
+      const queryRoute = vi.fn(async () => '/original/videos')
+      const options = { relay, route, queryRoute, queue: { origin: 'https://synthetic.invalid/harness', timeoutMs: 1000,
+        key: async () => 'synthetic-key' } }
+      const dispatch = createVideoProjectDispatch(options), life = signal()
+      expect(await dispatch.check(taskId, original, life)).toEqual({ status: 'succeeded' })
+      expect(queryRoute).toHaveBeenCalledExactlyOnceWith(original.model, life)
+      expect(route).not.toHaveBeenCalled()
+      expect(calls).toEqual([{ path: '/harness/v1/tasks/' + taskId, method: 'GET' },
+        { path: '/harness/original/videos/' + taskId, method: 'GET' }])
+      await dispatch.prepareSubmissions([original], life)
+      await expect(dispatch.submit(original, life)).rejects.toThrow('NATIVE_MEDIA_REQUIRED')
+      expect(queryRoute).toHaveBeenCalledTimes(1)
+      expect(route).toHaveBeenCalledExactlyOnceWith(original)
+      expect(calls.every(call => call.method === 'GET')).toBe(true)
+    } finally { fetch.mockRestore() }
+  })
+
+  it('does not resolve either route when the original canonical task is readable', async () => {
+    const f = fixture(), queryRoute = vi.fn(async () => '/original/videos')
+    const options = { relay: f.relay, route: f.route, queryRoute,
+      queue: { origin: 'https://synthetic.invalid', timeoutMs: 1000, key: async () => 'synthetic-key' } }
+    const dispatch = createVideoProjectDispatch(options)
+    expect(await dispatch.check(gatewayId, request, signal())).toEqual({ status: 'running' })
+    expect(queryRoute).not.toHaveBeenCalled(); expect(f.route).not.toHaveBeenCalled()
+    expect(f.relay.check).toHaveBeenCalledExactlyOnceWith(gatewayId, '/v1/tasks', expect.any(AbortSignal), request.model)
+    expect(f.calls).toEqual([])
+  })
+})
 
 describe('video project gateway dispatch', () => {
   const versionA = readModelConfigVersion({ model_config_version: 'a'.repeat(64) })!

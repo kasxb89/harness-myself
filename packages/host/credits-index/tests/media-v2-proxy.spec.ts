@@ -2,7 +2,7 @@ import { createServer, type Server } from 'node:http'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { MediaV2Client } from '../src/media-v2-client.ts'
 import { createMediaV2Proxy } from '../src/media-v2-proxy.ts'
 
@@ -40,8 +40,24 @@ async function fixture() {
   await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve) })
   const address = server.address()
   if (address === null || typeof address === 'string') throw new Error('No loopback port')
-  return { base: `http://127.0.0.1:${address.port}/credits/api/media-v2`, requests: () => requests }
+  return { base: `http://127.0.0.1:${address.port}/credits/api/media-v2`, requests: () => requests, client }
 }
+it('passes only an exact explicit quote header as a local option without changing the original body', async () => {
+  const { base, client, requests } = await fixture()
+  const quote = vi.spyOn(client, 'quote').mockRejectedValue(new Error('Synthetic stopped before quote'))
+  const body = { client_operation_id: '821072d0-b470-4ab8-ae42-98ef7668f925', parameters: { duration: '30' } }
+  for (const invalid of ['true', '0', '1, 1']) {
+    const response = await fetch(base + '/quotes', { method: 'POST', body: JSON.stringify(body),
+      headers: { 'x-local-test': 'connected', 'X-Yunshu-Media-Requote': invalid } })
+    expect(response.status).toBe(400)
+  }
+  expect(quote).not.toHaveBeenCalled(); expect(requests()).toBe(0)
+  await fetch(base + '/quotes', { method: 'POST', body: JSON.stringify(body),
+    headers: { 'x-local-test': 'connected', 'X-Yunshu-Media-Requote': '1' } })
+  expect(quote).toHaveBeenCalledTimes(1)
+  expect(quote.mock.calls[0]?.[1]).toEqual(body)
+  expect(quote.mock.calls[0]?.[4]).toEqual({ reconfirmPrice: true })
+})
 it('bridges the real HTTP wrapper and injects the existing Host product scale without exposing credentials', async () => {
   const { base } = await fixture()
   const response = await fetch(base + '/models', { headers: { 'x-local-test': 'connected' } })

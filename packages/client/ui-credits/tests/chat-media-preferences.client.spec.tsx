@@ -25,10 +25,10 @@ const video: PreferenceModel = { id: 'video-one', kind: 'video', displayName: 'V
       { parameters: { resolution: '2K', seconds: 5, ratio: '9:16', count: 1 }, points: '250', input: 'unspecified' },
     ] } }
 function fixture(saved: Partial<MediaPreferences> = {}, available = true, english = false, unitPrices = true,
-  extraImages: readonly PreferenceModel[] = []) {
+  extraImages: readonly PreferenceModel[] = [], videoUnit: 'points/second' | 'points/video' = 'points/second') {
   vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
   const imageModel = { ...image }
-  const videoModel = { ...video }
+  const videoModel = { ...video, ...video.pricing === undefined ? {} : { pricing: { ...video.pricing, unit: videoUnit } } }
   if (!unitPrices) { delete imageModel.pricing; delete videoModel.pricing }
   let prefs: MediaPreferences = { schema_version: 1, scope: 'b'.repeat(64), revision: 'c'.repeat(64), image: null, video: null, ...saved }
   let identity = { id: '7', owner: 'a'.repeat(64) }
@@ -257,7 +257,7 @@ describe('compact chat media preferences', () => {
   it('allows model-only choices without a reliable price and discards the editor on sign-out', async () => {
     const f = fixture({}, true, false, false)
     const dialog = await open('video')
-    expect(within(dialog).getAllByText('积分/秒待核价').length).toBeGreaterThan(0)
+    expect(within(dialog).getAllByText('积分待核价').length).toBeGreaterThan(0)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Video One video-one' }))
     expect(within(dialog).getByRole('button', { name: zh['media.save'] }).hasAttribute('disabled')).toBe(false)
     await act(async () => { f.signOut() })
@@ -273,4 +273,11 @@ describe('compact chat media preferences', () => {
     fixture({}, true, true)
     expect(await screen.findByRole('button', { name: en['media.entryAria'] })).toHaveProperty('textContent', en['media.entry'])
   })
+})
+
+it('generic per-video pricing: labels the backend whole-work unit without multiplying by its seconds', async () => {
+  fixture({}, true, false, true, [], 'points/video')
+  const dialog = await open('video')
+  expect(within(dialog).getAllByText('约 125–250 积分/条').length).toBeGreaterThan(0)
+  expect(within(dialog).queryByText(/积分\/秒/u)).toBeNull()
 })

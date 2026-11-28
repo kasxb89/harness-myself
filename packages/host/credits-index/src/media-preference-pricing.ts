@@ -19,6 +19,19 @@ function decimalProduct(left: string, right: string): string {
   return scale === 0 ? digits : (digits.slice(0, -scale) + '.' + digits.slice(-scale)).replace(/\.?0+$/u, '')
 }
 
+/**
+ * Convert one public CNY amount to indicative points exactly, without multiplying its quantity again.
+ * @param cny - Finite nonnegative decimal string for the already selected price unit or aggregate.
+ * @param creditsPerYuan - This model's backend-declared points conversion, never an invented fixed ratio.
+ * @returns Exact decimal points, or undefined for unsupported or unsafe display metadata.
+ */
+export function mediaPreferencePoints(cny: string, creditsPerYuan: number | string): string | undefined {
+  const rate = String(creditsPerYuan)
+  if (cny.length > 64 || !/^\d+(?:\.\d+)?$/u.test(cny) || !Number.isFinite(Number(cny))
+    || rate.length > 64 || !/^\d+(?:\.\d+)?$/u.test(rate) || !Number.isFinite(Number(rate)) || Number(rate) <= 0) return undefined
+  return decimalProduct(cny, rate)
+}
+
 function whole(value: unknown): number | undefined {
   const parsed = typeof value === 'number' ? value
     : typeof value === 'string' && /^[1-9]\d{0,15}$/u.test(value) ? Number(value) : NaN
@@ -116,13 +129,12 @@ function normalizedRows(
 }
 
 function publicRow(
-  value: unknown, model: ModelCapability, rate: string, fixedMinimalThinking: boolean,
+  value: unknown, model: ModelCapability, rate: string, fixedMinimalThinking: boolean, unit: string,
 ): MediaPreferencePriceRow | undefined {
   const row = record(value)
   const raw = record(row?.params)
   const amount = row?.retail_cny
   const free = row?.is_free === true
-  const unit = model.kind === 'image' ? 'CNY / image' : 'CNY / second'
   if (row === undefined || raw === undefined || Object.keys(raw).length > 24 || row.unit !== unit || row.direction !== undefined
     || row.currency !== undefined && row.currency !== 'CNY'
     || row.is_free !== undefined && typeof row.is_free !== 'boolean'
@@ -178,26 +190,31 @@ export function mediaPreferencePrices(
       ...rate === undefined ? {} : { credits_per_yuan: rate } }
     const source = records.get(model.id)
     const table = source?.retail_price_rows
+    const units = Array.isArray(table) ? new Set(table.map(value => record(value)?.unit)) : new Set<unknown>()
+    const videoUnit = model.kind === 'video' && units.size === 1 && units.has('CNY / video')
+    const selectedBase = videoUnit ? { ...base, unit: 'points/video' as const } : base
     const valid = rate !== undefined && Array.isArray(table) && table.length <= 512
       && totalRows + table.length <= 4096 && (source?.kind === undefined || source.kind === model.kind)
+      && (model.kind !== 'video' || units.size <= 1)
     if (!valid) {
-      result.set(model.id, { ...base, status: 'unavailable', coverage: 'none', rows: [] })
+      result.set(model.id, { ...selectedBase, status: 'unavailable', coverage: 'none', rows: [] })
       continue
     }
     totalRows += table.length
     const fixedMinimalThinking = fixedYcapiMinimalThinking(source, model, table)
     if (!fixedMinimalThinking && table.some(value => Object.hasOwn(record(record(value)?.params) ?? {}, 'thinking_level'))) {
-      result.set(model.id, { ...base, status: 'unavailable', coverage: 'none', rows: [] })
+      result.set(model.id, { ...selectedBase, status: 'unavailable', coverage: 'none', rows: [] })
       continue
     }
     const rows = table.flatMap((value) => {
-      const parsed = publicRow(value, model, rate, fixedMinimalThinking)
+      const parsed = publicRow(value, model, rate, fixedMinimalThinking,
+        model.kind === 'image' ? 'CNY / image' : videoUnit ? 'CNY / video' : 'CNY / second')
       return parsed === undefined ? [] : [parsed]
     })
     const specs = (model.params as ImageParams | VideoParams).specifications
     const complete = rows.length === table.length && specs !== undefined && specs.length > 0
       && specs.every(specification => rows.some(row => covers(specification, row)))
-    result.set(model.id, { ...base, status: rows.length === 0 ? 'unavailable' : 'available',
+    result.set(model.id, { ...selectedBase, status: rows.length === 0 ? 'unavailable' : 'available',
       coverage: rows.length === 0 ? 'none' : complete ? 'complete' : 'partial', rows })
   }
   return result

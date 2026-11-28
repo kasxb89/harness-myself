@@ -1,0 +1,22 @@
+{
+  "normal_Host_report": {
+    "path": "/Users/kasxbls/Documents/新科技/output/diagnostics/yc30-pricing-sync-20261128/HOST-R02-TRANSPORT-R01.json",
+    "sha256": "7f3b023e0df5d011c6fd80084bfac19d0fa77a1975b00ba747aca29bcf9d9474"
+  },
+  "synthetic_product_credits_per_yuan": 1250,
+  "production_rate": false,
+  "files": [
+    {
+      "name": "HOST-R02-TRANSPORT-R01.json",
+      "sha256": "7f3b023e0df5d011c6fd80084bfac19d0fa77a1975b00ba747aca29bcf9d9474"
+    },
+    {
+      "name": "HOST-R02-TRANSPORT-R01.baseline.json",
+      "sha256": "5cc4c36e387fe807643ffb1ac57b6e95f264603e1620589cc80d5cc9180cbac5"
+    },
+    {
+      "name": "HOST-R02-TRANSPORT-R01.promo4k.json",
+      "sha256": "ff8dda0bb2622f696c5ac583d181e0bc40e4773fb5abd51b09397e72354767b3"
+    }
+  ]
+}

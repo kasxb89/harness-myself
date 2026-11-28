@@ -23,7 +23,8 @@ export function mediaPreferencePrice(model: PreferenceModel | undefined,
   if (model === undefined || !validPreferenceSelection(model, { model: model.id, parameters })) return { kind: 'unknown' }
   const pricing = model.pricing
   if (pricing?.status !== 'available' || pricing.coverage === 'none'
-    || pricing.unit !== (model.kind === 'image' ? 'points/image' : 'points/second')) return { kind: 'unknown' }
+    || (model.kind === 'image' ? pricing.unit !== 'points/image'
+      : pricing.unit !== 'points/second' && pricing.unit !== 'points/video')) return { kind: 'unknown' }
   const legalRows = pricing.rows.filter((row) => {
     const staticParameters = model.kind === 'video' && row.parameters.count === 1
       ? Object.fromEntries(Object.entries(row.parameters).filter(([key]) => key !== 'count')) : row.parameters

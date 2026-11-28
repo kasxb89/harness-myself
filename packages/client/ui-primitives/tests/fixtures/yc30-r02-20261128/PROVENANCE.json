@@ -1,0 +1,47 @@
+{
+  "fixture": "R02 actual Go public HTTP catalogs, not execution qualification",
+  "source_binding": "final commit pending; source-WIP projection remains exact exported bytes",
+  "ready": {
+    "path": "/Users/kasxbls/Documents/新科技/output/diagnostics/yc30-pricing-sync-20261128/ACTUAL-GO-CONFIG-FIXTURES-R02-READY.json",
+    "sha256": "bcac5376cd73a935fe605461788d2c6462d362b6b9a3cb27d611998b4689495b"
+  },
+  "verified": [
+    {
+      "path": "/Users/kasxbls/Documents/新科技/output/diagnostics/yc30-pricing-sync-20261128/API-CONTRACT-R02.json",
+      "sha256": "b34596fe24f24d283cab368adb32ee3c366eb3d8ece08cc5bb5da9e86c40d5bd",
+      "bytes": 10385
+    },
+    {
+      "path": "/Users/kasxbls/Documents/新科技/output/diagnostics/yc30-pricing-sync-20261128/ACTUAL-GO-CONFIG-FIXTURE-R04.json",
+      "sha256": "2016a8523d2b9bbd62da36078379c53ba101e6d97d11262c1e32663256aff01f",
+      "bytes": 253689
+    },
+    {
+      "path": "/Users/kasxbls/Documents/新科技/output/diagnostics/yc30-pricing-sync-20261128/ACTUAL-GO-HTTP-CATALOG-BASELINE-R04.json",
+      "sha256": "6ab94b1ca32d94561aec4d45b523b23b742d59748d6fdd4d35487eee9a6a5986",
+      "bytes": 171533
+    },
+    {
+      "path": "/Users/kasxbls/Documents/新科技/output/diagnostics/yc30-pricing-sync-20261128/ACTUAL-GO-HTTP-CATALOG-PROMO4K-R04.json",
+      "sha256": "116e903314cbb3f947603dc58909a4b81ac2d1d9f70e9b38edaecf7fb334515a",
+      "bytes": 15769
+    }
+  ],
+  "copies": [
+    {
+      "name": "ACTUAL-GO-HTTP-CATALOG-PROMO4K-R04.json",
+      "sha256": "116e903314cbb3f947603dc58909a4b81ac2d1d9f70e9b38edaecf7fb334515a",
+      "bytes": 15769
+    },
+    {
+      "name": "negative-cases.json",
+      "sha256": "470f30074a486ed399aa1500b79e5363df99d082c2f51ee183c5399108b5cf74",
+      "bytes": 1920
+    },
+    {
+      "name": "ACTUAL-GO-HTTP-CATALOG-BASELINE-R04.json",
+      "sha256": "6ab94b1ca32d94561aec4d45b523b23b742d59748d6fdd4d35487eee9a6a5986",
+      "bytes": 171533
+    }
+  ]
+}

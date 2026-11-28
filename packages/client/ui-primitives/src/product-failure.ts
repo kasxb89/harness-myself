@@ -63,6 +63,7 @@ export function productFailureKind(code: unknown): ProductFailureKind {
     case 'SPECIFICATION_NOT_SUPPORTED':
     case 'SPECIFICATION_REQUIRED':
     case 'MEDIA_PARAMETERS_INVALID':
+    case 'NATIVE_MEDIA_REQUIRED':
     case 'MEDIA_MODEL_MISMATCH':
     case 'VIDEO_EDIT_INVALID_INPUT':
     case 'IMAGE_INVALID':

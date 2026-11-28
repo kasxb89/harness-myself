@@ -14,6 +14,32 @@ export interface MediaV2AssetField {
   readonly mime_types: readonly string[]
   readonly constraints: Readonly<Record<string, unknown>>
 }
+/** Backend-owned price hints; new metadata stays raw until its known reader accepts the complete shape. */
+export interface MediaV2Pricing {
+  readonly display: string
+  readonly credits_per_yuan: number
+  readonly quote_required: true
+  readonly currency?: unknown
+  readonly policy_revision?: unknown
+  readonly specification_rows?: unknown
+}
+/** Indicative CNY amounts for one exact native scalar selection, never a generation permission. */
+export interface MediaV2SpecificationPrice {
+  readonly id: string
+  readonly parameters: Readonly<Record<string, string | number | boolean>>
+  readonly billing_unit: 'per_video' | 'per_second'
+  readonly quantity: number
+  readonly unit_price_cny: string
+  readonly total_cny: string
+  readonly quote_required: true
+  readonly policy_revision: string
+}
+/** Known optional indicative-price metadata, independent of actual quote confirmation. */
+export interface MediaV2SpecificationPricing {
+  readonly currency: 'CNY'
+  readonly policy_revision: string
+  readonly specification_rows?: readonly MediaV2SpecificationPrice[]
+}
 /** Account-visible model controls and presentation, without provider credentials or transport details. */
 export interface MediaV2Model {
   readonly id: string
@@ -26,11 +52,13 @@ export interface MediaV2Model {
   readonly conditions?: unknown
   /** Reviewed parameter rules retained independently from material dependencies. */
   readonly parameter_conditions?: unknown
+  /** Finite server-owned native selections, retained raw for per-model known-version validation. */
+  readonly selection_constraints?: unknown
   /** Published quantity policy retained for this model's new-request checks. */
   readonly quantity?: unknown
   readonly asset_fields: readonly MediaV2AssetField[]
   readonly intents: readonly { readonly id: MediaV2Intent; readonly label: string; readonly requires_assets: boolean }[]
-  readonly pricing: { readonly display: string; readonly credits_per_yuan: number; readonly quote_required: true }
+  readonly pricing: MediaV2Pricing
   readonly enabled: boolean
 }
 /** Immutable ready-material receipt containing the server-verified identity and actual media metadata. */
@@ -111,6 +139,9 @@ export interface MediaV2Catalog {
     readonly material_conditions_v1?: boolean
     readonly parameter_conditions_v1?: boolean
     readonly native_video_batch_v1?: boolean
+    readonly exact_specification_pricing_v1?: boolean
+    readonly explicit_requote_v1?: boolean
+    readonly selection_constraints_v1?: boolean
     readonly max_upload_bytes?: number
   }
   readonly models: readonly MediaV2Model[]
@@ -182,12 +213,18 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
   const materialConditions = capabilities?.material_conditions_v1
   const parameterConditions = capabilities?.parameter_conditions_v1
   const nativeBatch = capabilities?.native_video_batch_v1
+  const exactPricing = capabilities?.exact_specification_pricing_v1
+  const explicitRequote = capabilities?.explicit_requote_v1
+  const selectionConstraints = capabilities?.selection_constraints_v1
   const maxUploadBytes = capabilities?.max_upload_bytes
   if (maxUploadBytes !== undefined && (!finite(maxUploadBytes) || !Number.isSafeInteger(maxUploadBytes) || maxUploadBytes < 1)) throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (configurationRequote !== undefined && typeof configurationRequote !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (materialConditions !== undefined && typeof materialConditions !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (parameterConditions !== undefined && typeof parameterConditions !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   if (nativeBatch !== undefined && typeof nativeBatch !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
+  if (exactPricing !== undefined && typeof exactPricing !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
+  if (explicitRequote !== undefined && typeof explicitRequote !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
+  if (selectionConstraints !== undefined && typeof selectionConstraints !== 'boolean') throw new Error('MEDIA_V2_CATALOG_INVALID')
   const models = data.models.map((value): MediaV2Model => {
     const row = mediaV2Object(value), pricing = mediaV2Object(row?.pricing), schema = mediaV2Object(row?.parameters_schema)
     if (!text(row?.id) || !text(row.display_name) || !text(row.model_version) || !mediaKind(row.kind)
@@ -211,8 +248,12 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
       parameters_schema: schema, asset_fields: fields, intents,
       ...row.conditions === undefined ? {} : { conditions: row.conditions },
       ...row.parameter_conditions === undefined ? {} : { parameter_conditions: row.parameter_conditions },
+      ...row.selection_constraints === undefined ? {} : { selection_constraints: row.selection_constraints },
       ...row.quantity === undefined ? {} : { quantity: row.quantity },
-      pricing: { display: pricing.display, credits_per_yuan: pricing.credits_per_yuan, quote_required: true },
+      pricing: { display: pricing.display, credits_per_yuan: pricing.credits_per_yuan, quote_required: true,
+        ...pricing.currency === undefined ? {} : { currency: pricing.currency },
+        ...pricing.policy_revision === undefined ? {} : { policy_revision: pricing.policy_revision },
+        ...pricing.specification_rows === undefined ? {} : { specification_rows: pricing.specification_rows } },
       ...typeof row.description === 'string' ? { description: row.description } : {} }
   })
   return { models, credits_per_yuan: data.credits_per_yuan,
@@ -220,6 +261,9 @@ export function parseMediaV2Catalog(value: unknown): MediaV2Catalog {
       ...materialConditions === undefined ? {} : { material_conditions_v1: materialConditions },
       ...parameterConditions === undefined ? {} : { parameter_conditions_v1: parameterConditions },
       ...nativeBatch === undefined ? {} : { native_video_batch_v1: nativeBatch },
+      ...exactPricing === undefined ? {} : { exact_specification_pricing_v1: exactPricing },
+      ...explicitRequote === undefined ? {} : { explicit_requote_v1: explicitRequote },
+      ...selectionConstraints === undefined ? {} : { selection_constraints_v1: selectionConstraints },
       ...maxUploadBytes === undefined ? {} : { max_upload_bytes: maxUploadBytes } },
     ...data.poll_after_ms === undefined ? {} : { poll_after_ms: data.poll_after_ms } }
 }
@@ -331,6 +375,41 @@ const batchFields = ['schema_version', 'requested_output_count', 'expected_main_
 const integer = (value: unknown, minimum: number, maximum: number): value is number =>
   finite(value) && Number.isSafeInteger(value) && value >= minimum && value <= maximum
 const policyHash = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value)
+const indicativeDecimal = (value: unknown): value is string => typeof value === 'string' && value.length <= 64
+  && /^\d+(?:\.\d+)?$/u.test(value) && Number.isFinite(Number(value))
+const indicativeScalar = (value: unknown): value is string | number | boolean => typeof value === 'boolean' || finite(value)
+  || typeof value === 'string' && value.length <= 4000 && !/[\u0000-\u001f\u007f]/u.test(value)
+/**
+ * Decode known indicative prices without treating a row or its amount as request authorization.
+ * @param pricing - Original per-model metadata, including unrecognized values retained by the catalog reader.
+ * @returns Undefined for legacy absence, null for malformed metadata, or known CNY amounts with optional exact rows.
+ */
+export function readMediaV2SpecificationPricing(pricing: MediaV2Pricing): MediaV2SpecificationPricing | null | undefined {
+  if (pricing.currency === undefined && pricing.policy_revision === undefined && pricing.specification_rows === undefined) return undefined
+  if (pricing.currency !== 'CNY' || !policyHash(pricing.policy_revision)) return null
+  if (pricing.specification_rows === undefined) return { currency: 'CNY', policy_revision: pricing.policy_revision }
+  if (!Array.isArray(pricing.specification_rows) || pricing.specification_rows.length > 128) return null
+  const rows: MediaV2SpecificationPrice[] = [], ids = new Set<string>()
+  for (const value of pricing.specification_rows) {
+    const row = mediaV2Object(value), parameters = mediaV2Object(row?.parameters)
+    if (row === null || !Object.keys(row).every(key => ['id', 'parameters', 'billing_unit', 'quantity', 'unit_price_cny',
+      'total_cny', 'quote_required', 'policy_revision'].includes(key)) || !policyHash(row.id) || ids.has(row.id)
+      || row.policy_revision !== pricing.policy_revision || row.quote_required !== true
+      || row.billing_unit !== 'per_video' && row.billing_unit !== 'per_second'
+      || !finite(row.quantity) || row.quantity <= 0 || row.billing_unit === 'per_video' && row.quantity !== 1
+      || !indicativeDecimal(row.unit_price_cny) || !indicativeDecimal(row.total_cny)
+      || parameters === null || Object.keys(parameters).length > 100) return null
+    const selected: Record<string, string | number | boolean> = {}
+    for (const [key, item] of Object.entries(parameters)) {
+      if (!/^[A-Za-z][A-Za-z0-9_]{0,95}$/u.test(key) || key === 'prompt' || key === 'negative_prompt' || !indicativeScalar(item)) return null
+      selected[key] = item
+    }
+    ids.add(row.id)
+    rows.push({ id: row.id, parameters: selected, billing_unit: row.billing_unit, quantity: row.quantity,
+      unit_price_cny: row.unit_price_cny, total_cny: row.total_cny, quote_required: true, policy_revision: pricing.policy_revision })
+  }
+  return { currency: 'CNY', policy_revision: pricing.policy_revision, specification_rows: rows }
+}
 const batchMeter = (value: unknown): value is MediaV2Batch['meter'] => value === 'output_count' || value === 'total_output_seconds'
 /**
  * Read an explicit known quantity policy without interpreting unknown data as permission for a larger count.

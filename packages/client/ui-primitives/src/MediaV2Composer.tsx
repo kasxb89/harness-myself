@@ -6,7 +6,7 @@ import { VideoPlayer } from './VideoPlayer.tsx'
 import { mediaV2En, mediaV2Zh, type MediaV2Labels } from './media-v2-locales.ts'
 import { mediaV2AssetLimit, mediaV2Available, mediaV2Choices, mediaV2Defaults, mediaV2Fields, mediaV2FormIssues, type MediaV2SelectedAsset } from './media-v2-form.ts'
 import { isMediaV2Value, mediaV2Data, mediaV2Object, mediaV2QuoteBatchValid, mediaV2TaskComplete, readMediaV2Batch, readMediaV2Quantity,
-  parseMediaV2Asset, parseMediaV2Catalog, parseMediaV2Record,
+  readMediaV2SpecificationPricing, parseMediaV2Asset, parseMediaV2Catalog, parseMediaV2Record,
   type MediaV2Kind, type MediaV2Intent, type MediaV2Model, type MediaV2Record, type MediaV2Request, type MediaV2Transport, type MediaV2Value } from './media-v2-types.ts'
 import css from './MediaV2Composer.module.css'
 
@@ -103,6 +103,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   const [originalIds, setOriginalIds] = useState<readonly string[]>([])
   const [loading, setLoading] = useState(true)
   const [configurationRequote, setConfigurationRequote] = useState(false)
+  const [explicitRequote, setExplicitRequote] = useState(false)
   const [nativeVideoBatch, setNativeVideoBatch] = useState(false)
   const [pollAfterMs, setPollAfterMs] = useState<number | undefined>(undefined)
   const [busy, setBusy] = useState(false)
@@ -118,11 +119,17 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   const quotedVersion = current?.record.quote?.model_version ?? current?.record.request.model_version
   const configurationChanged = current?.record.state === 'quoted' && model !== null
     && current.record.request.model === model.id && quotedVersion !== model.model_version
+  const configurationRequoteAllowed = configurationRequote || explicitRequote
   const originalUnsettled = currentId !== null && (current === undefined || current.record.state !== 'quoted')
   const locked = busy || originalUnsettled
   const issues = useMemo(() => model === null ? [] : [...mediaV2FormIssues(model, intent, parameters, assets, now, nativeVideoBatch),
     ...Object.keys(invalidJson).filter(name => invalidJson[name]).map(field => ({ field, reason: 'invalid' as const }))],
   [model, intent, parameters, assets, now, invalidJson, nativeVideoBatch])
+  const indicativePricing = model === null ? undefined : readMediaV2SpecificationPricing(model.pricing)
+  const priceParameters = Object.entries(parameters).filter(([name]) => name !== 'prompt' && name !== 'negative_prompt')
+  const indicativePrice = assets.some(item => item.role === 'generation') ? undefined : indicativePricing?.specification_rows?.find(row =>
+    Object.keys(row.parameters).length === priceParameters.length
+      && priceParameters.every(([name, value]) => row.parameters[name] === value))
   const fields = model === null ? [] : mediaV2Fields(model)
   const replaceRecord = useCallback((value: ViewRecord): void => {
     const id = value.record.request.client_operation_id
@@ -173,6 +180,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
       setPollAfterMs(catalog.poll_after_ms)
       setUploadLimit(catalog.capabilities.max_upload_bytes ?? 50 * 1024 * 1024)
       setConfigurationRequote(catalog.capabilities.same_operation_configuration_requote)
+      setExplicitRequote(catalog.capabilities.explicit_requote_v1 === true)
       setNativeVideoBatch(catalog.capabilities.native_video_batch_v1 === true)
       setModels(catalog.models.filter(item => item.kind === kind && item.enabled))
       setRecords(views)
@@ -197,7 +205,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
   useEffect(() => {
     epoch.current += 1
     setModels([]); setRecords([]); setAssets([]); setCurrentId(null); setOriginalIds([]); setModelId(''); setParameters({}); setPollAfterMs(undefined)
-    setBusy(false); setConfigurationRequote(false); setNativeVideoBatch(false); setInvalidJson({})
+    setBusy(false); setConfigurationRequote(false); setExplicitRequote(false); setNativeVideoBatch(false); setInvalidJson({})
     void load()
     return () => { epoch.current += 1 }
   }, [load])
@@ -266,7 +274,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
     finally { inFlight.current = false; if (captured === epoch.current) setBusy(false) }
   }
   const quote = async (): Promise<void> => {
-    if (model === null || locked || inFlight.current || issues.length > 0 || configurationChanged && !configurationRequote) return
+    if (model === null || locked || inFlight.current || issues.length > 0 || configurationChanged && !configurationRequoteAllowed) return
     const clientId = current?.record.state === 'quoted' ? current.record.request.client_operation_id : randomUUID()
     const captured = epoch.current
     const bindings: Record<string, string[]> = {}
@@ -280,7 +288,11 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
     inFlight.current = true; setBusy(true); setError(null)
     try {
       saveDraft({ currentId: clientId }); setCurrentId(clientId)
-      const view = recordView(mediaV2Data(await transport(`${PREFIX}/quotes`, post(request))))
+      const init = post(request)
+      if (explicitRequote && current?.record.state === 'quoted') {
+        init.headers = { 'content-type': 'application/json', 'X-Yunshu-Media-Requote': '1' }
+      }
+      const view = recordView(mediaV2Data(await transport(`${PREFIX}/quotes`, init)))
       if (view.record.request.client_operation_id !== clientId) throw new Error('MEDIA_V2_RECORD_INVALID')
       if (captured === epoch.current) {
         replaceRecord(view)
@@ -405,7 +417,7 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
       </div>
       {model.description !== undefined && <p className={css.hint}>{model.description}</p>}
       <div className={css.fields}>{fields.filter(field => !model.asset_fields.some(asset => asset.name === field.name)).map((field) => {
-        const value = parameters[field.name], choices = mediaV2Choices(field, parameters, model)
+        const value = parameters[field.name], choices = mediaV2Choices(field, parameters, model, assets, now)
         const available = mediaV2Available(field.native.available_when, parameters)
         const quantityMaximum = model.kind === 'video' && field.name === 'count'
           ? nativeVideoBatch ? readMediaV2Quantity(model.quantity)?.maximum ?? 1 : 1 : undefined
@@ -446,11 +458,12 @@ export function MediaV2Composer({ kind, accountKey, language = 'zh', onExit, tra
         </ul>
       </section>}
       {issues.filter(issue => issue.field === 'intent' || issue.field === 'parameters').map((issue, index) => <p key={index} className={css.error}>{issueText(issue.reason)}</p>)}
-      {configurationChanged && <p className={css.error} role="alert">{configurationRequote
+      {indicativePrice !== undefined && <p className={css.hint}>{labels.referenceUnitPrice}: ¥{indicativePrice.unit_price_cny}/{indicativePrice.billing_unit === 'per_video' ? labels.perVideo : labels.perSecond} · {labels.referenceTotal}: ¥{indicativePrice.total_cny}</p>}
+      {configurationChanged && <p className={css.error} role="alert">{configurationRequoteAllowed
         ? labels.configurationChanged : labels.configurationRequoteUnsupported}</p>}
       <div className={css.actions}>
         <button type="button" disabled={locked || issues.length > 0 || accountKey === null
-          || configurationChanged && !configurationRequote} onClick={() => { void quote() }}>
+          || configurationChanged && !configurationRequoteAllowed} onClick={() => { void quote() }}>
           {busy && currentId !== null && current === undefined ? labels.quoting : labels.quote}
         </button>
         {current?.record.quote !== undefined && <div className={css.price}>

@@ -1,7 +1,8 @@
 /** Typed form projection and validation for the public, server-owned media schema. */
-import { isMediaV2Value, mediaV2Object, readMediaV2Quantity, type MediaV2Asset, type MediaV2Model, type MediaV2Value, type MediaV2Intent } from './media-v2-types.ts'
+import { isMediaV2Value, mediaV2Object, readMediaV2Quantity, readMediaV2SpecificationPricing, type MediaV2Asset, type MediaV2Model, type MediaV2Value, type MediaV2Intent } from './media-v2-types.ts'
 import { mediaV2ParameterIssues } from './media-v2-parameter-conditions.ts'
 import { mediaV2MaterialIssues } from './media-v2-material-conditions.ts'
+import { mediaV2SelectionAvailable, mediaV2SelectionIssues } from './media-v2-selection-constraints.ts'
 
 /** Window-owned material selection retaining its upload identity, explicit use and any ready receipt. */
 export interface MediaV2SelectedAsset {
@@ -79,10 +80,13 @@ export function mediaV2Defaults(model: MediaV2Model): Record<string, MediaV2Valu
  * @param field - Declared parameter and its native option annotations.
  * @param values - Current selections used by option and quality dependencies.
  * @param model - Optional selected model whose reviewed scalar predicates can disable an option.
+ * @param assets - Current retained materials used by finite asset selection predicates.
+ * @param now - Unix time in seconds for ready material receipt expiry.
  * @returns Declared scalar choices and retained selections removed from a nonempty menu, marked unavailable.
  */
 export function mediaV2Choices(
   field: MediaV2Field, values: Readonly<Record<string, MediaV2Value>>, model?: MediaV2Model,
+  assets: readonly MediaV2SelectedAsset[] = [], now = 0,
 ): readonly { value: string | number | boolean; label: string; available: boolean }[] {
   const items = mediaV2Object(field.schema.items)
   const choices = Array.isArray(field.schema.enum) ? field.schema.enum
@@ -96,7 +100,8 @@ export function mediaV2Choices(
       available: option?.available !== false && mediaV2Available(option?.available_when, values)
         && (!Array.isArray(qualityValues) || qualityValues.includes(value))
         && (model === undefined || !mediaV2ParameterIssues(model, { ...values, [field.name]: value })
-          .some(issue => issue.field === field.name && issue.reason === 'parameterCondition')) }
+          .some(issue => issue.field === field.name && issue.reason === 'parameterCondition'))
+        && (model === undefined || mediaV2SelectionAvailable(model, { ...values, [field.name]: value }, assets, now)) }
   })
   const selected = values[field.name]
   if (menu.length > 0) for (const value of Array.isArray(selected) ? selected : [selected]) {
@@ -220,8 +225,10 @@ function assetMetadataIssue(asset: MediaV2Asset, native: Readonly<Record<string,
 export function mediaV2FormIssues(model: MediaV2Model, intent: MediaV2Intent, values: Readonly<Record<string, MediaV2Value>>,
   assets: readonly MediaV2SelectedAsset[], now: number, nativeVideoBatch = false): readonly MediaV2FormIssue[] {
   const issues: MediaV2FormIssue[] = [...mediaV2MaterialIssues(model, values, assets, now), ...mediaV2ParameterIssues(model, values),
-    ...mediaV2QuantityIssues(model, values, nativeVideoBatch)]
-  if (['$ref', 'oneOf', 'allOf', 'anyOf', 'if', 'then', 'else'].some(key => model.parameters_schema[key] !== undefined)) issues.push({ field: 'parameters', reason: 'unsupported' })
+    ...mediaV2QuantityIssues(model, values, nativeVideoBatch), ...mediaV2SelectionIssues(model, values, assets, now)]
+  if (readMediaV2SpecificationPricing(model.pricing) === null) issues.push({ field: 'parameters', reason: 'unsupported' })
+  if (['$ref', 'oneOf', 'allOf', 'anyOf', 'not', 'if', 'then', 'else', 'dependentSchemas', 'patternProperties', 'unevaluatedProperties']
+    .some(key => model.parameters_schema[key] !== undefined)) issues.push({ field: 'parameters', reason: 'unsupported' })
   const generation = assets.filter(asset => asset.role === 'generation')
   const selectedIntent = model.intents.find(item => item.id === intent)
   if (selectedIntent === undefined || (selectedIntent.requires_assets && generation.length === 0) || intent === 'text' && generation.length > 0) issues.push({ field: 'intent', reason: 'intent' })

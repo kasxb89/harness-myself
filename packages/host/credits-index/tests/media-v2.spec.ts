@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -19,6 +19,84 @@ const quote = { ...request, quote_id: 'quote-1', request_sha256: 'a'.repeat(64),
   credits_per_yuan: 1000, expires_at: Math.floor(Date.now() / 1000) + 3600, operation_state: 'quoted' }
 const directories: string[] = []
 afterEach(async () => { await Promise.all(directories.splice(0).map(path => rm(path, { recursive: true, force: true }))) })
+
+describe('explicit same-operation price reconfirmation', () => {
+  async function fixture(capability = true) {
+    const directory = await mkdtemp(join(tmpdir(), 'media-v2-price-')); directories.push(directory)
+    const calls: { path: string; method: string; body: unknown; requote: string | null }[] = []
+    let current = { ...quote, credits_per_yuan: 1250, credits: 375 }, lost = false, accepted = false
+    const client = new MediaV2Client({ baseUrl: 'https://synthetic.invalid', directory, timeoutMs: 1000, creditsPerYuan: 1000 })
+    const account: MediaV2Account = { owner: 'exact-price-owner', fetch: async (path, init) => {
+      const requote = new Headers(init.headers).get('X-Yunshu-Media-Requote')
+      const body: unknown = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+      calls.push({ path, method: init.method ?? 'GET', body, requote })
+      const response = (data: unknown) => new Response(JSON.stringify({ success: true, data }))
+      if (path.endsWith('/models')) return response({ credits_per_yuan: 1250, capabilities: {
+        media_generation_v2: true, quote_required: true, durable_operation_receipt: true, all_artifacts: true,
+        explicit_requote_v1: capability }, models: [{ id: request.model, kind: 'image', display_name: 'Exact price',
+        model_version: request.model_version, enabled: true, parameters_schema: {}, asset_fields: [],
+        intents: [{ id: 'reference', label: 'Reference', requires_assets: true }],
+        pricing: { display: 'quote', quote_required: true, credits_per_yuan: 1250 } }] })
+      if (path.includes('/operations/')) return response({ client_operation_id: id, state: accepted ? 'accepted' : 'quoted',
+        quote_id: current.quote_id, quote: { ...current, ...accepted ? { operation_state: 'accepted', task } : {} },
+        ...accepted ? { task } : {} })
+      if (path.endsWith('/tasks/' + task.id)) return response({ task })
+      if (path.endsWith('/quotes')) {
+        if (requote === '1') current = { ...current, quote_id: 'quote-price-2', retail_cny: '1.37', credits: 1712.5 }
+        if (lost) { lost = false; throw new Error('lost explicit price response') }
+        return response(current)
+      }
+      throw new Error('Unexpected exact-price route')
+    } }
+    return { client, account, calls, directory, lose: () => { lost = true }, accept: () => { accepted = true },
+      changeRate: () => { current = { ...current, credits_per_yuan: 2500 } } }
+  }
+  it('uses one explicit header on the same UUID/body and preserves both same-version price snapshots', async () => {
+    const f = await fixture(), signal = new AbortController().signal
+    const catalog = await f.client.catalog(f.account, signal)
+    expect(catalog.models[0]?.pricing.credits_per_yuan).toBe(1250)
+    expect(catalog.credits_per_yuan).toBe(1250)
+    await f.client.quote(f.account, request, signal)
+    const renewed = await f.client.quote(f.account, request, signal, undefined, { reconfirmPrice: true })
+    expect(renewed.quote).toMatchObject({ retail_cny: '1.37', credits: 1713, credits_per_yuan: 1250 })
+    expect(renewed.configuration_requotes).toMatchObject([{ request, previous_quote: { retail_cny: '0.30' },
+      result_quote: { retail_cny: '1.37' } }])
+    const posts = f.calls.filter(call => call.method === 'POST')
+    expect(posts.map(call => call.body)).toEqual([request, request])
+    expect(posts.map(call => call.requote)).toEqual([null, '1'])
+    expect(f.calls.filter(call => call.path.endsWith('/tasks'))).toHaveLength(0)
+  })
+  it('recovers a lost explicit quote with original GET only and no repeated reconfirmation header', async () => {
+    const f = await fixture(), signal = new AbortController().signal
+    await f.client.quote(f.account, request, signal); f.lose()
+    await expect(f.client.quote(f.account, request, signal, undefined, { reconfirmPrice: true }))
+      .rejects.toThrow('lost explicit price response')
+    const restarted = new MediaV2Client({ baseUrl: 'https://synthetic.invalid', directory: f.directory, timeoutMs: 1000, creditsPerYuan: 900 })
+    const recovered = await restarted.quote(f.account, request, signal)
+    expect(recovered.quote).toMatchObject({ quote_id: 'quote-price-2', credits_per_yuan: 1250, retail_cny: '1.37' })
+    expect(recovered.configuration_requotes?.[0]?.result_quote?.quote_id).toBe('quote-price-2')
+    expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(2)
+    expect(f.calls.filter(call => call.requote !== null)).toHaveLength(1)
+  })
+  it('requires a confirmed prior quote and explicit capability while accepted original receipts remain GET-only', async () => {
+    const f = await fixture(false), signal = new AbortController().signal
+    await expect(f.client.quote(f.account, request, signal, undefined, { reconfirmPrice: true }))
+      .rejects.toMatchObject({ code: 'operation_conflict' })
+    expect(f.calls).toHaveLength(0)
+    await f.client.quote(f.account, request, signal)
+    await expect(f.client.quote(f.account, request, signal, undefined, { reconfirmPrice: true }))
+      .rejects.toMatchObject({ code: 'operation_conflict' })
+    expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(1)
+    f.changeRate(); f.accept()
+    const accepted = await f.client.quote(f.account, request, signal, undefined, { reconfirmPrice: true })
+    expect(accepted.task?.id).toBe(task.id)
+    expect(accepted.quote?.retail_cny).toBe('0.30')
+    expect(accepted.quote?.credits_per_yuan).toBe(1250)
+    expect(accepted.quote?.credits).toBe(375)
+    expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(1)
+    expect(f.calls.filter(call => call.requote !== null)).toHaveLength(0)
+  })
+})
 async function setup(taskReply = task) {
   const directory = await mkdtemp(join(tmpdir(), 'media-v2-')); directories.push(directory)
   const calls: { path: string; method: string; body: unknown }[] = []
@@ -576,5 +654,105 @@ describe('local native creation-plan origin', () => {
     await expect(f.client.quote(f.account, request, new AbortController().signal, invalid)).rejects.toMatchObject({ code: 'invalid_request' })
     expect(f.calls).toEqual([])
     expect(await f.client.records(f.account)).toEqual([])
+  })
+})
+
+
+describe('exact thirty-second receipt boundaries', () => {
+  const requested = { ...request, model: 'ycapi-minimax-h3', intent: 'text', assets: {},
+    parameters: { prompt: 'One continuous original30s work', duration: '30', count: 1, resolution: '1080p' } }
+  const originalQuote = { ...quote, ...requested }
+
+  it('already rejects a free quote changed from30s to15s and only queries its retained original UUID afterwards', async () => {
+    const f = await setup(), signal = new AbortController().signal
+    f.send.mockImplementation(async (path, init) => {
+      f.calls.push({ path, method: init.method ?? 'GET', body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
+      if (path.endsWith('/quotes')) return new Response(JSON.stringify({ success: true, data: {
+        ...originalQuote, parameters: { ...requested.parameters, duration: '15' },
+      } }))
+      if (path.endsWith('/operations/' + id)) return new Response(JSON.stringify({ success: false,
+        error: { code: 'operation_unknown', message: 'Original quote unavailable' } }), { status: 404 })
+      throw new Error('No generation or catalog probe is permitted')
+    })
+    await expect(f.client.quote(f.account, requested, signal)).rejects.toMatchObject({ code: 'quote_changed' })
+    expect(await f.client.record(f.account, id)).toMatchObject({ state: 'quoting', request: requested })
+    await expect(f.client.submit(f.account, id, signal)).rejects.toMatchObject({ code: 'operation_unknown', status: 404 })
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([
+      ['POST', '/v1/media-v2/quotes'], ['GET', '/v1/media-v2/operations/' + id],
+    ])
+    expect((await f.client.record(f.account, id)).request.parameters.duration).toBe('30')
+  })
+
+  it('already rejects a cached unaccepted15s quote against the frozen30s request before a task POST or fence change', async () => {
+    const f = await setup(), signal = new AbortController().signal
+    f.send.mockImplementation(async (path, init) => {
+      f.calls.push({ path, method: init.method ?? 'GET', body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
+      if (!path.endsWith('/quotes')) throw new Error('No task, catalog or upstream probe is permitted')
+      return new Response(JSON.stringify({ success: true, data: originalQuote }))
+    })
+    const original = await f.client.quote(f.account, requested, signal)
+    if (original.quote === undefined) throw new Error('Missing original synthetic quote')
+    const directories = await readdir(f.directory)
+    if (directories.length !== 1 || directories[0] === undefined) throw new Error('Expected one private owner directory')
+    const path = join(f.directory, directories[0], id + '.json')
+    await writeFile(path, JSON.stringify({ ...original, quote: {
+      ...original.quote, parameters: { ...requested.parameters, duration: '15' },
+    } }))
+    const before = await readFile(path)
+    await expect(f.client.submit(f.account, id, signal)).rejects.toMatchObject({ code: 'quote_changed' })
+    expect(await readFile(path)).toEqual(before)
+    expect(f.calls.map(call => [call.method, call.path])).toEqual([['POST', '/v1/media-v2/quotes']])
+  })
+
+  it('already restores an accepted30s snapshot and every original artifact after current configuration is unavailable', async () => {
+    const f = await setup(), signal = new AbortController().signal
+    const origin = { planId: 'original-plan30', sessionId: 'original-chat30', workspaceRoot: '/workspace', shotIds: ['original-shot30'] }
+    const outputs = [
+      { key: 'main', type: 'video', mime_type: 'video/mp4', role: 'main', order: 0,
+        bytes: Buffer.from([0, 0, 0, 16, 102, 116, 121, 112, 109, 112, 52, 50, 0, 0, 0, 0]) },
+      { key: 'preview', type: 'image', mime_type: 'image/png', role: 'preview', order: 1,
+        bytes: Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1]) },
+      { key: 'notes', type: 'file', mime_type: 'text/plain', role: 'auxiliary', order: 2, bytes: Buffer.from('Original delivery notes') },
+    ]
+    const originalTask = { ...task, model: requested.model, kind: 'video', artifacts: outputs.map(({ bytes, ...artifact }) => ({
+      ...artifact, bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex'),
+      content_url: `/v1/tasks/${task.id}/artifacts/${artifact.key}/content`,
+    })) }
+    let currentConfigurationUnavailable = false
+    f.send.mockImplementation(async (path, init) => {
+      f.calls.push({ path, method: init.method ?? 'GET', body: typeof init.body === 'string' ? JSON.parse(init.body) : undefined })
+      let data: unknown
+      if (path.endsWith('/quotes') && !currentConfigurationUnavailable) data = originalQuote
+      else if (path.endsWith('/tasks') && !currentConfigurationUnavailable) data = { task: originalTask, replayed: false }
+      else if (path.endsWith('/operations/' + id)) data = { client_operation_id: id, state: 'accepted', quote_id: quote.quote_id,
+        task: originalTask, quote: { ...originalQuote, operation_state: 'accepted', task: originalTask } }
+      else if (path.endsWith('/tasks/' + task.id)) data = { task: originalTask }
+      else {
+        const artifact = outputs.find(item => path.endsWith(`/artifacts/${item.key}/content`))
+        if (artifact !== undefined) return new Response(artifact.bytes, { headers: { 'content-type': artifact.mime_type } })
+        throw new Error('Current configuration must not be read and original generation must not be retried')
+      }
+      return new Response(JSON.stringify({ success: true, data }))
+    })
+    await f.client.quote(f.account, requested, signal, origin)
+    await f.client.submit(f.account, id, signal)
+    currentConfigurationUnavailable = true
+    const restarted = new MediaV2Client({ baseUrl: 'http://127.0.0.1:1/harness', directory: f.directory,
+      timeoutMs: 1000, creditsPerYuan: 1000, output: async () => ({ write: async (filename, bytes) => {
+        const path = join(f.directory, filename); await writeFile(path, bytes); return { path }
+      }, publish: async () => { throw new Error('Unused') } }) })
+    expect((await restarted.query(f.account, id, signal)).quote?.parameters.duration).toBe('30')
+    const saved = await restarted.saveArtifacts(f.account, id, signal)
+    expect(saved.origin).toEqual(origin)
+    expect(saved.request).toEqual(requested)
+    expect(saved.task?.id).toBe(task.id)
+    expect(saved.saved?.map(item => item.key)).toEqual(['main', 'preview', 'notes'])
+    for (const artifact of outputs) {
+      const retained = saved.saved?.find(item => item.key === artifact.key)
+      if (retained === undefined) throw new Error('Missing original saved output')
+      expect(await readFile(retained.path)).toEqual(artifact.bytes)
+    }
+    expect(f.calls.filter(call => call.method === 'POST').map(call => call.path)).toEqual(['/v1/media-v2/quotes', '/v1/media-v2/tasks'])
+    expect(f.calls.some(call => call.path.endsWith('/models'))).toBe(false)
   })
 })

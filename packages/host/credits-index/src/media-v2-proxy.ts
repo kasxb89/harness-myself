@@ -61,7 +61,12 @@ export function createMediaV2Proxy(options: MediaV2ProxyOptions): MediaV2Proxy {
             const body = mediaV2Object(JSON.parse((await bytes(request, 16 * 1024, signal)).toString('utf8')))
             data = await options.client.saveArtifacts(account, mediaV2UUID(body.client_operation_id), signal)
           }
-          else if (suffix === '/quotes' && method === 'POST') data = await options.client.quote(account, JSON.parse((await bytes(request, 1024 * 1024, signal)).toString('utf8')), signal)
+          else if (suffix === '/quotes' && method === 'POST') {
+            const reconfirm = request.headers['x-yunshu-media-requote']
+            if (reconfirm !== undefined && reconfirm !== '1') throw new MediaV2Error('invalid_request', '重新核价标记无效，尚未请求新报价。', 400)
+            data = await options.client.quote(account, JSON.parse((await bytes(request, 1024 * 1024, signal)).toString('utf8')),
+              signal, undefined, reconfirm === '1' ? { reconfirmPrice: true } : undefined)
+          }
           else if (suffix === '/tasks' && method === 'POST') {
             const body = mediaV2Object(JSON.parse((await bytes(request, 16 * 1024, signal)).toString('utf8')))
             data = await options.client.submit(account, mediaV2UUID(body.client_operation_id), signal)

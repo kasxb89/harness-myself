@@ -1,0 +1,8 @@
+{
+  "source": "actual Go local synthetic HTTP projection",
+  "api_source": "502226ce4ce7dbac344d2c81d47a83bdf61ef5e8",
+  "original_file": "ACTUAL-GO-LEGACY-NATIVE-COEXISTENCE-R03.json",
+  "sha256": "7dfbce80f0ade1a306b577275d7b16eb1bda0c835895f5c487bae0f45abe8af8",
+  "public_dto_only": true,
+  "paid_qualified": false
+}

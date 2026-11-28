@@ -1,6 +1,6 @@
 /** Unit references are public defaults, never a generation quote or inferred free use. */
 import { describe, expect, it } from 'vitest'
-import { mediaPreferencePrices } from '../src/media-preference-pricing.ts'
+import { mediaPreferencePrices, mediaPreferencePoints } from '../src/media-preference-pricing.ts'
 import { catalogFromPricing } from '../src/media.ts'
 import fixture from './fixtures/official-price-comparison-api.json' with { type: 'json' }
 import { preferenceModels } from './media-preferences.fixture.ts'
@@ -11,6 +11,28 @@ const video = (params: object = { resolution: '720P', seconds: 5, ratio: '16:9',
   ({ params, retail_cny: price, unit: 'CNY / second' })
 const raw = (rows: readonly unknown[], kind: 'image' | 'video' = 'image') =>
   [{ model_name: kind === 'image' ? 'image-a' : 'video-b', kind, retail_price_rows: rows }]
+
+describe('whole-video indicative units', () => {
+  it('converts backend exact totals with decimal arithmetic and rejects invalid scales', () => {
+    expect(mediaPreferencePoints('1.37', 1250)).toBe('1712.5')
+    expect(mediaPreferencePoints('0', '1250')).toBe('0')
+    expect(mediaPreferencePoints('0.045666666666666666666', '1250')).toBe('57.0833333333333333325')
+    for (const [amount, rate] of [['1e2', '1000'], ['1', '0'], ['-1', '1000'], ['1', 'NaN']]) {
+      expect(mediaPreferencePoints(amount!, rate!)).toBeUndefined()
+    }
+  })
+  it('projects the whole video amount once with the configured product scale', () => {
+    const rows = [{ ...video(undefined, '1.37'), unit: 'CNY / video' }]
+    const price = mediaPreferencePrices(raw(rows, 'video'), preferenceModels, 1250).get('video-b')
+    expect(price).toMatchObject({ status: 'available', unit: 'points/video', credits_per_yuan: '1250',
+      rows: [{ points: '1712.5', parameters: { seconds: 5 } }] })
+  })
+  it('does not compare or partially publish a table mixing per-second and per-video amounts', () => {
+    const rows = [video(), { ...video({ resolution: '1080P', seconds: 10, ratio: '16:9', count: 1 }), unit: 'CNY / video' }]
+    expect(mediaPreferencePrices(raw(rows, 'video'), preferenceModels, 1250).get('video-b'))
+      .toMatchObject({ status: 'unavailable', coverage: 'none', rows: [] })
+  })
+})
 
 describe('explicit zero-price media references', () => {
   it.each(['image', 'video'] as const)('retains exact free %s rows and their per-row proof', (kind) => {

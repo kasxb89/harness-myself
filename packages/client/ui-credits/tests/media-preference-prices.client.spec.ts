@@ -173,3 +173,9 @@ describe('public chat media unit estimates', () => {
     expect(formatCreditUnitPrice('900719925474099312345.0000001', 'zh-CN')).toBe('900,719,925,474,099,312,345.000001')
   })
 })
+
+it('generic per-video pricing: retains a whole-work points unit without converting it into per-second points', () => {
+  const result = readPrice({ ...video, pricing: { ...pricing, unit: 'points/video' } })
+  expect(result.reply.catalog?.video[0]?.pricing?.unit).toBe('points/video')
+  expect(result.price).toEqual({ kind: 'range', points: { minimum: '137.5', maximum: '387.500000000000000001' } })
+})
