@@ -62,7 +62,7 @@ import { readAnnouncements } from './announcements.ts'
 import { readPriceComparisons } from './price-comparisons.ts'
 import { readCustomerSupport } from './customer-support.ts'
 import { createDemandProxy, type DemandProxyOptions } from './demand-proxy.ts'
-import { MediaV2Client } from './media-v2-client.ts'
+import { MediaV2Client, MediaV2Error } from './media-v2-client.ts'
 import { createMediaV2Proxy } from './media-v2-proxy.ts'
 import { registerMediaV2Tools } from './media-v2-tools.ts'
 import { readMediaV2File } from './media-v2-file.ts'
@@ -2661,6 +2661,28 @@ export function apply(ctx: Context, config: Config): void {
   const mediaV2Proxy = createMediaV2Proxy({ client: mediaV2Client,
     requestRejection: demandProxyOptions.requestRejection, capture: captureMediaV2Account })
   registerMediaV2Tools(ctx, { client: mediaV2Client, capture: captureMediaV2Account,
+    resolvePlan: async (exec, planId, target, accountOwner) => {
+      const identity = await creativeIdentity()
+      if (identity === undefined || `${identity.accountId}:${identity.sessionFingerprint}` !== accountOwner) {
+        throw new MediaV2Error('account_changed', '登录状态已变化，请在原账号读取创作计划。', 409)
+      }
+      const owner = creativeOwner(exec, identity)
+      let plan: Awaited<ReturnType<CreativeStore['plan']>>
+      try { plan = await creative.plan(owner, planId) }
+      catch (error) {
+        if (error instanceof CreativeError) throw new MediaV2Error('invalid_request', error.message, error.status)
+        throw error
+      }
+      if (target.shotIds?.some(id => !plan.shots.some(shot => shot.id === id))
+        || target.assetId !== undefined && !plan.assets.some(asset => asset.id === target.assetId)) {
+        throw new MediaV2Error('invalid_request', '指定的镜头或素材不属于本次创作计划，尚未提交生成。', 400)
+      }
+      const after = await creativeIdentity()
+      if (after?.accountId !== identity.accountId || after.sessionFingerprint !== identity.sessionFingerprint) {
+        throw new MediaV2Error('account_changed', '登录状态已变化，已停止关联创作计划。', 409)
+      }
+      return { planId, sessionId: owner.sessionId, workspaceRoot: owner.workspaceRoot, ...target }
+    },
     pollIntervalMs: resolved.videoPollIntervalMs,
     taskTimeoutMs: Math.max(resolved.videoTaskTimeoutMs, resolved.imageTaskTimeoutMs),
     readAsset: (value, exec, maximum) => readMediaV2File(value, exec.agent?.session, ctx.get('attachments'), ctx.get('fs'), maximum, exec.signal) })
@@ -3191,7 +3213,17 @@ export function apply(ctx: Context, config: Config): void {
       try { return await operation } finally { projectPublications.delete(operation) }
     },
   })
-  registerCreativeTools(ctx, creative, creativeIdentity)
+  registerCreativeTools(ctx, creative, creativeIdentity, async (owner, planId) => {
+    const matches = async (): Promise<boolean> => {
+      const current = await creativeIdentity()
+      return current?.accountId === owner.accountId && current.sessionFingerprint === owner.sessionFingerprint
+    }
+    if (!await matches()) throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录状态已变化。')
+    const records = await mediaV2Client.records({ owner: `${owner.accountId}:${owner.sessionFingerprint}` })
+    if (!await matches()) throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录状态已变化。')
+    return records.filter(record => record.origin?.planId === planId && record.origin.sessionId === owner.sessionId
+      && record.origin.workspaceRoot === owner.workspaceRoot)
+  })
   /** Generated outputs grant reference access only through their exact creation owner and record. */
   const creativeImageReference = async (owner: CreativeOwner, planId: string, value: string): Promise<string | undefined> => {
     if (value.startsWith('ma_')) return value

@@ -34,10 +34,12 @@ export const VIDEO_DIRECTOR_PROMPT = [
   'Use only the selected model’s declared controls. Do not invent unsupported audio switches, duration values, resolutions or reference types. Absence of an audio switch does not establish that the output is silent; an unknown audio capability is not a guarantee of either sound or silence. Do not blindly request audio:true to test support. A prompt cannot enable an API capability that the model does not support.',
 ].join('\n')
 
+const NATIVE_MEDIA_REQUEST_GUIDANCE = '未指定数量默认一件作品，图片一张、视频一条。只有用户明确要求多件才准备对应数量；原生count只放在当前型号声明的parameters中，最大数量、分镜数量、抽帧数量和并发容量都不是默认生成数量。普通确认、查询、参数讨论和保存失败恢复不是新作品。同一计划的新真人独立作品保留自己的原操作编号，不能因为旧任务等待或未知而拒绝；也不能把普通确认当成另做一件。work_key仅标识同一真人请求中明确另要的作品，不能用它绕开未知或已受理任务。'
+
 const VIDEO_WORKFLOW = [
   '# Yunshu video direction and execution',
   '',
-  'Native media-generation-v2 processors use list_media_models_v2, upload_media_asset, quote_media_operation, generate_media_operation and query_media_operation. When the requested motion replication, lip-sync, avatar, upscaling, layer decomposition or other operation is advertised there, preserve its exact typed controls and use that same V2 operation throughout. Never send a V2-only model to the legacy text/video generator. Keep the original operation ID after acceptance or an unknown response; query and save every original output rather than generating again. Existing ordinary creation workflows below remain unchanged for their supported models.',
+  'Native media-generation-v2 processors use list_media_models_v2, upload_media_asset, quote_media_operation, generate_media_operation and query_media_operation. When the requested motion replication, lip-sync, avatar, upscaling, layer decomposition or other operation is advertised there, preserve its exact typed controls and use that same V2 operation throughout. Never send a V2-only model to the legacy text/video generator. Keep the original operation ID after acceptance or an unknown response; query and save every original output rather than generating again. Load yunshu-media-agent only when a native request needs multi-step planning, material-role coordination or original-plan recovery. The remaining legacy sections apply only to models admitted by the legacy catalog, including their work_id and generate_video_project rules; they do not override this V2 route. A simple supported legacy clip keeps its existing direct fast path without loading another skill.',
   'For reference-image/video reconstruction, viral-reference remakes, product/person replacement or motion transfer, load yunshu-reference-replica first. Analyze real image evidence and inspect_reference_video frames before proposing the matching native operation. An analysis-only request never authorizes generation.',
   VIDEO_DIRECTOR_PROMPT,
   '',
@@ -65,6 +67,7 @@ const VIDEO_WORKFLOW = [
   'Read an existing plan with get_creation_plan before a targeted revision, preserving unrelated characters, materials and completed shots. Reuse retained clips and materials. Use edit_video for supported changes to existing clips instead of regenerating them.',
   'Native editing supports trim, normalization and ordered joins, retaining the source audio. It does not supply independent TTS, forced speech alignment, lip repair, subtitle burning or complex transitions. If a requested post-production step is unavailable, state that limit and preserve the existing result; do not write an improvised script or silently mute native dialogue.',
   'A running project returns job_id and project_id. Use job_output at measured intervals for progress and video_project_status for retained state; do not busy-poll or automatically submit the same work again while waiting. A separate explicit human generation request starts independent work even when an earlier project is running or unknown, including when reusing a brief or plan. Keep each operation, project and job identity separate. Default each human request to one finished video; arrange exactly its explicit work count, without adding versions to fill concurrency. Report queued only after a real task id has been accepted and the task status says it is queued; a busy submission without a task id is an unknown outcome, not a confirmed queue position. If the user stops, use job_kill to stop that project’s local waiting and later submissions; already accepted tasks may continue upstream. Use resume_video_project only for an explicitly requested recovery, including a paused query deadline with a retained task id. It may recover other known task ids beside failed or unknown clips; those clips block resubmission within that original project, not a separately requested work. An unknown submission may already be billed and must not be automatically resubmitted.',
+  'If legacy generate_video_project or job_output reports an overall failure but returns saved clip_paths, present every actually readable saved clip and distinguish completed clips from failed or not-generated parts. These are partial clips, not a completed final film. Preserve project_id, job_id and original task ids; use read-only status/query recovery for known original tasks and paths. Do not blindly resume the whole project or regenerate missing parts to create a delivery. This legacy partial-clip rule does not apply to V2 batches: preserve their original completeness, download and save gates; a partial V2 batch does not authorize downloads or a saved-complete claim.',
   'After success, present the actual returned path/final_path and link the saved artifact. Inspect the rendered output before claiming correct dialogue, lip-sync or subtitle timing. If that inspection has not occurred, state which qualities remain unverified. A saved MP4, a duration check or the presence of an audio stream alone does not verify speech or synchronization.',
   '',
   'When the actual generation model is MiniMax-H3, load yunshu-minimax-h3 only if its prompt notation is needed. Other generation models keep their own format. Do not fetch online guides at generation time.',
@@ -74,7 +77,7 @@ const VIDEO_WORKFLOW = [
 const REFERENCE_REPLICA_WORKFLOW = [
   '# 云枢参考图片与视频复刻',
   CREATION_LANGUAGE_GUIDANCE,
-  VIDEO_REQUEST_GUIDANCE,
+  NATIVE_MEDIA_REQUEST_GUIDANCE,
   '',
   '## 先分析用户实际提供的证据',
   '适用于爆款图片复刻、对标视频复刻、商品/人物替换、画风与分镜重建、图像主体沿参考视频动作迁移。用户只要求分析、拆解、出方案或改提示词时，只读取证据并保存计划，不上传、不报价、不生成。用户明确要求开始生成或确认方案后，才沿原计划执行；确认不增加作品数量。',
@@ -86,16 +89,41 @@ const REFERENCE_REPLICA_WORKFLOW = [
   '严格区分“动作迁移”和“风格/分镜重建”。用户给出主体图加动作对标视频并要求复刻动作时，必须选择当前目录明确支持图+视频的动作迁移/复刻操作，把主体图和原视频分别绑定其声明角色。只看抽帧再文生视频不等于动作迁移；不支持时说明缺口，不能丢弃视频改为纯文本。用户只要求借鉴风格、构图或分镜时，说明是重建而非精确动作复制；按其目标使用原图/视频和对应原生能力。商品与人物替换要逐项说明哪个主体身份保持、哪个被替换、姿态/场景/文字是否保留，不继承用户要求排除的标语、价格、水印或声音。',
   '',
   '## 读取精确模型、素材角色与报价后执行',
-  '保留用户显式选择的模型；未指定时先读取实际个人媒体偏好和当前目录，不让用户重复已保存的选择。用 list_media_models_v2 获取可执行型号，再带精确model读取完整 parameters_schema、asset_fields、conditions、intent、尺寸/时长和上传限制，之后才为每项素材调用upload_media_asset绑定精确field，并调用quote_media_operation。名称相近不代表能力相同；不能凭示例猜字段、压平嵌套参数、乱用首尾帧槽、遗漏必需视频或用收费试调用探测能力。没有合适能力或可核实报价时保留方案并报告缺口。',
+  '用户本轮显式选择的模型和参数优先；未指定时先读取list_media_models_v2实际返回的chat_preferences，将冻结偏好与当前精确目录核对，只采用已准入的候选，不让用户重复已保存的选择。带精确model读取完整parameters_schema、asset_fields、conditions、parameter_conditions、quantity与intent、尺寸/时长和上传限制，之后才为每项素材调用upload_media_asset绑定精确field，并调用quote_media_operation。偏好缺失或未获当前目录准入时不能编造默认值或映射相似型号；只询问仍未确定的必要选项。不能凭示例猜字段、压平嵌套参数、乱用首尾帧槽、遗漏必需视频或用收费试调用探测能力。没有合适能力或可核实报价时保留方案并报告缺口。',
   '未指定数量默认一条；明确几条作品才做几条。分镜数量、抽帧数量、并发容量、质量检查或修改方案都不能自动新增收费版本。按照所选规格支持的最长合适单段时长减少付费片段，优先减少拼接，再减少多余生成秒数；多个视觉镜头可以写进同一单段提示词。尊重用户明确时长和静态参数，不静默切模型。并发仅加快既定作品/片段，不增加其数量。',
   '向用户展示材料角色、保留/替换规则、实际模型/时长/规格、复刻方式、未知限制及精确报价。需要确认时等待当前方案确认；用户已经明确要求生成且无需额外选择时直接沿该方案执行，不要求重复授权。仅分析请求即使已经形成完整方案也不能进入生成。',
-  'V2报价返回的client_operation_id是这件作品的原操作身份。将它记回原计划brief或对应shot.prompt，与真实素材、参数和报价对应；确认后只用generate_media_operation执行该原编号。V2不走generate_video_project、generate_video或legacy resume_video_project；不能新建work_key绕开已接受、未知或中断的操作。普通确认、参数修订、查结果与保存失败恢复都保留同一计划和已有身份。未受理的参数修订遵从原quote允许的条件，不改写已受理请求。',
+  '报价时将真实plan_id传给quote_media_operation；对应镜头可传精确有序shot_ids，生成计划素材可传asset_id，两种目标互斥。整份计划的操作只传plan_id即可，不必虚构目标。Host把本地计划关联与原V2记录一起保存，不把这些字段塞入parameters或上游请求。后续get_creation_plan返回的native_operations是恢复原client_operation_id、实际冻结参数、报价、任务和全部保存路径的依据，不靠把UUID抄进brief或shot.prompt建立关系。generate_media_operation和query_media_operation只接收该原client_operation_id。V2不走generate_video_project、generate_video或legacy resume_video_project；不能新建work_key绕开已接受、未知或中断的操作。普通确认、参数讨论、查结果与保存失败恢复都保留同一计划和已有身份；未受理的修订遵从原报价允许的条件，不改写已受理请求，也不把既有无关联操作自动挂到计划上。',
   '已接受、提交未知、查询超时、404或部分保存失败时，只调用query_media_operation查询并保存原client_operation_id的全部产物，不另POST、不换模型、不盲用legacy resume、不新建work_key。停止本地等待不证明上游取消或退款。用户后来另行明确发起的新作品与原操作独立，不能把普通确认解释为新作品。',
   '呈现实际返回的全部产物路径并链接文件，保留GIF、图层和其他输出，不只取第一项。成片必须真实查看后才评价画面；听过并对照时点后才评价声音、对白和口型，否则列为未核实。用已观察差异提出定向修改方案，修改方案本身不触发重新收费生成。',
 ].join('\n')
 
+/** Lazy local orchestration over the existing V2 tools and their durable plan links. */
+const MEDIA_AGENT_WORKFLOW = [
+  '# 云枢本地媒体Agent',
+  CREATION_LANGUAGE_GUIDANCE,
+  '',
+  '只在复杂多步骤原生媒体请求、素材协调、计划执行或恢复时加载本技能；简单legacy单段请求沿已有工具快速执行，不增加规划轮次。这里使用云枢本地Agent编排公开原生媒体工具，不代表复用YC网站私有Agent或canvas接口。不要猜测私有planner/run端点、安装额外CLI或启动另一收费规划Agent。',
+  NATIVE_MEDIA_REQUEST_GUIDANCE,
+  '',
+  '## 核实当前账号的型号与素材',
+  '先用list_media_models_v2读取当前账号可执行目录及实际返回的chat_preferences，再带精确model读取详情。用户本轮明确要求优先，未指定时才用冻结偏好作候选，并按当前V2精确schema核实后采用；偏好缺失或unavailable不代表可以编造默认型号，类似名称也不能互换。保留精确model与model_version，按当前parameters_schema、conditions、parameter_conditions、quantity、intents及asset_fields核对完整组合，只询问仍缺少的必要选择，不把全部型号schema塞入聊天。当前目录未开放某能力时报告缺口，不用收费试调用探测，也不退回不支持它的legacy接口。',
+  '规范请求只使用该型号声明的字段和类型，保留嵌套对象、数组顺序、原文及独立的mode、质量、尺寸、时长、数量；不得压平参数、把对象变成字符串或静默替换选择。素材先按真实文件和用户用途区分，再用upload_media_asset为每项授权原文件指定精确field；parameters与assets分开，单素材字段也保留其有序asset_id数组。不丢参考图、原视频、音频或首尾帧来换取一次纯文本生成。',
+  '参考图/视频复刻、商品人物替换或动作迁移先加载yunshu-reference-replica。读取真实图片，视频先通过现工具正常准备授权工作区文件，再inspect_reference_video并查看返回帧；记录时点与已观察、推断、未知。抽帧不能代替原动作视频，静态帧不证明全部动作、对白、音乐或口型。仅分析、改提示词或保存计划不授权生成，也不上传或报价。',
+  '',
+  '## 关联同一计划并核对免费报价',
+  '需要计划时用update_creation_plan保存真实素材和有序镜头；继续现有计划先get_creation_plan，保留原plan_id和目标id。quote_media_operation传精确model、model_version、intent、parameters、assets及plan_id，可附有序shot_ids或asset_id，二者互斥；整份计划绑定只传plan_id也有效。计划字段是本地关联，不进入parameters或上游请求。已有无关联操作不能事后自动改绑。',
+  '报价前读取get_creation_plan.native_operations中的原记录。已有报价、已受理或未知作品继续使用其client_operation_id；多条记录时按实际目标和原编号核对，不能挑第一条或最新一条冒充同一作品。首次报价省略client_operation_id，由Host绑定当前真人请求和作品身份；同一计划的新真人独立作品有独立原编号，保留旧记录而不重发。',
+  'quote_media_operation是免费精确报价，展示返回的实际model/model_version、规范参数、素材角色、时长、数量、retail_cny和credits。后台返回的是本次aggregate总额，不把数量再乘一次，也不从网页价或成本自行计价。计划要求与原报价实际参数不同须先说明；报价过期或配置变化按原操作支持的流程重新核对，不静默增加金额、切型号或改写已受理内容。需要用户选择或确认时等待该选择；用户已经明确授权且无需额外选择时不重复索取授权。',
+  '',
+  '## 只提交原编号，交付全部原产物',
+  'generate_media_operation仅传已核对的client_operation_id，一次提交后用原job_output或query_media_operation等待和保存。pending、unknown、超时、404、丢失提交回执和部分保存失败都只查询原UUID，不重新报价另建操作、不换模型或work_key、不用legacy恢复工具。停止本地等待不证明上游取消、未收费或已退款。',
+  '恢复时get_creation_plan的native_operations提供原UUID、冻结报价/参数、任务与全部saved路径；它们来自原V2记录，不用当前目录或计划文字重建请求。主产物数量、辅助文件数量和完整度分开说明，partial/mismatch/unknown不能称完成；展示真实返回的全部路径，包括预览、图层、辅助和重复文件，不只保留第一项。观看或听过之后才评价相应画面、声音和口型，否则明确未核实。',
+  'legacy项目整体失败但返回clip_paths时，按yunshu-video-director的部分片段交付规则展示已保存可读片段和剩余状态，不冒充完整成片，不盲恢复整个项目或重生成。该规则不适用于V2 batch；V2 partial仍按原完整度门禁，完整前不下载、不报保存完成。',
+  '后期处理仅对现工具已授权、可读的工作区文件使用edit_video支持的剪辑能力。应用私有V2保存路径不自动成为edit_video可编辑输入；若现有工具不能授权转入工作区、拼接或完成所需效果，说明具体缺口并保留原产物，不通过重新收费生成绕过剪辑或访问限制，不写临时下载/轮询/FFmpeg脚本冒充已支持流程。',
+].join('\n')
+
 /**
- * Publish a directing skill through the existing optional skill registry.
+ * Publish lazy creation skills through the existing optional skill registry.
  * @param ctx - Credits plugin context owning registration and its disposal.
  */
 export function registerCreationWorkflows(ctx: Context): void {
@@ -103,7 +131,7 @@ export function registerCreationWorkflows(ctx: Context): void {
   ctx.inject(['skills'], (owner) => {
     owner.skills.register({
       name: 'yunshu-video-director',
-      description: 'Direct Yunshu video, storyboard, animation, dialogue and character/reference requests through the account model catalog and fixed background workflow. Complex plans read list_video_models and use generate_video_project; a simple single clip directly uses generate_video_project with its brief and actual Host defaults, without loading this skill. Preserve explicit model choice and use job progress without manual polling or assembly scripts.',
+      description: 'Direct supported legacy Yunshu video, storyboard, animation, dialogue and character/reference requests through its account catalog and fixed background workflow. Complex legacy plans read list_video_models and use generate_video_project; a simple supported legacy clip directly uses generate_video_project with actual Host defaults, without loading this skill. V2-only models keep their native tools and preserve explicit model choice.',
       source: 'bundled',
       content: VIDEO_WORKFLOW,
     })
@@ -112,6 +140,12 @@ export function registerCreationWorkflows(ctx: Context): void {
       description: 'Analyze and reconstruct real reference images/videos, viral examples, product/person replacements and image-plus-video motion transfer. Read actual images and inspect_reference_video frames, separate observations/inferences/unknowns, and save update_creation_plan. Analysis-only requests never generate. Confirmed execution reads the exact V2 model schema and material roles, quotes once, and preserves the same plan and original operation through recovery.',
       source: 'bundled',
       content: REFERENCE_REPLICA_WORKFLOW,
+    })
+    owner.skills.register({
+      name: 'yunshu-media-agent',
+      description: 'Coordinate complex native image/video/audio plans through the five existing V2 tools, exact current-account schemas and admitted preferences, explicit material roles, local plan links, aggregate quotes and original-operation recovery. Load only for multi-step work; simple legacy clips keep their existing fast path. This is local Yunshu orchestration, not a private YC website Agent or canvas API.',
+      source: 'bundled',
+      content: MEDIA_AGENT_WORKFLOW,
     })
     owner.skills.register({
       name: 'yunshu-minimax-h3',

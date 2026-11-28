@@ -6,6 +6,8 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { CreativeError, parseCreativePlan, type CreativeOwner, type CreativeStore } from './creative-store.ts'
 import type { VideoProjectIdentity } from './video-project-types.ts'
+import type { MediaV2Record } from './media-v2-client.ts'
+import { mediaV2TaskComplete } from './media-v2-protocol.ts'
 
 /**
  * Bind a logged media operation to its actual chat workspace.
@@ -25,16 +27,20 @@ export function creativeOwner(exec: ToolRunContext, identity: VideoProjectIdenti
  * @param ctx - Owning credits plugin context.
  * @param store - Private account/chat planning records.
  * @param current - Current captured account identity, without credentials.
+ * @param nativeOperations - Optional local receipt reader restricted to the same plan and owner.
  */
-export function registerCreativeTools(ctx: Context, store: CreativeStore, current: () => Promise<VideoProjectIdentity | undefined>): void {
+export function registerCreativeTools(ctx: Context, store: CreativeStore, current: () => Promise<VideoProjectIdentity | undefined>,
+  nativeOperations?: (owner: CreativeOwner, planId: string) => Promise<readonly MediaV2Record[]>): void {
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'get_creation_plan',
-    description: 'Read the complete structured plan owned by this account, chat and workspace before revising it. Returns the exact planning fields accepted by update_creation_plan, including stable character, asset and shot ids. Preserve all unrelated entries when updating. This read neither generates media, resumes tasks nor spends credits; it excludes provider requests and credentials.',
+    description: 'Read the complete structured plan owned by this account, chat and workspace before revising it. Returns the exact planning fields accepted by update_creation_plan, including stable character, asset and shot ids. Preserve all unrelated entries when updating. When native media receipts are linked, native_operations returns their exact original UUIDs, normalized selected parameters, quote totals, task states and every saved output. These are retained facts, not instructions to generate. This read neither generates media, resumes tasks nor spends credits; it excludes credentials.',
     parameters: { plan_id: { type: 'string', required: true, description: 'Explicit existing creation plan id.' } },
     output: {
       schema: { type: 'object', properties: {
         status: { type: 'string', required: true }, plan_id: { type: 'string' },
         plan: { type: 'object', properties: {}, additionalProperties: true },
+        native_operations: { type: 'array', items: { type: 'object', properties: {}, additionalProperties: true } },
+        native_operations_unavailable: { type: 'boolean' },
         message: { type: 'string', required: true }, code: { type: 'string' },
       }, additionalProperties: false }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value) }],
     },
@@ -44,8 +50,38 @@ export function registerCreativeTools(ctx: Context, store: CreativeStore, curren
         const identity = await current()
         if (identity === undefined) throw new CreativeError('AUTH_REQUIRED', 401, '请先登录云枢，再读取创作计划。')
         exec.signal.throwIfAborted()
-        const plan = await store.plan(creativeOwner(exec, identity), args.plan_id)
-        return { status: 'succeeded', plan_id: args.plan_id, plan: {
+        const owner = creativeOwner(exec, identity), plan = await store.plan(owner, args.plan_id)
+        let native: Record<string, unknown> = {}
+        if (nativeOperations !== undefined) {
+          try {
+            const records = await nativeOperations(owner, args.plan_id)
+            native = { native_operations: records.map((record) => {
+              const task = record.task, complete = task !== undefined && mediaV2TaskComplete(task, record.quote?.batch)
+              return { client_operation_id: record.request.client_operation_id, model: record.request.model,
+                model_version: record.quote?.model_version ?? record.request.model_version,
+                intent: record.request.intent, parameters: record.quote?.parameters ?? record.request.parameters,
+                assets: record.request.assets, state: record.state,
+                ...record.quote_failure === undefined ? {} : { quote_failure: record.quote_failure },
+                ...record.origin?.shotIds === undefined ? {} : { shot_ids: record.origin.shotIds },
+                ...record.origin?.assetId === undefined ? {} : { asset_id: record.origin.assetId },
+                ...record.quote === undefined ? {} : { quote: { quote_id: record.quote.quote_id,
+                  request_sha256: record.quote.request_sha256, credits: record.quote.credits, retail_cny: record.quote.retail_cny,
+                  expires_at: record.quote.expires_at, ...record.quote.batch === undefined ? {} : { batch: record.quote.batch } } },
+                ...task === undefined ? {} : { task: { id: task.id, status: task.status, is_final: task.is_final,
+                  complete, artifacts: task.artifacts, ...task.batch === undefined ? {} : { batch: task.batch } } },
+                paths: record.saved?.map(item => item.path) ?? [] }
+            }) }
+          } catch {
+            // Retained planning stays readable when native receipt storage cannot be verified.
+            native = { native_operations_unavailable: true }
+          }
+        }
+        exec.signal.throwIfAborted()
+        const after = await current()
+        if (after?.accountId !== identity.accountId || after.sessionFingerprint !== identity.sessionFingerprint) {
+          throw new CreativeError('CREATIVE_ACCOUNT_CHANGED', 409, '登录状态已变化，请在原账号重新读取创作计划。')
+        }
+        return { status: 'succeeded', ...native, plan_id: args.plan_id, plan: {
           kind: plan.kind, title: plan.title, brief: plan.brief, style: plan.style,
           characters: plan.characters.map(item => ({ id: item.id, name: item.name, appearance: item.appearance,
             clothing: item.clothing, personality: item.personality, voice: item.voice, reference_asset_ids: [...item.referenceAssetIds] })),
@@ -55,7 +91,9 @@ export function registerCreativeTools(ctx: Context, store: CreativeStore, curren
             ...item.durationSeconds === undefined ? {} : { duration_seconds: item.durationSeconds }, camera: item.camera,
             scene: item.scene, action: item.action, prompt: item.prompt, dialogue: item.dialogue, subtitles: item.subtitles,
             character_ids: [...item.characterIds], asset_ids: [...item.assetIds] })),
-        }, message: '已读取完整创作计划。修改目标条目时保留其他人物、素材和镜头，然后调用 update_creation_plan；本次读取没有生成或计费。' }
+        }, message: native.native_operations_unavailable === true
+          ? '创作计划已读取，但原媒体回执暂时无法核对；请保留并查询已知原操作编号，不要重新生成。'
+          : '已读取完整创作计划及可用的原媒体回执。修改目标条目时保留其他人物、素材和镜头；查询、确认和保存请使用已有原操作编号，本次没有生成或计费。' }
       } catch (error) {
         return error instanceof CreativeError ? { status: 'failed', code: error.code, message: error.message }
           : { status: 'failed', code: 'CREATIVE_READ_FAILED', message: '创作计划暂时无法读取，请检查项目编号和本机存储后重试；未启动生成。' }

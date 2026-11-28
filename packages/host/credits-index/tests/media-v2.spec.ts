@@ -502,3 +502,79 @@ it('keeps an unsupported batch client422 as a proven free-quote rejection withou
   await client.submit(account, id, new AbortController().signal)
   expect(calls.map(item => item.path)).toEqual(['/v1/media-v2/quotes'])
 })
+
+
+describe('local native creation-plan origin', () => {
+  const origin = { planId: 'cp-original', sessionId: 'chat-original', workspaceRoot: '/workspace', shotIds: ['shot-1', 'shot-2'] }
+  it('persists the validated local origin before the first quote and retains it across restart and all output saves', async () => {
+    const f = await setup(), signal = new AbortController().signal
+    const original = f.send.getMockImplementation()!
+    f.send.mockImplementation(async (path, init) => {
+      if (path.endsWith('/quotes')) expect((await f.client.records({ owner: f.account.owner }))[0]?.origin).toEqual(origin)
+      if (path.endsWith('/content')) {
+        const mime = path.includes('/layer-1/') ? 'image/png' : path.includes('/animation/') ? 'image/gif' : 'image/svg+xml'
+        const bytes = mime === 'image/png' ? Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1])
+          : Buffer.from(mime === 'image/gif' ? 'GIF89a original' : '<svg></svg>')
+        return new Response(bytes, { headers: { 'content-type': mime } })
+      }
+      return await original(path, init)
+    })
+    const first = await f.client.quote(f.account, request, signal, origin)
+    expect(first.origin).toEqual(origin)
+    expect(f.calls[0]?.body).toEqual(request)
+    expect(JSON.stringify(f.calls)).not.toContain('planId')
+    const restarted = new MediaV2Client({ baseUrl: 'http://127.0.0.1:1/harness', directory: f.directory,
+      timeoutMs: 1000, creditsPerYuan: 1000, output: async () => ({
+        write: async (filename, bytes) => { const path = join(f.directory, filename); await writeFile(path, bytes); return { path } },
+        publish: async () => { throw new Error('Unused') },
+      }) })
+    expect((await restarted.record({ owner: f.account.owner }, id)).origin).toEqual(origin)
+    await restarted.submit(f.account, id, signal)
+    const saved = await restarted.saveArtifacts(f.account, id, signal)
+    expect(saved.origin).toEqual(origin)
+    expect(saved.saved?.map(item => item.key)).toEqual(['layer-1', 'animation', 'vector'])
+    expect((await restarted.records({ owner: f.account.owner }))[0]?.saved).toEqual(saved.saved)
+    expect(await restarted.records({ owner: 'other-account' })).toEqual([])
+    expect(f.calls.filter(call => call.method === 'POST').map(call => call.path)).toEqual(['/v1/media-v2/quotes', '/v1/media-v2/tasks'])
+  })
+
+  it.each([undefined, { planId: 'other-plan' }, { sessionId: 'other-chat' }, { workspaceRoot: '/other-workspace' },
+    { shotIds: ['shot-2'] }])('rejects an omitted or changed original binding before network: %j', async (change) => {
+    const f = await setup(), signal = new AbortController().signal
+    await f.client.quote(f.account, request, signal, origin)
+    const before = f.calls.length
+    await expect(f.client.quote(f.account, request, signal, change === undefined ? undefined : { ...origin, ...change }))
+      .rejects.toMatchObject({ code: 'operation_conflict' })
+    expect(f.calls).toHaveLength(before)
+    expect((await f.client.records(f.account))[0]?.origin).toEqual(origin)
+  })
+
+  it('does not backfill a plan into an existing unbound operation', async () => {
+    const f = await setup(), signal = new AbortController().signal
+    await f.client.quote(f.account, request, signal)
+    const before = f.calls.length
+    await expect(f.client.quote(f.account, request, signal, origin)).rejects.toMatchObject({ code: 'operation_conflict' })
+    expect(f.calls).toHaveLength(before)
+    expect((await f.client.records(f.account))[0]?.origin).toBeUndefined()
+  })
+
+  it('recovers a lost original quote and origin through GET only, including after a restart', async () => {
+    const f = await setup(), signal = new AbortController().signal
+    f.send.mockImplementationOnce(async () => { throw new Error('lost original free quote') })
+    await expect(f.client.quote(f.account, request, signal, origin)).rejects.toThrow('lost original free quote')
+    expect((await f.client.records(f.account))[0]?.origin).toEqual(origin)
+    const restarted = new MediaV2Client({ baseUrl: 'http://127.0.0.1:1/harness', directory: f.directory, timeoutMs: 1000, creditsPerYuan: 1000 })
+    const recovered = await restarted.quote(f.account, request, signal, origin)
+    expect(recovered.origin).toEqual(origin)
+    expect(recovered.task?.artifacts).toHaveLength(3)
+    expect(f.calls.every(call => call.method === 'GET')).toBe(true)
+  })
+
+  it.each([{ ...origin, workspaceRoot: 'relative' }, { ...origin, shotIds: [] },
+    { ...origin, shotIds: ['shot-1', 'shot-1'] }, { ...origin, assetId: 'asset-1' }])('rejects an invalid local origin before quotation: %j', async (invalid) => {
+    const f = await setup()
+    await expect(f.client.quote(f.account, request, new AbortController().signal, invalid)).rejects.toMatchObject({ code: 'invalid_request' })
+    expect(f.calls).toEqual([])
+    expect(await f.client.records(f.account)).toEqual([])
+  })
+})

@@ -79,7 +79,7 @@ export function mediaV2Defaults(model: MediaV2Model): Record<string, MediaV2Valu
  * @param field - Declared parameter and its native option annotations.
  * @param values - Current selections used by option and quality dependencies.
  * @param model - Optional selected model whose reviewed scalar predicates can disable an option.
- * @returns Every declared scalar choice with its label and availability flag.
+ * @returns Declared scalar choices and retained selections removed from a nonempty menu, marked unavailable.
  */
 export function mediaV2Choices(
   field: MediaV2Field, values: Readonly<Record<string, MediaV2Value>>, model?: MediaV2Model,
@@ -90,7 +90,7 @@ export function mediaV2Choices(
   const options = Array.isArray(field.native.options) ? field.native.options.map(mediaV2Object) : []
   const byQuality = mediaV2Object(field.native.enum_values_by_quality)
   const qualityValues = typeof values.quality === 'string' ? byQuality?.[values.quality] : undefined
-  return choices.filter((value): value is string | number | boolean => typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)).map((value) => {
+  const menu = choices.filter((value): value is string | number | boolean => typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value)).map((value) => {
     const option = options.find(item => item?.value === value)
     return { value, label: typeof option?.label === 'string' ? option.label : String(value),
       available: option?.available !== false && mediaV2Available(option?.available_when, values)
@@ -98,6 +98,12 @@ export function mediaV2Choices(
         && (model === undefined || !mediaV2ParameterIssues(model, { ...values, [field.name]: value })
           .some(issue => issue.field === field.name && issue.reason === 'parameterCondition')) }
   })
+  const selected = values[field.name]
+  if (menu.length > 0) for (const value of Array.isArray(selected) ? selected : [selected]) {
+    if ((typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number' && Number.isFinite(value))
+      && !menu.some(choice => choice.value === value)) menu.push({ value, label: String(value), available: false })
+  }
+  return menu
 }
 /**
  * Resolve the strictest published material count for the current mode and quality.

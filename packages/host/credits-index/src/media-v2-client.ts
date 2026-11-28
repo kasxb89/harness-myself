@@ -35,10 +35,21 @@ export interface MediaV2ConfigurationRequote {
   previous_quote: MediaV2Quote
   result_quote?: MediaV2Quote
 }
+/** Local, trusted creation-plan scope; never sent in a vendor request, hash or header. */
+export interface MediaV2PlanOrigin {
+  planId: string
+  sessionId: string
+  workspaceRoot: string
+  shotIds?: readonly string[]
+  assetId?: string
+}
+/** Optional plan-wide, ordered-shot or single-asset target, validated by the owning plan store. */
+export type MediaV2PlanTarget = Pick<MediaV2PlanOrigin, 'shotIds' | 'assetId'>
 /** Original operation state; an uncertain submission can only recover its existing receipt. */
 export interface MediaV2Record {
   version: 1
   owner: string
+  origin?: MediaV2PlanOrigin
   request: MediaV2Request
   state: 'quoting' | 'quoted' | 'quote-rejected' | 'submitting' | 'accepted' | 'unknown'
   quote_failure?: { code: string; message: string }
@@ -55,6 +66,22 @@ export class MediaV2Error extends Error {
 const REMOTE_CODES = new Set(['invalid_request', 'model_not_available', 'model_version_changed', 'invalid_parameters',
   'reference_required', 'reference_limit_exceeded', 'asset_not_ready', 'asset_not_found', 'asset_binding_mismatch',
   'quote_expired', 'quote_changed', 'operation_conflict', 'operation_unknown', 'insufficient_quota', 'media_capacity_full', 'media_batch_client_unsupported', 'upstream_unavailable'])
+function planOrigin(value: unknown): MediaV2PlanOrigin {
+  const row = mediaV2Object(value)
+  const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0
+    && value.length <= 256 && !/[\u0000-\u001f\u007f]/u.test(value)
+  if (!identifier(row.planId) || !identifier(row.sessionId) || typeof row.workspaceRoot !== 'string'
+    || !isAbsolute(row.workspaceRoot) || row.workspaceRoot.length > 32768 || /[\u0000-\u001f\u007f]/u.test(row.workspaceRoot)
+    || Object.keys(row).some(key => !['planId', 'sessionId', 'workspaceRoot', 'shotIds', 'assetId'].includes(key))
+    || row.shotIds !== undefined && (!Array.isArray(row.shotIds) || row.shotIds.length < 1 || row.shotIds.length > 256
+      || row.shotIds.some(value => !identifier(value)) || new Set(row.shotIds).size !== row.shotIds.length)
+    || row.assetId !== undefined && !identifier(row.assetId) || row.shotIds !== undefined && row.assetId !== undefined) {
+    throw new MediaV2Error('invalid_request', '本地创作计划关联无效；请核对原计划和素材目标。', 400)
+  }
+  return { planId: row.planId, sessionId: row.sessionId, workspaceRoot: row.workspaceRoot,
+    ...row.shotIds === undefined ? {} : { shotIds: row.shotIds.filter(identifier) },
+    ...row.assetId === undefined ? {} : { assetId: row.assetId } }
+}
 function sameOperation(left: MediaV2Request, right: MediaV2Request): boolean {
   return isDeepStrictEqual({ ...left, model_version: '' }, { ...right, model_version: '' })
 }
@@ -85,7 +112,7 @@ export class MediaV2Client {
   private path(owner: string, id: string): string {
     return join(this.options.directory, createHash('sha256').update(`${this.options.baseUrl}\n${owner}`).digest('hex'), `${mediaV2UUID(id)}.json`)
   }
-  private async read(account: MediaV2Account, id: string): Promise<MediaV2Record | undefined> {
+  private async read(account: Pick<MediaV2Account, 'owner'>, id: string): Promise<MediaV2Record | undefined> {
     let raw: unknown
     try { raw = JSON.parse(await readFile(this.path(account.owner, id), 'utf8')) }
     catch (error) { if (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return undefined; throw error }
@@ -94,6 +121,7 @@ export class MediaV2Client {
       || !['quoting', 'quoted', 'quote-rejected', 'submitting', 'accepted', 'unknown'].includes(String(row.state))) throw new MediaV2Error('operation_unknown', '原操作记录无法完整核对，请勿重新提交。')
     const result: MediaV2Record = { version: 1, owner: account.owner, request,
       state: row.state as MediaV2Record['state'], updated_at: Number(row.updated_at),
+      ...row.origin === undefined ? {} : { origin: planOrigin(row.origin) },
       ...row.quote === undefined ? {} : { quote: parseMediaV2Quote(row.quote) },
       ...row.task === undefined ? {} : { task: parseMediaV2Task(row.task) } }
     if (row.configuration_requotes !== undefined) {
@@ -380,18 +408,24 @@ export class MediaV2Client {
    * @param account - Captured account scope and its credential-owning fetch closure.
    * @param input - Exact user-selected fields or original file bytes.
    * @param signal - Cancellation for this invocation; cancellation never submits another operation.
+   * @param origin - Optional trusted local plan binding, frozen before the first quote and excluded from the wire.
    * @returns The original operation with its free quote or previously accepted task.
    */
-  async quote(account: MediaV2Account, input: unknown, signal: AbortSignal): Promise<MediaV2Record> {
+  async quote(account: MediaV2Account, input: unknown, signal: AbortSignal, origin?: MediaV2PlanOrigin): Promise<MediaV2Record> {
+    const binding = origin === undefined ? undefined : planOrigin(origin)
     let request: MediaV2Request
     try { request = parseMediaV2Request(input) }
     catch { throw new MediaV2Error('invalid_parameters', '参数或参考素材不完整，请保留草稿并补全；尚未提交生成。', 422) }
     return await this.single(account, request.client_operation_id, async () => {
       const previous = await this.read(account, request.client_operation_id)
+      if (previous !== undefined && !isDeepStrictEqual(previous.origin, binding)) {
+        throw new MediaV2Error('operation_conflict', '原操作的创作计划关联已冻结，不能省略、补绑或改绑；请查询原编号。')
+      }
       if (previous !== undefined && !sameOperation(previous.request, request)) {
         throw new MediaV2Error('operation_conflict', '原操作内容、模式或素材已冻结；修改后请明确开始独立新操作。')
       }
-      let record: MediaV2Record = previous ?? { version: 1, owner: account.owner, request, state: 'quoting', updated_at: Date.now() }
+      let record: MediaV2Record = previous ?? { version: 1, owner: account.owner, request, state: 'quoting', updated_at: Date.now(),
+        ...binding === undefined ? {} : { origin: binding } }
       if (previous !== undefined && (previous.state !== 'quote-rejected' || previous.quote !== undefined)) {
         try { record = await this.queryOriginal(account, request.client_operation_id, signal) }
         catch (error) {
@@ -540,11 +574,22 @@ export class MediaV2Client {
     return await this.single(account, id, async () => await this.queryOriginal(account, id, signal))
   }
   /**
+   * Read the private original record without fetching, requoting or changing its journal.
+   * @param account - Only the captured account scope; no credential closure is required.
+   * @param id - Exact original operation UUID.
+   * @returns The local original record, including its immutable plan origin when present.
+   */
+  async record(account: Pick<MediaV2Account, 'owner'>, id: string): Promise<MediaV2Record> {
+    const record = await this.read(account, id)
+    if (record === undefined) throw new MediaV2Error('operation_unknown', '没有找到本机原操作，请保留原编号，不要补建或重发。', 404)
+    return record
+  }
+  /**
    * List this account's original receipts for page/restart recovery without model calls.
    * @param account - Captured account scope and its credential-owning fetch closure.
    * @returns Only this account scope's retained operations, ordered newest first.
    */
-  async records(account: MediaV2Account): Promise<MediaV2Record[]> {
+  async records(account: Pick<MediaV2Account, 'owner'>): Promise<MediaV2Record[]> {
     const directory = join(this.path(account.owner, '00000000-0000-0000-0000-000000000000'), '..')
     let names: string[]
     try { names = await readdir(directory) } catch (error) { if (error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return []; throw error }

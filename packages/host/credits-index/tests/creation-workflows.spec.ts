@@ -8,15 +8,16 @@ import { MINIMAX_H3_PROMPT_GUIDANCE } from '../src/video-prompt-format.ts'
 let ctx: Context | undefined
 afterEach(async () => { await ctx?.fiber.dispose() })
 
-it('publishes directing, reference reconstruction and H3 skills and removes them with their owner', async () => {
+it('publishes four lazy creation skills and removes them with their owner', async () => {
   ctx = new Context()
   await ctx.plugin(SkillRegistry)
   const fiber = ctx.plugin((owner) => { registerCreationWorkflows(owner) })
   await fiber.await()
   const summaries = (await ctx.skills.snapshot()).skills
-  expect(summaries.map(skill => skill.name).toSorted()).toEqual(['yunshu-minimax-h3', 'yunshu-reference-replica', 'yunshu-video-director'])
+  expect(summaries.map(skill => skill.name).toSorted()).toEqual(['yunshu-media-agent', 'yunshu-minimax-h3', 'yunshu-reference-replica', 'yunshu-video-director'])
   for (const summary of summaries) {
     expect(summary).toMatchObject({ source: 'bundled', invocation: { modelInvocable: true, userInvocable: true } })
+    expect(summary).not.toHaveProperty('content')
   }
   const skill = await ctx.skills.get('yunshu-video-director')
   expect(skill?.content).toContain(VIDEO_DIRECTOR_PROMPT)
@@ -35,10 +36,17 @@ it('publishes directing, reference reconstruction and H3 skills and removes them
   expect(replica?.content).toContain('仅分析请求即使已经形成完整方案也不能进入生成')
   expect(replica?.content).toContain('只看抽帧再文生视频不等于动作迁移')
   expect(replica?.content).toContain('不能新建work_key绕开已接受、未知或中断的操作')
+  expect(replica?.content).toContain('plan_id')
+  expect(replica?.content).toContain('native_operations')
+  expect(replica?.content).not.toContain('将它记回原计划brief或对应shot.prompt')
+  const media = await ctx.skills.get('yunshu-media-agent')
+  expect(media?.content).toBeDefined()
+  await expect(`${media?.content}\n`).toMatchFileSnapshot('./expected/media-agent-skill.md')
   await fiber.dispose()
   expect(await ctx.skills.get('yunshu-video-director')).toBeUndefined()
   expect(await ctx.skills.get('yunshu-minimax-h3')).toBeUndefined()
   expect(await ctx.skills.get('yunshu-reference-replica')).toBeUndefined()
+  expect(await ctx.skills.get('yunshu-media-agent')).toBeUndefined()
   expect((await ctx.skills.snapshot()).skills).toEqual([])
 })
 
@@ -48,7 +56,39 @@ it('registers when the shared skill registry becomes available after the credits
   await ctx.plugin(SkillRegistry)
   await fiber.await()
   expect((await ctx.skills.snapshot()).skills.map(skill => skill.name).toSorted())
-    .toEqual(['yunshu-minimax-h3', 'yunshu-reference-replica', 'yunshu-video-director'])
+    .toEqual(['yunshu-media-agent', 'yunshu-minimax-h3', 'yunshu-reference-replica', 'yunshu-video-director'])
+})
+
+it('loads native media orchestration only on demand with real plan links and retained operation recovery', async () => {
+  ctx = new Context()
+  await ctx.plugin(SkillRegistry)
+  await ctx.plugin((owner) => { registerCreationWorkflows(owner) })
+  const summaries = (await ctx.skills.snapshot()).skills
+  const summary = summaries.find(skill => skill.name === 'yunshu-media-agent')
+  expect(summary).toBeDefined()
+  expect(summary?.description).toContain('simple legacy')
+  const content = (await ctx.skills.get('yunshu-media-agent'))?.content
+  expect(content).toBeDefined()
+  for (const tool of ['list_media_models_v2', 'upload_media_asset', 'quote_media_operation', 'generate_media_operation', 'query_media_operation']) {
+    expect(content).toContain(tool)
+  }
+  for (const requirement of ['chat_preferences', 'parameters_schema', 'parameter_conditions', 'asset_fields',
+    'plan_id', 'shot_ids', 'asset_id', 'native_operations', 'client_operation_id', 'retail_cny', 'yunshu-reference-replica']) {
+    expect(content).toContain(requirement)
+  }
+  expect(content).toContain('未指定数量默认一件作品')
+  expect(content).toContain('不把数量再乘一次')
+  expect(content).toContain('仅分析、改提示词或保存计划不授权生成')
+  expect(content).toContain('不代表复用YC网站私有Agent或canvas接口')
+  expect(content).toContain('应用私有V2保存路径不自动成为edit_video可编辑输入')
+  expect(content).toContain('不通过重新收费生成绕过剪辑或访问限制')
+  expect(content).toContain('同一计划的新真人独立作品')
+  expect(content).toContain('legacy项目整体失败但返回clip_paths')
+  expect(content).toContain('V2 partial仍按原完整度门禁，完整前不下载、不报保存完成')
+  expect(content).not.toContain('prepare_video_works')
+  expect(VIDEO_DIRECTOR_PROMPT).not.toContain('yunshu-media-agent')
+  const director = (await ctx.skills.get('yunshu-video-director'))?.content
+  expect(director).toContain('The remaining legacy sections apply only to models admitted by the legacy catalog')
 })
 
 it('keeps native execution fast paths and rejects script fallbacks beyond supported post-production', async () => {
@@ -81,6 +121,11 @@ it('keeps native execution fast paths and rejects script fallbacks beyond suppor
   expect(content).toContain('A missing toggle does not mean a silent model')
   expect(content).toContain('a busy submission without a task id is an unknown outcome, not a confirmed queue position')
   expect(content).toContain('If the user stops, use job_kill')
+  expect(content).toContain('If legacy generate_video_project or job_output reports an overall failure but returns saved clip_paths')
+  expect(content).toContain('present every actually readable saved clip')
+  expect(content).toContain('distinguish completed clips from failed or not-generated parts')
+  expect(content).toContain('Do not blindly resume the whole project or regenerate missing parts to create a delivery.')
+  expect(content).toContain('This legacy partial-clip rule does not apply to V2 batches')
 })
 
 it('gives narrative briefs explicit material responsibilities, executable timing and user-owned exclusions', () => {

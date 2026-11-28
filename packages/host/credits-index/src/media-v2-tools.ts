@@ -1,11 +1,13 @@
 /** Model-facing typed media operations use the same persisted receipts as the creation UI. @module */
 import { createHash } from 'node:crypto'
+import { isDeepStrictEqual } from 'node:util'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { Context } from '@deepseek-ai/cordis'
 import type { JobId, JobOutcome } from '@deepseek-ai/dsh-jobs'
 import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools'
-import { MediaV2Client, MediaV2Error, type MediaV2Account, type MediaV2Record, type MediaV2UploadSource } from './media-v2-client.ts'
+import { MediaV2Client, MediaV2Error, type MediaV2Account, type MediaV2Record, type MediaV2UploadSource, type MediaV2PlanOrigin, type MediaV2PlanTarget } from './media-v2-client.ts'
 import { mediaV2TaskComplete } from './media-v2-protocol.ts'
+import { mediaRequestSelectionOf } from './media-request-selection.ts'
 import { hasCurrentHumanRequest, videoGenerationIntentOf } from './video-generation-intent.ts'
 
 /** Existing account, file authorization and configured polling used by native tools. */
@@ -14,6 +16,8 @@ export interface MediaV2ToolOptions {
   pollIntervalMs: number
   taskTimeoutMs: number
   capture(signal: AbortSignal): Promise<MediaV2Account>
+  /** Validate the exact local plan/target against this captured account, actual chat and workspace. */
+  resolvePlan?(exec: ToolRunContext, planId: string, target: MediaV2PlanTarget, accountOwner: string): Promise<MediaV2PlanOrigin>
   readAsset(path: string, exec: ToolRunContext, maximum: number): Promise<{ filename: string; mime: string } & MediaV2UploadSource>
 }
 declare module '@deepseek-ai/dsh-jobs/view' { interface JobKindMap { 'media-runtime': 'media-runtime' } }
@@ -38,7 +42,8 @@ function result(record: MediaV2Record): Record<string, unknown> {
   const unconfirmedBatch = (record.quote?.batch !== undefined || record.task?.batch !== undefined)
     && record.task?.status === 'succeeded' && !completed
   return { status: unconfirmedBatch ? 'unconfirmed' : record.task?.status ?? record.state, client_operation_id: record.request.client_operation_id,
-    model: record.request.model, intent: record.request.intent, ...record.quote === undefined ? {} : { quote: record.quote },
+    model: record.request.model, intent: record.request.intent,
+    ...record.origin === undefined ? {} : { origin: record.origin }, ...record.quote === undefined ? {} : { quote: record.quote },
     ...record.task === undefined ? {} : { task: record.task },
     ...record.saved === undefined ? {} : { paths: record.saved.map(item => item.path) },
     message: completed ? '原任务已完成，全部产物保留；查询不会重新生成。'
@@ -52,12 +57,44 @@ function result(record: MediaV2Record): Record<string, unknown> {
 export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions): void {
   const lifetime = new AbortController(), producers = new Set<Promise<JobOutcome>>(), active = new Map<string, JobId>()
   ctx.effect(() => async () => { lifetime.abort(); await Promise.allSettled([...producers]) }, 'credits-index: native media background producers')
+  const resolvePlan = async (
+    exec: ToolRunContext, account: MediaV2Account, planId: string, target: MediaV2PlanTarget,
+  ): Promise<MediaV2PlanOrigin> => {
+    if (options.resolvePlan === undefined) throw new MediaV2Error('plan_access_denied', '当前创作计划关联不可用，请保留原计划和操作编号。', 403)
+    let origin: MediaV2PlanOrigin
+    try { origin = await options.resolvePlan(exec, planId, target, account.owner) }
+    catch { throw new MediaV2Error('plan_access_denied', '无法核对当前账号、聊天的创作计划或目标，请先查询原计划。', 403) }
+    const actualTarget = { ...origin.shotIds === undefined ? {} : { shotIds: origin.shotIds },
+      ...origin.assetId === undefined ? {} : { assetId: origin.assetId } }
+    if (origin.planId !== planId || origin.sessionId !== exec.agent?.session.id
+      || origin.workspaceRoot !== exec.agent.session.header.cwd || !isDeepStrictEqual(actualTarget, target)) {
+      throw new MediaV2Error('plan_access_denied', '创作计划与当前聊天或目标不匹配，请保留原操作。', 403)
+    }
+    return { planId, sessionId: origin.sessionId, workspaceRoot: origin.workspaceRoot, ...target }
+  }
+  const validateRecord = async (
+    exec: ToolRunContext, account: MediaV2Account, record: MediaV2Record, admission = false,
+  ): Promise<void> => {
+    const origin = record.origin
+    if (origin === undefined) return
+    if (record.owner !== account.owner || origin.sessionId !== exec.agent?.session.id
+      || origin.workspaceRoot !== exec.agent.session.header.cwd) {
+      throw new MediaV2Error('plan_access_denied', '原媒体操作不属于当前账号、聊天或工作区，不能读取或提交。', 403)
+    }
+    // A plan may change after acceptance. Its original receipt and outputs remain recoverable.
+    if (admission) await resolvePlan(exec, account, origin.planId,
+      { ...origin.shotIds === undefined ? {} : { shotIds: origin.shotIds },
+        ...origin.assetId === undefined ? {} : { assetId: origin.assetId } })
+  }
   const start = async (exec: ToolRunContext, id: string): Promise<Record<string, unknown>> => {
     const jobs = ctx.get('jobs'), agent = exec.agent
     if (jobs === undefined || agent === undefined) throw new MediaV2Error('jobs_unavailable', '后台任务服务未就绪，尚未提交生成。', 503)
     const account = await options.capture(exec.signal), key = `${account.owner}:${id}`
+    const original = await options.client.record(account, id)
+    await validateRecord(exec, account, original, original.state === 'quoted' && original.task === undefined)
     const previous = active.get(key)
-    if (previous !== undefined) return { status: 'background', job_id: previous, client_operation_id: id, message: '原任务已在后台运行，请使用原 job_output，不会重复生成。' }
+    if (previous !== undefined) return { status: 'background', job_id: previous, client_operation_id: id,
+      ...original.origin === undefined ? {} : { origin: original.origin }, message: '原任务已在后台运行，请使用原 job_output，不会重复生成。' }
     const jobId = jobs.start({ kind: 'media-runtime', owner: agent.id, label: '媒体生成与处理', readMode: 'background', backgroundReadConcludesTurn: false,
       run: (job) => {
         const abort = new AbortController()
@@ -65,14 +102,20 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
         const done = (async (): Promise<JobOutcome> => {
           try {
             job.updateProgress('提交原媒体操作')
-            let record = await options.client.submit(account, id, signal)
+            const context = { ...exec, signal }
+            let record = await options.client.record(account, id)
+            const admission = record.state === 'quoted' && record.task === undefined
+            await validateRecord(context, account, record, admission)
+            record = admission ? await options.client.submit(account, id, signal) : await options.client.query(account, id, signal)
             while (record.task?.is_final !== true) {
               job.updateProgress(record.task?.status === 'running' ? '生成或处理中' : '等待原任务结果')
               await delay(options.pollIntervalMs, undefined, { signal })
+              await validateRecord(context, account, record)
               record = await options.client.query(account, id, signal)
             }
             if (mediaV2TaskComplete(record.task, record.quote?.batch)) {
               job.updateProgress(`保存全部 ${record.task.artifacts.length} 项原产物`)
+              await validateRecord(context, account, record)
               record = await options.client.saveArtifacts(account, id, signal)
             }
             return { status: record.task !== undefined && mediaV2TaskComplete(record.task, record.quote?.batch) ? 'completed' : 'failed', result: JSON.stringify(result(record)) }
@@ -88,18 +131,22 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
       } })
     active.set(key, jobId)
     return { status: 'background', job_id: jobId, client_operation_id: id,
+      ...original.origin === undefined ? {} : { origin: original.origin },
       message: '媒体任务已在后台处理，使用原 job_output 查看结果并展示全部返回路径；停止本地等待不会取消上游，不能重复生成。' }
   }
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'list_media_models_v2',
-    description: 'Read executable native image/video/audio generation and processing models, exact operation intents, complete recursive JSON schemas, conditions, asset roles/limits and indicative pricing. This is free. Use this path for motion replication, reference video, lip-sync/avatar, super-resolution, layer decomposition and other native controls not declared by legacy image/video tools. Ordinary mode/quality values remain distinct from text/reference/frames/transform intent. Never discover support through a paid trial. Without model, return a compact overview. Then call again with the exact model ID for its full typed schema and conditions before selecting parameters; preserve nested objects, arrays, ordered frames and declared values exactly, and follow all required/conditional fields; do not put every model schema into chat context. Follow with upload_media_asset for real materials and quote_media_operation for exact product credits.',
+    description: 'Read executable native image/video/audio generation and processing models, exact operation intents, complete recursive JSON schemas, conditions, asset roles/limits and indicative pricing. This is free. For a complex native-media request, load yunshu-media-agent to coordinate the existing tools and retained plan; a simple request needs no extra planning round. Use this path for motion replication, reference video, lip-sync/avatar, super-resolution, layer decomposition and other native controls not declared by legacy image/video tools. Ordinary mode/quality values remain distinct from text/reference/frames/transform intent. Never discover support through a paid trial. Without model, return a compact overview. Then call again with the exact model ID for its full typed schema and conditions before selecting parameters; preserve nested objects, arrays, ordered frames and declared values exactly, and follow all required/conditional fields; do not put every model schema into chat context. Optional chat_preferences contains only this human request’s saved image/video choices. Explicit new user requirements take precedence; saved preferences are candidates, not native-schema validation. Read the exact current model schema and map only its supported fields without forcing unsupported preference parameters. Follow with upload_media_asset for real materials and quote_media_operation for exact product credits.',
     parameters: { kind: { type: 'string', enum: ['image', 'video', 'audio'] }, model: { type: 'string' } }, output,
     async execute(args, exec): Promise<Record<string, unknown>> {
       try { const catalog = await options.client.catalog(await options.capture(exec.signal), exec.signal)
         const models = catalog.models.filter(model => (args.kind === undefined || model.kind === args.kind)
           && (args.model === undefined || model.id === args.model))
         if (args.model !== undefined && models.length === 0) throw new MediaV2Error('model_not_available', '当前账号没有这个型号，请保留所选型号并核对目录。', 404)
+        const snapshot = mediaRequestSelectionOf(exec)
         return { status: 'listed', ...catalog, details_included: args.model !== undefined,
+          ...snapshot === undefined ? {} : { chat_preferences: snapshot.state === 'selected'
+            ? { state: 'selected', image: snapshot.image, video: snapshot.video } : { state: 'unavailable', code: snapshot.code } },
           models: args.model !== undefined ? models : models.map(model => ({ id: model.id, display_name: model.display_name,
             kind: model.kind, model_version: model.model_version, enabled: model.enabled,
             ...model.description === undefined ? {} : { description: model.description },
@@ -128,19 +175,32 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
   })), 'credits-index: V2 original reference tool')
   ctx.effect(() => ctx.tools.register(defineTool({
     name: 'quote_media_operation',
-    description: 'Obtain an exact free native-media quote before generation. Read list_media_models_v2, preserve every selected field and ordered asset ID, and supply the declared intent. Reference/frames/transform with missing materials is rejected; never substitute text. Parameters contain only fields declared by the exact model schema, including nested objects, arrays, null or prompt only when that schema accepts them. Preserve recursive structure, array order and values; do not stringify objects, flatten frames, truncate arrays or invent fields. Check model conditions and material constraints before quoting; an unsupported reference remains a reference error, never text fallback. Asset bindings are separate exact field -> ordered asset_id arrays, including singleton fields. Omit client_operation_id for the first quote: Host assigns one stable operation for this actual human request/model/work_key. Repeated calls recover the original record even with a different tool-call ID. Reuse that ID for quote correction, generation and recovery. work_key identifies a concrete separately requested output, not an attempt counter; native count belongs in parameters. Do not invent another work_key to retry an unknown or accepted task. No generation or wallet reservation occurs here.',
+    description: 'Obtain an exact free native-media quote before generation. Read list_media_models_v2, preserve every selected field and ordered asset ID, and supply the declared intent. Reference/frames/transform with missing materials is rejected; never substitute text. Parameters contain only fields declared by the exact model schema, including nested objects, arrays, null or prompt only when that schema accepts them. Preserve recursive structure, array order and values; do not stringify objects, flatten frames, truncate arrays or invent fields. Check model conditions and material constraints before quoting; an unsupported reference remains a reference error, never text fallback. Asset bindings are separate exact field -> ordered asset_id arrays, including singleton fields. Omit client_operation_id for the first quote: Host assigns one stable operation for this actual human request/model/work_key. Repeated calls recover the original record even with a different tool-call ID. Reuse that ID for quote correction, generation and recovery. work_key identifies a concrete separately requested output, not an attempt counter; native count belongs in parameters. Do not invent another work_key to retry an unknown or accepted task. Optional plan_id plus ordered shot_ids or asset_id binds the local record to the actual owned plan; targets are mutually exclusive. This local binding never enters upstream JSON. Keep the original binding with an explicit operation ID; do not attach an existing unbound operation to a plan. No generation or wallet reservation occurs here.',
     parameters: { model: { type: 'string', required: true }, model_version: { type: 'string', required: true },
       intent: { type: 'string', enum: ['text', 'reference', 'frames', 'transform'], required: true },
       parameters: { type: 'object', properties: {}, additionalProperties: true, required: true },
       assets: { type: 'object', properties: {}, additionalProperties: true, required: true },
-      client_operation_id: { type: 'string' }, work_key: { type: 'string' } }, output,
+      client_operation_id: { type: 'string' }, work_key: { type: 'string' }, plan_id: { type: 'string' },
+      shot_ids: { type: 'array', items: { type: 'string' } }, asset_id: { type: 'string' } }, output,
     async execute(args, exec): Promise<Record<string, unknown>> {
       let id: string | undefined
       try {
         if (!hasCurrentHumanRequest(exec)) throw new MediaV2Error('invalid_request', '本轮没有新的用户创作请求，请查询原任务。', 400)
-        id = args.client_operation_id ?? operationUUID(exec, ['operation', args.model, args.work_key ?? 'primary'])
-        return result(await options.client.quote(await options.capture(exec.signal), { client_operation_id: id, model: args.model,
-          model_version: args.model_version, intent: args.intent, parameters: args.parameters, assets: args.assets }, exec.signal))
+        if (args.plan_id === undefined && (args.shot_ids !== undefined || args.asset_id !== undefined)
+          || args.plan_id !== undefined && args.plan_id.trim() === '' || args.asset_id !== undefined && args.asset_id.trim() === ''
+          || args.shot_ids !== undefined && (args.shot_ids.length < 1 || args.shot_ids.length > 256
+            || args.shot_ids.some(id => id.trim() === '') || new Set(args.shot_ids).size !== args.shot_ids.length)
+          || args.shot_ids !== undefined && args.asset_id !== undefined) {
+          throw new MediaV2Error('invalid_request', '创作计划、镜头或素材目标无效，尚未报价或生成。', 400)
+        }
+        const account = await options.capture(exec.signal)
+        const origin = args.plan_id === undefined ? undefined : await resolvePlan(exec, account, args.plan_id,
+          { ...args.shot_ids === undefined ? {} : { shotIds: args.shot_ids },
+            ...args.asset_id === undefined ? {} : { assetId: args.asset_id } })
+        id = args.client_operation_id ?? operationUUID(exec, ['operation', args.model, args.work_key ?? 'primary',
+          ...origin === undefined ? [] : [JSON.stringify(origin)]])
+        return result(await options.client.quote(account, { client_operation_id: id, model: args.model,
+          model_version: args.model_version, intent: args.intent, parameters: args.parameters, assets: args.assets }, exec.signal, origin))
       } catch (error) { return { ...failure(error), ...id === undefined ? {} : { client_operation_id: id } } }
     },
   })), 'credits-index: V2 exact quote tool')
@@ -162,8 +222,11 @@ export function registerMediaV2Tools(ctx: Context, options: MediaV2ToolOptions):
     async execute(args, exec): Promise<Record<string, unknown>> {
       try {
         const account = await options.capture(exec.signal)
+        const original = await options.client.record(account, args.client_operation_id)
+        await validateRecord(exec, account, original)
         let record = await options.client.query(account, args.client_operation_id, exec.signal)
         if (record.task !== undefined && mediaV2TaskComplete(record.task, record.quote?.batch)) {
+          await validateRecord(exec, account, record)
           record = await options.client.saveArtifacts(account, args.client_operation_id, exec.signal)
         }
         return result(record)

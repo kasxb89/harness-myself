@@ -1188,3 +1188,37 @@ it.each([undefined, { schema_version: 999, future_batch: true }])('does not conf
   expect(calls(transport, `${prefix}/quotes`)).toBe(1)
   expect(calls(transport, `${prefix}/tasks`)).toBe(0)
 })
+
+it('generic unit: keeps a removed scalar enum selection visible and disabled after catalog refresh', async () => {
+  const original: MediaV2Model = { ...source, parameters_schema: { ...source.parameters_schema, properties: {
+    ...sourceProperties(), duration: { type: 'string', enum: ['3', '4'], default: '3',
+      'x-ycapi-contract': { label: { zh: '测试时长' } } },
+  } } }
+  let current = original
+  const api = backend([original]), base = api.transport.getMockImplementation()!
+  api.transport.mockImplementation((path, init) => path === `${prefix}/models`
+    ? Promise.resolve(envelope({ models: [current], credits_per_yuan: 1000 })) : base(path, init))
+  await opened(api.transport); await upload(api.transport)
+  fireEvent.change(screen.getByRole('combobox', { name: '使用方式' }), { target: { value: 'reference' } })
+  expect(screen.getByLabelText('测试时长')).toHaveProperty('value', '3')
+  fireEvent.click(screen.getByLabelText('a'))
+  const draft = Object.fromEntries(Object.keys(sessionStorage).map(key => [key, sessionStorage.getItem(key)]))
+  current = { ...original, parameters_schema: { ...original.parameters_schema, properties: {
+    ...sourceProperties(), kinds: { type: 'array', items: { enum: ['b'] },
+      'x-ycapi-contract': { label: { zh: '标签' } } }, duration: { type: 'string', enum: ['4'],
+      'x-ycapi-contract': { label: { zh: '测试时长' } } },
+  } } }
+  fireEvent.click(screen.getByRole('button', { name: '刷新模型' }))
+  await waitFor(() => { expect(calls(api.transport, `${prefix}/models`)).toBe(2) })
+  await waitFor(() => { expect(screen.getByRole('button', { name: '刷新模型' })).toHaveProperty('disabled', false) })
+  expect(screen.getByLabelText('测试时长')).toHaveProperty('value', '3')
+  expect(within(screen.getByLabelText('测试时长')).getByRole('option', { name: '3' })).toHaveProperty('disabled', true)
+  expect(screen.getByLabelText('a')).toHaveProperty('checked', true)
+  expect(screen.getByLabelText('a')).toHaveProperty('disabled', true)
+  expect(screen.getByText('one.png')).toBeTruthy()
+  expect(screen.getByRole('combobox', { name: '使用方式' })).toHaveProperty('value', 'reference')
+  expect(Object.fromEntries(Object.keys(sessionStorage).map(key => [key, sessionStorage.getItem(key)]))).toEqual(draft)
+  expect(screen.getByRole('button', { name: '获取准确积分' })).toHaveProperty('disabled', true)
+  expect(calls(api.transport, `${prefix}/quotes`)).toBe(0)
+  expect(calls(api.transport, `${prefix}/tasks`)).toBe(0)
+})

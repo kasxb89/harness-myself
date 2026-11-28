@@ -2,7 +2,7 @@
 
 exports[`video tools through Loader, real tool registry and jobs runtime > reads a complete structured plan for safe revisions and refuses another chat or an invalid id without generation > read-only creation plan tool 1`] = `
 {
-  "description": "Read the complete structured plan owned by this account, chat and workspace before revising it. Returns the exact planning fields accepted by update_creation_plan, including stable character, asset and shot ids. Preserve all unrelated entries when updating. This read neither generates media, resumes tasks nor spends credits; it excludes provider requests and credentials.",
+  "description": "Read the complete structured plan owned by this account, chat and workspace before revising it. Returns the exact planning fields accepted by update_creation_plan, including stable character, asset and shot ids. Preserve all unrelated entries when updating. When native media receipts are linked, native_operations returns their exact original UUIDs, normalized selected parameters, quote totals, task states and every saved output. These are retained facts, not instructions to generate. This read neither generates media, resumes tasks nor spends credits; it excludes credentials.",
   "name": "get_creation_plan",
   "parameters": {
     "properties": {

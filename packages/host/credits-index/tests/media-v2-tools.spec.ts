@@ -4,19 +4,23 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { afterEach, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
+import { brandString } from '@deepseek-ai/dsh-brand'
+import type { SessionRequestId } from '@deepseek-ai/dsh-api-session-controller/types'
 import AgentRegistry, { type Agent } from '@deepseek-ai/dsh-agent'
 import Tools from '@deepseek-ai/dsh-tools'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import SessionProjections from '@deepseek-ai/dsh-session-projection'
-import { Session, SessionId } from '@deepseek-ai/dsh-session'
+import { Session, SessionId, SESSION_FORMAT_VERSION } from '@deepseek-ai/dsh-session'
 import { createUserMessage, ToolCallId } from '@deepseek-ai/dsh-llm'
 import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
 import { JobId } from '@deepseek-ai/dsh-jobs'
 import * as ToolJobs from '@deepseek-ai/dsh-tool-jobs'
-import { MediaV2Client } from '../src/media-v2-client.ts'
+import { MediaV2Client, MediaV2Error } from '../src/media-v2-client.ts'
 import { mediaV2Object } from '../src/media-v2-protocol.ts'
 import { registerMediaV2Tools } from '../src/media-v2-tools.ts'
 import { registerVideoGenerationIntent } from '../src/video-generation-intent.ts'
+import { mediaRequestSelectionProjection } from '../src/media-request-selection.ts'
+import type { MediaRequestSelection } from '../src/media-preferences-types.ts'
 
 const cleanups: (() => Promise<void>)[] = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup() })
@@ -155,4 +159,223 @@ it.each(['legacy', 'native-batch', 'missing-task-batch'] as const)('runs the rea
   const notice = mediaV2Object(JSON.parse(await call('generate_media_operation', { client_operation_id: id }, 2)))
   expect(notice.code).toBe('invalid_request')
   expect(submissions).toBe(1)
+})
+
+
+async function planToolFixture() {
+  const directory = await mkdtemp(join(tmpdir(), 'media-v2-plan-tools-')), ctx = new Context()
+  cleanups.push(async () => { await rm(directory, { recursive: true, force: true }) })
+  cleanups.push(async () => { await ctx.fiber.dispose() })
+  await ctx.plugin(SystemPrompt); await ctx.plugin(Tools); await ctx.plugin(SessionProjections)
+  await ctx.plugin(AgentRegistry); await ctx.plugin(LocalJobRegistry); await ctx.plugin(ToolJobs)
+  const makeAgent = async (name: string) => {
+    const id = SessionId(name), session = Session.create(id, [], { version: SESSION_FORMAT_VERSION, id, createdAt: 0,
+      isSeeded: false, cwd: directory })
+    const agent: Agent = { id, ctx, session, options: {}, status: 'running',
+      inbox: { nextTurn: [], nextStep: [], clear: vi.fn(), append: vi.fn(), prepend: vi.fn(),
+        replace: () => false, remove: () => false, splice: () => [] },
+      send: vi.fn(), steer: vi.fn(), followup: vi.fn(), inject: vi.fn(), cancel: vi.fn(), whenIdle: async () => {},
+      runMaintenance: async work => await work(new AbortController().signal) }
+    await ctx.agents.register(agent)
+    session.append('turn/start', { turn: 1 })
+    session.append('user/message', createUserMessage({ source: { kind: 'user' },
+      content: [{ type: 'text', text: '按计划完成两份独立作品' }] }), { surfaceOp: 'append' })
+    return agent
+  }
+  const agent = await makeAgent('original-plan-chat'), otherAgent = await makeAgent('other-plan-chat')
+  const requests = new Map<string, Record<string, unknown>>(), calls: { method: string; path: string; body?: unknown }[] = []
+  let currentOwner = 'original-account', allowPlan = true, loseSubmit = false, turn = 1
+  const account = { owner: currentOwner, fetch: async (path: string, init: RequestInit) => {
+    const body: unknown = typeof init.body === 'string' ? JSON.parse(init.body) : undefined
+    calls.push({ method: init.method ?? 'GET', path, ...body === undefined ? {} : { body } })
+    const makeQuote = (request: Record<string, unknown>) => ({ ...request, quote_id: 'quote-' + String(request.client_operation_id),
+      request_sha256: 'a'.repeat(64), retail_cny: '0.30', expires_at: Math.floor(Date.now() / 1000) + 600, operation_state: 'quoted' })
+    const makeTask = (id: string) => ({ id: 'task-' + id, model: 'model-original', kind: 'image', status: 'succeeded', is_final: true,
+      created_at: 1, updated_at: 2, artifacts: ['first', 'second'].map((key, order) => ({ key, order, type: 'image', mime_type: 'image/gif', content_url: `/v1/tasks/task-${id}/artifacts/${key}/content` })) })
+    let data: unknown
+    if (path.endsWith('/models')) data = { capabilities: { media_generation_v2: true, quote_required: true,
+      durable_operation_receipt: true, all_artifacts: true }, models: [] }
+    else if (path.endsWith('/quotes')) {
+      const request = mediaV2Object(body); requests.set(String(request.client_operation_id), request); data = makeQuote(request)
+    } else if (path.endsWith('/tasks')) {
+      if (loseSubmit) { loseSubmit = false; throw new Error('Lost reply after original acceptance') }
+      data = { task: makeTask(String(mediaV2Object(body).client_operation_id)), replayed: false }
+    }
+    else if (path.includes('/operations/')) {
+      const id = path.split('/').at(-1)!, request = requests.get(id)
+      if (request === undefined) throw new Error('Missing original request')
+      data = { client_operation_id: id, quote_id: 'quote-' + id, state: 'accepted', task: makeTask(id) }
+    } else if (path.includes('/artifacts/')) return new Response('GIF89a exact synthetic original', { headers: { 'content-type': 'image/gif' } })
+    else if (path.includes('/tasks/task-')) data = { task: makeTask(path.split('/').at(-1)!.slice(5)) }
+    else throw new Error('Unexpected synthetic path ' + path)
+    return new Response(JSON.stringify({ success: true, data }))
+  } }
+  const client = new MediaV2Client({ baseUrl: 'http://synthetic.invalid', directory, timeoutMs: 1000, creditsPerYuan: 1000,
+    output: async () => ({ write: async (filename, bytes) => {
+      const path = join(directory, filename); await writeFile(path, bytes); return { path }
+    },
+    publish: async () => { throw new Error('Unused') } }) })
+  await ctx.plugin((scope: Context) => {
+    registerVideoGenerationIntent(scope)
+    scope.inject(['tools', 'jobs'], (owner) => { registerMediaV2Tools(owner, { client, pollIntervalMs: 1, taskTimeoutMs: 2000,
+      capture: async () => ({ ...account, owner: currentOwner }), readAsset: async () => { throw new Error('No upload permitted') },
+      resolvePlan: async (exec, planId, target, accountOwner) => {
+        if (!allowPlan || accountOwner !== currentOwner || exec.agent?.id !== agent.id || planId !== 'plan-original'
+          || target.shotIds?.some(id => !['shot-1', 'shot-2'].includes(id)) || target.assetId !== undefined && target.assetId !== 'asset-1') {
+          throw new MediaV2Error('plan_access_denied', 'Cannot use this plan in the current scope', 403)
+        }
+        return { planId, sessionId: agent.id, workspaceRoot: directory, ...target }
+      } }) })
+  })
+  let callCount = 0
+  const call = async (name: string, args: Record<string, unknown>, caller = agent) => {
+    const callId = ToolCallId('plan-call-' + String(++callCount))
+    caller.session.append('tool/call', { turn, step: 1, callId, name, arguments: JSON.stringify(args) })
+    const response = await ctx.tools.execute({ name, arguments: args, callId, agent: caller, signal: new AbortController().signal })
+    return mediaV2Object(JSON.parse(response.content.filter(part => part.type === 'text').map(part => part.text).join('')))
+  }
+  const input = { model: 'model-original', model_version: 'v1', intent: 'text', parameters: { prompt: 'Original exact plan work' }, assets: {} }
+  return { ctx, agent, otherAgent, directory, calls, client, account, input, call,
+    denyPlan: () => { allowPlan = false }, changeAccount: () => { currentOwner = 'changed-account' },
+    workspaceAgent: (): Agent => ({ ...agent, session: Session.create(agent.id, agent.session.snapshotEvents(),
+      { ...agent.session.header, cwd: join(directory, 'another-workspace') }) }),
+    loseNextSubmit: () => { loseSubmit = true },
+    nextHuman: () => {
+      agent.session.append('turn/end', { turn, reason: { kind: 'completed' } }); turn += 1
+      agent.session.append('turn/start', { turn })
+      agent.session.append('user/message', createUserMessage({ source: { kind: 'user' },
+        content: [{ type: 'text', text: '在同一个计划中再制作一份新的独立作品' }] }), { surfaceOp: 'append' })
+    } }
+}
+
+it('binds separate shot operations and returns the original plan and every saved output without a retry', async () => {
+  const f = await planToolFixture()
+  const one = await f.call('quote_media_operation', { ...f.input, plan_id: 'plan-original', shot_ids: ['shot-1'] })
+  const two = await f.call('quote_media_operation', { ...f.input, plan_id: 'plan-original', shot_ids: ['shot-2'] })
+  expect(one.origin).toEqual({ planId: 'plan-original', sessionId: f.agent.id, workspaceRoot: f.directory, shotIds: ['shot-1'] })
+  expect(two.client_operation_id).not.toBe(one.client_operation_id)
+  expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(2)
+  const same = await f.call('quote_media_operation', { ...f.input, plan_id: 'plan-original', shot_ids: ['shot-1'] })
+  expect(same.client_operation_id).toBe(one.client_operation_id)
+  expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(2)
+  const recovered = await f.call('query_media_operation', { client_operation_id: one.client_operation_id })
+  expect(recovered.origin).toEqual(one.origin)
+  expect(recovered.paths).toHaveLength(2)
+  const retained = (await f.client.records({ owner: f.account.owner }))
+    .find(item => item.request.client_operation_id === one.client_operation_id)
+  expect(retained?.saved).toHaveLength(2)
+  expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(2)
+  expect(JSON.stringify(f.calls)).not.toContain('plan_id')
+  expect(JSON.stringify(f.calls)).not.toContain('planId')
+})
+
+it.each([{ shot_ids: ['shot-1'] }, { plan_id: 'plan-original', shot_ids: [], asset_id: 'asset-1' },
+  { plan_id: 'plan-original', shot_ids: ['shot-1', 'shot-1'] }, { plan_id: 'plan-original', shot_ids: ['missing-shot'] },
+  { plan_id: 'missing-plan', asset_id: 'asset-1' }])('rejects invalid or unowned target before a quote POST: %j', async (target) => {
+  const f = await planToolFixture()
+  const result = await f.call('quote_media_operation', { ...f.input, ...target })
+  expect(result.status).toBe('unconfirmed')
+  expect(f.calls).toEqual([])
+  expect(await f.client.records(f.account)).toEqual([])
+})
+
+it.each(['chat', 'account', 'workspace'] as const)('prevents a linked query and generation from changed %s scope before any I/O', async (scope) => {
+  const f = await planToolFixture()
+  const original = await f.call('quote_media_operation', { ...f.input, plan_id: 'plan-original', asset_id: 'asset-1' })
+  if (scope === 'account') f.changeAccount()
+  const before = f.calls.length, caller = scope === 'chat' ? f.otherAgent : scope === 'workspace' ? f.workspaceAgent() : f.agent
+  for (const name of ['generate_media_operation', 'query_media_operation']) {
+    const rejected = await f.call(name, { client_operation_id: original.client_operation_id }, caller)
+    expect(rejected.status).toBe('unconfirmed')
+  }
+  expect(f.calls).toHaveLength(before)
+  expect((await f.client.records(f.account))[0]?.origin).toEqual(original.origin)
+})
+
+
+it('retains plan-level ownership while distinct work keys and later human requests remain independent', async () => {
+  const f = await planToolFixture(), target = { plan_id: 'plan-original' }
+  const first = await f.call('quote_media_operation', { ...f.input, ...target })
+  const second = await f.call('quote_media_operation', { ...f.input, ...target, work_key: 'separate-original-work' })
+  f.nextHuman()
+  const third = await f.call('quote_media_operation', { ...f.input, ...target })
+  expect(new Set([first.client_operation_id, second.client_operation_id, third.client_operation_id]).size).toBe(3)
+  expect([first, second, third].map(row => row.origin)).toEqual(Array.from({ length: 3 }, () => ({
+    planId: 'plan-original', sessionId: f.agent.id, workspaceRoot: f.directory,
+  })))
+  expect(f.calls.filter(call => call.method === 'POST')).toHaveLength(3)
+})
+
+it('validates the bound asset before one background submit and retains all saved paths for original queries', async () => {
+  const f = await planToolFixture()
+  const quoted = await f.call('quote_media_operation', { ...f.input, plan_id: 'plan-original', asset_id: 'asset-1' })
+  const started = await f.call('generate_media_operation', { client_operation_id: quoted.client_operation_id })
+  expect(started, JSON.stringify(started)).toMatchObject({ status: 'background' })
+  expect(started.origin).toEqual(quoted.origin)
+  const completed = await f.ctx.jobs.wait(JobId(String(started.job_id)), 2000, f.agent.id)
+  expect(completed.status).toBe('completed')
+  const actual = mediaV2Object(JSON.parse(f.ctx.jobs.read(JobId(String(started.job_id)), f.agent.id).result ?? '{}'))
+  expect(actual.origin).toEqual(quoted.origin)
+  expect(actual.paths).toHaveLength(2)
+  const recovered = await f.call('query_media_operation', { client_operation_id: quoted.client_operation_id })
+  expect(recovered.paths).toEqual(actual.paths)
+  expect(f.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+})
+
+
+it.each(['selected', 'unavailable'] as const)('returns only safe %s personal media choices from the exact real-human session projection', async (state) => {
+  const f = await planToolFixture()
+  await f.ctx.plugin((scope: Context) => {
+    scope.inject(['sessionProjections'], (owner) => { owner.effect(() => owner.sessionProjections.register(mediaRequestSelectionProjection)) })
+  })
+  const legacy = await f.call('list_media_models_v2', {})
+  expect(legacy.chat_preferences).toBeUndefined()
+  const requestId = brandString<SessionRequestId>('preferences-original-rpc')
+  const snapshot: MediaRequestSelection = state === 'selected'
+    ? { schema_version: 1, requestId, state, scope: 'private-scope-not-for-model', revision: 'private-revision-not-for-model',
+      image: { model: 'image-user-selected', parameters: { size: '16:9', quality: 'high', seed: 7 } },
+      video: { model: 'MiniMax-H3', parameters: { resolution: '768P', seconds: 15, audio: false } } }
+    : { schema_version: 1, requestId, state, code: 'ACCOUNT_CHANGED' }
+  f.agent.session.append('media/request-selection', snapshot)
+  f.agent.session.append('user/message', createUserMessage({ source: { kind: 'user', rpcId: requestId },
+    content: [{ type: 'text', text: '保留我的偏好，先查看可用型号，不要生成' }] }), { surfaceOp: 'append' })
+  const listed = await f.call('list_media_models_v2', {})
+  expect(listed.chat_preferences).toEqual(snapshot.state === 'selected'
+    ? { state: 'selected', image: snapshot.image, video: snapshot.video } : { state: 'unavailable', code: snapshot.code })
+  expect(JSON.stringify(listed)).not.toContain('private-scope-not-for-model')
+  expect(JSON.stringify(listed)).not.toContain('private-revision-not-for-model')
+  expect(JSON.stringify(listed.chat_preferences)).not.toContain('requestId')
+  expect(f.calls.map(call => [call.method, call.path])).toEqual([['GET', '/v1/media-v2/models'], ['GET', '/v1/media-v2/models']])
+})
+
+
+it('recovers accepted and unknown original outputs after a plan target is removed, while a new paid submission stays blocked', async () => {
+  const fresh = await planToolFixture()
+  const quoted = await fresh.call('quote_media_operation', { ...fresh.input, plan_id: 'plan-original', shot_ids: ['shot-1'] })
+  fresh.denyPlan()
+  expect((await fresh.call('generate_media_operation', { client_operation_id: quoted.client_operation_id })).status).toBe('unconfirmed')
+  expect(fresh.calls.some(call => call.path.endsWith('/tasks') && call.method === 'POST')).toBe(false)
+  for (const state of ['accepted', 'unknown'] as const) {
+    const f = await planToolFixture()
+    const original = await f.call('quote_media_operation', { ...f.input, plan_id: 'plan-original', shot_ids: ['shot-1'] })
+    const id = String(original.client_operation_id)
+    if (state === 'unknown') {
+      f.loseNextSubmit()
+      await expect(f.client.submit(f.account, id, new AbortController().signal)).rejects.toThrow('Lost reply')
+    } else await f.client.submit(f.account, id, new AbortController().signal)
+    expect((await f.client.record(f.account, id)).state).toBe(state)
+    f.denyPlan()
+    const recovered = await f.call('query_media_operation', { client_operation_id: id })
+    expect(recovered.status).toBe('succeeded')
+    expect(recovered.origin).toEqual(original.origin)
+    expect(recovered.paths).toHaveLength(2)
+    const background = await f.call('generate_media_operation', { client_operation_id: id })
+    expect(background.status).toBe('background')
+    const jobId = JobId(String(background.job_id))
+    expect((await f.ctx.jobs.wait(jobId, 2000, f.agent.id)).status).toBe('completed')
+    expect(mediaV2Object(JSON.parse(f.ctx.jobs.read(jobId, f.agent.id).result ?? '{}')).paths).toEqual(recovered.paths)
+    expect(f.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+    expect(f.calls.filter(call => call.path.endsWith('/quotes') && call.method === 'POST')).toHaveLength(1)
+    expect((await f.client.record(f.account, id)).origin).toEqual(original.origin)
+  }
 })

@@ -17,7 +17,7 @@ const digest = (bytes: Buffer): string => createHash('sha256').update(bytes).dig
 const model = { id: 'synthetic-conditional-source', display_name: 'Synthetic source modes', kind: 'video', enabled: true,
   model_version: 'synthetic-v1', parameters_schema: { type: 'object', properties: {
     prompt: { type: 'string' }, mode: { type: 'string', enum: ['reference', 'first-frame'], default: 'reference' },
-    images: { type: 'array' },
+    images: { type: 'array' }, duration: { type: 'string', enum: ['3', '4'], default: '3' },
   } }, asset_fields: [{ name: 'images', media_kind: 'image', native_shape: 'multiple', min_items: 0, max_items: 4,
     mime_types: ['image/png'], constraints: { max_bytes: 1048576 } }],
   intents: [{ id: 'reference', label: 'Reference generation', requires_assets: true }],
@@ -32,12 +32,13 @@ function object(value: unknown): Record<string, unknown> {
 function request(value: unknown): MediaV2Request {
   const row = object(value), parameters = object(row.parameters), assets = object(row.assets)
   if (typeof row.client_operation_id !== 'string' || row.model !== model.id || row.model_version !== model.model_version
-    || row.intent !== 'reference' || parameters.prompt !== 'Retain my exact source and draft' || parameters.mode !== 'first-frame'
+    || row.intent !== 'reference' || parameters.prompt !== 'Retain my exact source and draft' || parameters.mode !== 'first-frame' || parameters.duration !== '3'
     || !Array.isArray(assets.images) || assets.images.length !== 1 || assets.images[0] !== 'synthetic-original-upload') {
     throw new Error('Unexpected synthetic quotation or lost material')
   }
   return { client_operation_id: row.client_operation_id, model: row.model, model_version: row.model_version,
-    intent: row.intent, parameters: { prompt: parameters.prompt, mode: parameters.mode }, assets: { images: [assets.images[0]] } }
+    intent: row.intent, parameters: { prompt: parameters.prompt, mode: parameters.mode, duration: parameters.duration },
+    assets: { images: [assets.images[0]] } }
 }
 
 it('blocks material rules, starts a separate work without resubmitting an accepted task, and recovers originals under unknown rules', async () => {
@@ -49,7 +50,8 @@ it('blocks material rules, starts a separate work without resubmitting an accept
   const sentinelCalls: string[] = [], external: string[] = [], unexpected: string[] = [], submissions: string[] = []
   const queries: string[] = [], quotes: MediaV2Request[] = [], uploads: { sha256: string; bytes: number; id: string }[] = []
   const newOperations = new Map<string, MediaV2Record>()
-  let schemaVersion = 1
+  let schemaVersion = 1, durationRetired = false
+  let retainedOptionDiagnostic: Record<string, unknown> | null = null
   const originalRequest: MediaV2Request = { client_operation_id: originalId, model: model.id, model_version: 'old-v0',
     intent: 'reference', parameters: { mode: 'reference', count: 2 }, assets: { videos: ['original-video-a', 'original-video-b'] } }
   const frozenOriginal = JSON.stringify(originalRequest)
@@ -70,7 +72,8 @@ it('blocks material rules, starts a separate work without resubmitting an accept
         await cleanup.page.screenshot({ path: join(evidence, 'failure.png'), fullPage: true, animations: 'disabled' })
         await writeFile(join(evidence, 'failure-aria.txt'), await cleanup.page.locator('body').ariaSnapshot())
       }
-      await writeFile(join(evidence, 'final-observed.json'), JSON.stringify({ schemaVersion, uploads, quotes, queries,
+      await writeFile(join(evidence, 'final-observed.json'), JSON.stringify({ schemaVersion, durationRetired,
+        retainedOptionDiagnostic, uploads, quotes, queries,
         submissions, newOperations: [...newOperations.values()], external, unexpected, sentinelCalls, originalRequest }, null, 2) + '\n')
     } finally {
       try { await cleanup.browser?.close() } finally {
@@ -111,7 +114,9 @@ it('blocks material rules, starts a separate work without resubmitting an accept
       json: { ok: true, payload, account: { id: account }, accountOwner: owner } })
     if (url.pathname === `${prefix}/models` && method === 'GET') {
       await mediaReply({ capabilities: { material_conditions_v1: true, max_upload_bytes: 1048576 },
-        models: [{ ...model, conditions: { ...materialConditions, schema_version: schemaVersion } }], credits_per_yuan: 1000 }); return
+        models: [{ ...model, parameters_schema: { ...model.parameters_schema, properties: { ...model.parameters_schema.properties,
+          duration: durationRetired ? { type: 'string', enum: ['4'] } : model.parameters_schema.properties.duration } },
+        conditions: { ...materialConditions, schema_version: schemaVersion } }], credits_per_yuan: 1000 }); return
     }
     if (url.pathname === `${prefix}/operations` && method === 'GET') {
       await mediaReply({ operations: [original, ...newOperations.values()] }); return
@@ -239,6 +244,28 @@ it('blocks material rules, starts a separate work without resubmitting an accept
   expect(submissions.map(value => object(JSON.parse(value)))).toEqual([{ client_operation_id: quotedId }])
   const separatePath = join(evidence, 'separate-work-retains-original.png')
   await page.screenshot({ path: separatePath, fullPage: true, animations: 'disabled' }); screenshots.push(separatePath)
+  durationRetired = true
+  await composer.getByRole('button', { name: 'Refresh models', exact: true }).click()
+  const retainedDuration = composer.getByRole('combobox', { name: 'duration', exact: true })
+  const retainedOption = retainedDuration.getByRole('option', { name: '3', exact: true })
+  // Playwright follows the wrapping label to SELECT for isDisabled; inspect the OPTION's own native state.
+  await expect.poll(() => retainedOption.evaluate(element => element instanceof HTMLOptionElement && element.disabled)).toBe(true)
+  await expect.poll(() => composer.getByRole('button', { name: 'Refresh models', exact: true }).isEnabled()).toBe(true)
+  expect(await retainedDuration.inputValue()).toBe('3')
+  expect(await retainedOption.getAttribute('disabled')).not.toBeNull()
+  retainedOptionDiagnostic = { ...await retainedOption.evaluate(element => ({ tag: element.tagName,
+    nativeDisabled: element instanceof HTMLOptionElement && element.disabled,
+    nativeSelected: element instanceof HTMLOptionElement && element.selected, disabledAttribute: element.getAttribute('disabled'),
+    cssDisabled: element.matches(':disabled'), selectDisabled: element.closest('select')?.disabled,
+    labelControlTag: element.closest('label')?.control?.tagName, outerHTML: element.outerHTML,
+    selectOuterHTML: element.closest('select')?.outerHTML })), playwrightLocatorIsDisabled: await retainedOption.isDisabled() }
+  expect(retainedOptionDiagnostic).toMatchObject({ tag: 'OPTION', nativeDisabled: true,
+    nativeSelected: true, cssDisabled: true, selectDisabled: false, labelControlTag: 'SELECT' })
+  expect(await composer.getByRole('button', { name: 'Get exact credits', exact: true }).isDisabled()).toBe(true)
+  expect(await composer.getByText('original.png', { exact: true }).count()).toBe(1)
+  expect(quotes).toHaveLength(2); expect(submissions).toHaveLength(1); expect(uploads).toHaveLength(1)
+  const retainedPath = join(evidence, 'removed-option-retains-draft.png')
+  await page.screenshot({ path: retainedPath, fullPage: true, animations: 'disabled' }); screenshots.push(retainedPath)
   schemaVersion = 999
   await composer.getByRole('button', { name: 'Refresh models', exact: true }).click()
   await composer.getByText('This parameter rule requires a newer client. Quoting is blocked.', { exact: true }).waitFor({ state: 'visible' })
@@ -262,6 +289,7 @@ it('blocks material rules, starts a separate work without resubmitting an accept
   await page.screenshot({ path: finalPath, fullPage: true, animations: 'disabled' }); screenshots.push(finalPath)
   await writeFile(join(evidence, 'result.json'), JSON.stringify({ status: 'passed',
     mode: 'real built UI, synthetic local transport only, no provider or production qualification',
+    durationRetired, retainedOptionDiagnostic,
     uploads, quotes, queries, quotedId, separateId, newOperations: [...newOperations.values()], originalRequest: original.request,
     originalRequestUnchanged: JSON.stringify(original.request) === frozenOriginal,
     submissions, external, unexpected, sentinelCalls, screenshots, console: tripwire }, null, 2) + '\n')

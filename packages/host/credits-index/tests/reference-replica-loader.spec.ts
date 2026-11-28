@@ -28,8 +28,8 @@ import { deriveReplayScript, parseSessionLog } from '@deepseek-ai/dsh-llm-replay
 import { normalizeSessionLog, normalizeSessionSnapshot } from '@deepseek-ai/dsh-session-snapshot'
 import { eventLines, toHeaderLine } from '@deepseek-ai/dsh-session-persistence-jsonl/src/format.ts'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
-import { CreativeStore } from '../src/creative-store.ts'
-import { registerCreativeTools } from '../src/creative-tools.ts'
+import { CreativeError, CreativeStore } from '../src/creative-store.ts'
+import { creativeOwner, registerCreativeTools } from '../src/creative-tools.ts'
 import { registerVideoProjectTools } from '../src/video-project-tools.ts'
 import { registerCreationWorkflows } from '../src/creation-workflows.ts'
 import type { VideoEditor } from '../src/video-edit.ts'
@@ -103,12 +103,14 @@ async function boot(script: ConstructorParameters<typeof MockAdapter>[0]) {
     video: async () => { throw new Error('This reference/V2 scenario has no legacy video project') } })
   let supplierCalls = 0
   const calls: { path: string; method: string; body?: Record<string, unknown> }[] = []
+  const journalBeforeQuote: unknown[] = []
+  let nativeReadFailure = false, submitted = false
   let quote: Record<string, unknown> | undefined
   const task = { id: 'synthetic-original-task', model: nativeModel.id, kind: 'video', status: 'succeeded',
     is_final: true, created_at: 1, updated_at: 2, artifacts: [{ key: 'final', order: 0, type: 'video', mime_type: 'video/mp4',
       content_url: '/v1/tasks/synthetic-original-task/artifacts/final/content' }] }
   const outputBytes = Buffer.from('0000ftypisom synthetic original output')
-  const account: MediaV2Account = { owner: identity.accountId, async fetch(path, init) {
+  const account: MediaV2Account = { owner: `${identity.accountId}:${identity.sessionFingerprint}`, async fetch(path, init) {
     const body = typeof init.body === 'string' ? mediaV2Object(JSON.parse(init.body)) : undefined
     calls.push({ path, method: init.method ?? 'GET', ...body === undefined ? {} : { body } })
     let data: unknown
@@ -123,14 +125,18 @@ async function boot(script: ConstructorParameters<typeof MockAdapter>[0]) {
         sha256: createHash('sha256').update(bytes).digest('hex'), expires_at: 2000000000 }
     } else if (path.endsWith('/quotes')) {
       if (body === undefined) throw new Error('Expected exact original quote')
+      journalBeforeQuote.push(await client.record(account, String(body.client_operation_id)))
       quote = { ...body, quote_id: 'synthetic-original-quote', request_sha256: 'a'.repeat(64), retail_cny: '0.20',
         expires_at: 2000000000, operation_state: 'quoted' }
       data = quote
     } else if (path.endsWith('/tasks') && init.method === 'POST') {
+      submitted = true
       throw new Error('Synthetic lost acknowledgement after possible acceptance')
     } else if (path.includes('/operations/')) {
       if (quote === undefined) throw new Error('No original quote')
-      data = { client_operation_id: quote.client_operation_id, quote_id: quote.quote_id, state: 'accepted', task }
+      data = submitted
+        ? { client_operation_id: quote.client_operation_id, quote_id: quote.quote_id, state: 'accepted', task }
+        : { client_operation_id: quote.client_operation_id, quote_id: quote.quote_id, state: 'quoted', quote }
     } else if (path.endsWith('/tasks/synthetic-original-task')) data = { task }
     else if (path.endsWith('/artifacts/final/content')) return new Response(outputBytes, { headers: { 'content-type': 'video/mp4' } })
     else throw new Error(`Unexpected synthetic request ${path}`)
@@ -143,11 +149,24 @@ async function boot(script: ConstructorParameters<typeof MockAdapter>[0]) {
   const Fixture = { name: 'reference-fixture', inject: ['llm', 'tools'], apply(owner: Context) {
     owner.effect(() => owner.llm.registerAdapter(['fixture'], adapter))
     registerCreationWorkflows(owner)
-    registerCreativeTools(owner, creative, async () => identity)
+    registerCreativeTools(owner, creative, async () => identity, async (planOwner, planId) => {
+      if (nativeReadFailure) throw new Error('Synthetic local receipt storage unavailable')
+      return (await client.records(account)).filter(record => record.origin?.planId === planId
+        && record.origin.sessionId === planOwner.sessionId && record.origin.workspaceRoot === planOwner.workspaceRoot)
+    })
     registerVideoProjectTools(owner, { stateDirectory: join(directory, 'private'), outputDirectory: 'artifacts',
       maxTotalSeconds: 300, maxSegments: 32, pollIntervalMs: 1000, taskTimeoutMs: 1000, editor: () => preview,
       acquireProvider: async () => { supplierCalls++; throw new Error('Analysis cannot call a supplier') } })
     registerMediaV2Tools(owner, { client, pollIntervalMs: 1, taskTimeoutMs: 1000, capture: async () => account,
+      resolvePlan: async (exec, planId, target, accountOwner) => {
+        if (accountOwner !== `${identity.accountId}:${identity.sessionFingerprint}`) throw new Error('Unexpected captured account')
+        const caller = creativeOwner(exec, identity), saved = await creative.plan(caller, planId)
+        if (target.shotIds?.some(id => !saved.shots.some(shot => shot.id === id))
+          || target.assetId !== undefined && !saved.assets.some(asset => asset.id === target.assetId)) {
+          throw new CreativeError('CREATIVE_SHOT_MISMATCH', 400, '素材或镜头不属于此计划。')
+        }
+        return { planId, sessionId: caller.sessionId, workspaceRoot: caller.workspaceRoot, ...target }
+      },
       readAsset: async (path) => {
         if (!['product.png', 'reference.mp4'].includes(path)) throw new Error('Only the selected synthetic workspace references are authorized')
         return { filename: path, mime: path.endsWith('.png') ? 'image/png' : 'video/mp4', bytes: await readFile(join(workspace, path)) }
@@ -187,7 +206,8 @@ async function boot(script: ConstructorParameters<typeof MockAdapter>[0]) {
     if (text?.type !== 'text') throw new Error(`Expected result ${id}`)
     return mediaV2Object(JSON.parse(text.text))
   }
-  return { ctx, directory, workspace, agent, adapter, creative, result, calls, client, account, outputBytes,
+  return { ctx, directory, workspace, agent, adapter, creative, result, calls, client, account, outputBytes, journalBeforeQuote,
+    setNativeReadFailure: () => { nativeReadFailure = true },
     supplierCalls: () => supplierCalls }
 }
 function serializedSession(agent: Agent): string {
@@ -266,22 +286,27 @@ it('confirms the retained plan, binds image/video roles and saves the same V2 op
     toolCallResponse('motion-schema', 'list_media_models_v2', { model: nativeModel.id }),
     toolCallResponse('subject-upload', 'upload_media_asset', { model: nativeModel.id, path: 'product.png', field: 'subject_image' }),
     toolCallResponse('motion-upload', 'upload_media_asset', { model: nativeModel.id, path: 'reference.mp4', field: 'motion_video' }),
-    () => toolCallResponse('motion-quote', 'quote_media_operation', { model: nativeModel.id, model_version: nativeModel.model_version,
+    () => toolCallResponse('motion-quote', 'quote_media_operation', { plan_id: planId, shot_ids: ['replica'],
+      model: nativeModel.id, model_version: nativeModel.model_version,
       intent: 'reference', parameters: { prompt: plan.shots[0]!.prompt, seconds: 4 }, assets: {
         subject_image: [mediaV2Object(f.result('subject-upload').asset).asset_id],
         motion_video: [mediaV2Object(f.result('motion-upload').asset).asset_id],
       } }),
-    () => toolCallResponse('confirmed-plan', 'update_creation_plan', { ...plan, plan_id: planId,
-      brief: `${plan.brief} 用户已确认一条；V2原操作${String(f.result('motion-quote').client_operation_id)}，保留相同主体图与动作视频角色。` }),
+    toolCallResponse('quoted-plan', 'get_creation_plan', { plan_id: planId }),
     () => toolCallResponse('motion-generate', 'generate_media_operation', { client_operation_id: f.result('motion-quote').client_operation_id }),
+    () => toolCallResponse('motion-progress', 'job_output', { job_id: f.result('motion-generate').job_id, wait: true }),
     () => toolCallResponse('motion-recover', 'query_media_operation', { client_operation_id: f.result('motion-quote').client_operation_id }),
+    toolCallResponse('delivered-plan', 'get_creation_plan', { plan_id: planId }),
     textResponse('已查询原操作并保存原视频；未另建作品或重复提交。声音与完整动作效果仍需实际验收。'),
   )
   f.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text:
     `确认按原方案生成一条，模型用${nativeModel.id}，4秒，商品图作主体，原视频作动作参考。` }] }))
   await f.agent.whenIdle()
   expect(f.result('original-plan')).toMatchObject({ status: 'succeeded', plan_id: planId })
-  expect(f.result('confirmed-plan')).toMatchObject({ status: 'saved', plan_id: planId })
+  expect(f.result('quoted-plan')).toMatchObject({ status: 'succeeded', plan_id: planId, native_operations: [
+    { client_operation_id: f.result('motion-quote').client_operation_id, model_version: nativeModel.model_version, shot_ids: ['replica'],
+      parameters: { prompt: plan.shots[0]!.prompt, seconds: 4 }, quote: { retail_cny: '0.20', credits: 200 }, paths: [] },
+  ] })
   expect(f.result('motion-quote')).toMatchObject({ status: 'quoted', model: nativeModel.id })
   const id = String(f.result('motion-quote').client_operation_id)
   expect(f.result('motion-generate')).toMatchObject({ status: 'background', client_operation_id: id })
@@ -296,8 +321,50 @@ it('confirms the retained plan, binds image/video roles and saves the same V2 op
   expect(f.calls.filter(call => call.path.endsWith('/quotes') && call.method === 'POST')).toHaveLength(1)
   expect(f.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
   expect(f.calls.filter(call => call.path.includes('/operations/')).every(call => call.path.endsWith(id) && call.method === 'GET')).toBe(true)
-  const original = mediaV2Object(JSON.parse(await readFile(join(f.directory, 'plans', String(planId), 'project.json'), 'utf8')))
-  expect(original.brief).toContain(id)
+  const originalBytes = await readFile(join(f.directory, 'plans', String(planId), 'project.json'), 'utf8')
+  const original = mediaV2Object(JSON.parse(originalBytes))
+  expect(original.brief).toBe(plan.brief)
+  expect(original.brief).not.toContain(id)
+  expect(f.journalBeforeQuote).toMatchObject([{ origin: { planId, shotIds: ['replica'],
+    sessionId: f.agent.id, workspaceRoot: f.workspace }, request: { client_operation_id: id } }])
+  const actualQuote = f.calls.find(call => call.path.endsWith('/quotes'))?.body
+  expect(actualQuote).not.toHaveProperty('origin'); expect(actualQuote).not.toHaveProperty('plan_id')
+  expect(actualQuote).not.toHaveProperty('shot_ids')
+  expect(f.result('delivered-plan')).toMatchObject({ native_operations: [{ client_operation_id: id,
+    task: { id: 'synthetic-original-task', status: 'succeeded', complete: true }, paths: [retained.saved[0].path] }] })
+  const restarted = new MediaV2Client({ baseUrl: 'https://synthetic.invalid', directory: join(f.directory, 'native-receipts'),
+    timeoutMs: 1000, creditsPerYuan: 1000 })
+  expect((await restarted.records({ owner: f.account.owner }))[0]).toMatchObject({
+    origin: { planId, shotIds: ['replica'], sessionId: f.agent.id, workspaceRoot: f.workspace },
+    request: { client_operation_id: id }, saved: [{ path: retained.saved[0].path }],
+  })
+  script.push(
+    () => toolCallResponse('new-work-quote', 'quote_media_operation', { plan_id: planId, shot_ids: ['replica'],
+      model: nativeModel.id, model_version: nativeModel.model_version, intent: 'reference',
+      parameters: { prompt: plan.shots[0]!.prompt, seconds: 4 }, assets: retained.request.assets }),
+    toolCallResponse('both-plan-works', 'get_creation_plan', { plan_id: planId }),
+    textResponse('同一计划的新作品已单独报价，原任务和产物仍保留；本次没有提交第二次生成。'),
+  )
+  f.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '按同一方案另外做一条独立作品，先报价。' }] }))
+  await f.agent.whenIdle()
+  const second = f.result('new-work-quote').client_operation_id
+  expect(second).not.toBe(id)
+  expect(mediaV2Object(f.result('both-plan-works')).native_operations).toHaveLength(2)
+  expect(mediaV2Object(f.result('both-plan-works')).native_operations).toEqual(expect.arrayContaining([
+    expect.objectContaining({ client_operation_id: second, state: 'quoted', paths: [] }),
+    expect.objectContaining({ client_operation_id: id, paths: [retained.saved[0].path] }),
+  ]))
+  expect(f.calls.filter(call => call.path.endsWith('/quotes') && call.method === 'POST')).toHaveLength(2)
+  expect(f.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+  f.setNativeReadFailure()
+  script.push(toolCallResponse('receipt-read-unavailable', 'get_creation_plan', { plan_id: planId }), textResponse('计划保留，原回执读取失败只查原编号。'))
+  f.agent.followup(createUserMessage({ source: { kind: 'user' }, content: [{ type: 'text', text: '读取原计划状态。' }] }))
+  await f.agent.whenIdle()
+  expect(f.result('receipt-read-unavailable')).toMatchObject({ status: 'succeeded', plan_id: planId,
+    native_operations_unavailable: true, plan: { brief: plan.brief } })
+  expect(f.result('receipt-read-unavailable')).not.toHaveProperty('native_operations')
+  expect(f.calls.filter(call => call.path.endsWith('/tasks') && call.method === 'POST')).toHaveLength(1)
+  expect(await readFile(join(f.directory, 'plans', String(planId), 'project.json'), 'utf8')).toBe(originalBytes)
   expect(original.shots).toHaveLength(1)
   expect(f.supplierCalls()).toBe(0)
 })
