@@ -162,6 +162,25 @@ describe('per-RPC personal media snapshots through native and nested execution',
     expect(f.selections[1]).toMatchObject({ model: 'MiniMax-H3', resolution: '768P' })
   })
 
+  it.each(['List the video models with my saved30-second preference.',
+    'Compare the available models and formatting tools without generating.'])('does not read English word suffixes as explicit controls: %s', async (human) => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: { resolution: '1080P', seconds: 10, ratio: '16:9' } })
+    f.session.append('user/message', await f.admit('read-native-models', human), { surfaceOp: 'append' })
+    await f.execute('video')
+    expect(f.choices[0]?.parameters).not.toHaveProperty('mode')
+    expect(f.choices[0]?.parameters).not.toHaveProperty('format')
+    expect(f.choices[0]?.parameters).toMatchObject({ resolution: '1080P', ratio: '16:9' })
+  })
+
+  it.each(['mode: text-to-video', 'mode text-to-video'])('retains an explicit English mode: %s', async (human) => {
+    const f = await fixture()
+    await f.save(null, { model: 'video-b', parameters: { resolution: '1080P', seconds: 10, ratio: '16:9' } })
+    f.session.append('user/message', await f.admit('explicit-native-mode', human), { surfaceOp: 'append' })
+    await f.execute('video')
+    expect(f.choices[0]?.parameters.mode).toBe('text-to-video')
+  })
+
   it.each([
     { kind: 'image' as const, human: '使用image-a处理这张参考图并生成16:9图片，2k',
       expected: { model: 'image-a', size: '16:9', resolution: '2k' } },

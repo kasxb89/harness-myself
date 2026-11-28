@@ -34,14 +34,6 @@
         "1080p",
       ],
       "seed": false,
-      "specifications": [
-        {
-          "quality": "standard",
-          "ratio": "16:9",
-          "resolution": "1080p",
-          "seconds": 30,
-        },
-      ],
     },
   ],
   "result": {

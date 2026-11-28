@@ -228,6 +228,7 @@ it('carries the actual Go legacy/native catalog pair through the production chat
   const models: readonly unknown[] = Array.isArray(listed.models) ? listed.models : []
   const current = models.find(model => model !== null && typeof model === 'object' && 'id' in model && model.id === pair.model)
   expect(current).toMatchObject({ execution: 'media-v2', read_details: { tool: 'list_media_models_v2', model: pair.model } })
+  expect(current).not.toHaveProperty('specifications')
   expect(z.object({ durations: z.array(z.number()) }).parse(current).durations).toContain(30)
   const refused = await f.call('generate_video', { model: pair.model, prompt: 'Synthetic clouds', duration_seconds: 30 })
   expect(refused).toMatchObject({ status: 'failed', code: 'NATIVE_MEDIA_REQUIRED' })
@@ -261,6 +262,10 @@ it('lists an authenticated native-only model without requiring an unrelated lega
   expect(videos[0]?.durations).toContain(30)
   const images = await f.call('list_image_models', {})
   expect(images.models).toEqual([expect.objectContaining({ id: image.id, execution: 'media-v2', sizes: ['1:1'] })])
+  for (const value of [...videos, ...z.array(z.record(z.string(), z.unknown())).parse(images.models)]) {
+    expect(value).not.toHaveProperty('specifications')
+    expect(value).not.toHaveProperty('edit_specifications')
+  }
   expect(f.posts).toEqual([])
 })
 

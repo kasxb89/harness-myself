@@ -5750,13 +5750,15 @@ export function apply(ctx: Context, config: Config): void {
             max_count: params.maxCount, max_reference_images: editing ? params.maxEdits : 0,
             generation_modes: [...generationModes],
             ...!editing || params.referenceMaxBytes === undefined ? {} : { max_reference_bytes: params.referenceMaxBytes },
-            ...!editing || editSpecifications === undefined ? {}
+            ...model.execution === 'media-v2' || !editing || editSpecifications === undefined ? {}
               : { edit_specifications: editSpecifications.map(value => ({ ...value })) },
             qualities: model.verified || model.notes.includes('qualities') ? [...params.qualities] : [],
             backgrounds: model.verified || model.notes.includes('backgrounds') ? [...params.backgrounds] : [],
             formats: model.verified || model.notes.includes('formats') ? [...params.formats] : [],
             moderations: model.verified || model.notes.includes('moderations') ? [...params.moderations] : [],
-            ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) },
+            // Native combinations remain in the exact-model tool, not this potentially large multi-model summary.
+            ...model.execution === 'media-v2' || params.specifications === undefined ? {}
+              : { specifications: params.specifications.map(value => ({ ...value })) },
             seed: (model.verified || model.notes.includes('seed')) && params.seed }
         })
         const defaultMetadata = await listedMediaDefault(exec, 'image',
@@ -5764,7 +5766,7 @@ export function apply(ctx: Context, config: Config): void {
           binding.identity.accountId, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
-        return { native_media_catalog: 'list_media_models_v2', status: 'listed', models, ...defaultMetadata, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
+        return { native_media_catalog: 'list_media_models_v2', status: 'listed', ...defaultMetadata, models, message: models.length === 0 ? '当前账号没有可用的图片模型；尚未提交生成。'
           : '按精确型号和已声明参数生成；空菜单不提供可选规格，未验证型号的数量限制仅为客户端保守限制。尚未提交生成。' }
       } catch (error) {
         if (error instanceof VideoProjectError && error.code === 'VIDEO_ACCOUNT_REQUIRED') {
@@ -6113,14 +6115,15 @@ export function apply(ctx: Context, config: Config): void {
             audio_output: params.audioOutput ?? (params.audio ? 'supported' : 'unsupported'), audio_toggle: params.audioToggle,
             modes: [...params.modes], seed: params.seed,
             ...params.qualities === undefined ? {} : { qualities: [...params.qualities] },
-            ...params.specifications === undefined ? {} : { specifications: params.specifications.map(value => ({ ...value })) } }
+            ...model.execution === 'media-v2' || params.specifications === undefined ? {}
+              : { specifications: params.specifications.map(value => ({ ...value })) } }
         })
         const defaultMetadata = await listedMediaDefault(exec, 'video',
           effective,
           binding.identity.accountId, exec.signal)
         await binding.key()
         exec.signal.throwIfAborted()
-        return { native_media_catalog: 'list_media_models_v2', status: 'listed', models, ...defaultMetadata, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
+        return { native_media_catalog: 'list_media_models_v2', status: 'listed', ...defaultMetadata, models, message: '按当前参数规划生成片段；一个片段可含多个镜头切换。无独立音频开关不代表成片必定无声，未声明的音频能力不能保证对白。' }
       } catch (error) {
         if (error instanceof CreativeError && error.code === 'MODEL_CONFIG_CHANGED' && !exec.signal.aborted) {
           return { status: 'failed', code: error.code, message: error.message }

@@ -134,8 +134,9 @@ function humanFields(
     const resolution = resolutions[0]
     parameters[kind === 'image' && resolution.includes('x') ? 'size' : 'resolution'] = resolution
   }
-  for (const [field, label] of [['quality', '(?:质量|品质|quality)'], ['mode', '(?:模式|mode)'], ['background', '(?:背景模式|background)'],
-    ['format', '(?:输出格式|format)'], ['moderation', '(?:审核等级|moderation)']] as const) {
+  for (const [field, label] of [['quality', '(?:质量|品质|\\bquality\\b)'], ['mode', '(?:模式|\\bmode\\b)'],
+    ['background', '(?:背景模式|\\bbackground\\b)'], ['format', '(?:输出格式|\\bformat\\b)'],
+    ['moderation', '(?:审核等级|\\bmoderation\\b)']] as const) {
     if (kind === 'image' && field === 'mode') continue
     const matches = [...value.matchAll(new RegExp(`${label}\\s*(?:为|是|[:：=])?\\s*([a-z0-9_-]+)`, 'giu'))].map(match => match[1])
     if (new Set(matches).size === 1 && matches[0] !== undefined) parameters[field] = matches[0]
